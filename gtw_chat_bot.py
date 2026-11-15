@@ -25,8 +25,7 @@ HELP = {
     "no": "!no — Vote no on the active camera or mode vote.",
     "help": "!help [command] — Show commands or details for a command.",
     "more": "!more — Show the remaining commands.",
-    "info": "!info — Show live walker status.",
-    "location": "!location — Show the current area, game time, weather, and surroundings. Alias: !loc.",
+    "info": "!info — Show the current area, game time, weather, navigation mode, camera, and mission.",
     "mission": "!mission — Show the active mission or the three destinations up for voting.",
     "vote": "!vote <1|2|3> — Vote for the next mission. Your latest vote counts.",
 }
@@ -38,7 +37,6 @@ ALIASES = {
     "f": "forward",
     "b": "back",
     "j": "jump",
-    "loc": "location",
 }
 logger = logging.getLogger(__name__)
 
@@ -89,7 +87,7 @@ class GTWBot:
                 )
             return "Commands: !walk • !stop • !left • !right • !forward • !back • !jump • Type !more for more commands."
         if name == "more":
-            return "More: !mode • !camera • !yes • !no • !help • !info • !location • !mission • !vote • Type !help <cmd> for details."
+            return "More: !mode • !camera • !yes • !no • !help • !info • !mission • !vote • Type !help <cmd> for details."
         if name not in HELP:
             return
         if name in {"vote", "yes", "no"}:
@@ -112,7 +110,7 @@ class GTWBot:
                 raise ValueError(HELP[name])
             return HELP[name]
 
-        if name in {"info", "location", "mission"}:
+        if name in {"info", "mission"}:
             return self._status_reply(name)
 
         if name in {"camera", "mode"}:
@@ -167,36 +165,32 @@ class GTWBot:
                     + " • !vote 1/2/3"
                 )
             return missions.get("error") or "Waiting for mission destinations."
-        if name == "info":
-            settings = state.get("settings", {})
-            perspective = "first" if settings.get("first_person") else "third"
-            reply = (
-                f"Grand Theft Walk — San Andreas • {state.get('walking', 'waiting')} • "
-                f"mode: {settings.get('mode', 'unknown')} • camera: {perspective} person."
-            )
-            mission = state.get("missions", {}).get("active")
-            if mission:
-                reply += (
-                    f" • Current mission: Travel to {mission['name']}"
-                    f" • {mission_distance(state, mission)}"
-                )
-            return reply
         if not state.get("ready"):
             return "Game loading; please wait."
-        location = state.get("location")
-        if location:
-            parts = [", ".join(location["places"])]
-            if location.get("indoors"):
-                parts.append("indoors")
-            elif location.get("road"):
-                parts.append(location["road"])
-            clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
-            if clock:
-                parts.append(f"{clock} ({location['period']})")
-            parts.extend((location["weather"], f"heading {location['heading']}"))
-            return " • ".join(parts)
-        position = state["position"]
-        return (
-            f"San Andreas • X: {position['x']:.1f} • Y: {position['y']:.1f} • "
-            f"Z: {position['z']:.1f} • Interior: {state['interior']}."
+        location = state.get("location") or {}
+        parts = [", ".join(location.get("places") or ["San Andreas"])]
+        clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
+        if clock:
+            period = location.get("period")
+            parts.append(f"{clock} ({period})" if period else clock)
+        if location.get("weather"):
+            parts.append(location["weather"])
+        if location.get("heading"):
+            parts.append(f"heading {location['heading']}")
+        settings = state.get("settings", {})
+        perspective = "first" if settings.get("first_person") else "third"
+        parts.extend(
+            (
+                f"mode: {settings.get('mode', 'unknown')}",
+                f"camera: {perspective} person",
+            )
         )
+        mission = state.get("missions", {}).get("active")
+        if mission:
+            parts.extend(
+                (
+                    f"Current mission: Travel to {mission['name']}",
+                    mission_distance(state, mission),
+                )
+            )
+        return " • ".join(parts)

@@ -225,7 +225,7 @@ class ChatIntegrationTests(unittest.TestCase):
         message = self.client.get("/chat").json["messages"][-1]
         self.assertIn("Current mission: Travel to Market", message)
         self.assertIn("mode: sidewalk", message)
-        self.assertIn("camera: third person.", message)
+        self.assertIn("camera: third person •", message)
 
     def test_mission_distance_updates_in_mission_and_info_replies(self):
         self.state["missions"] = {
@@ -308,18 +308,22 @@ class ChatIntegrationTests(unittest.TestCase):
         self.command("help f")
         self.assertIn("!forward [1-100]", self.client.get("/chat").json["messages"][0])
 
-    def test_help_location_and_cursor(self):
+    def test_help_info_and_cursor(self):
         self.command("help")
         cursor = self.client.get("/chat").json["cursor"]
-        self.command("loc")
+        self.command("info")
         messages = self.client.get(f"/chat?after={cursor}").json["messages"]
         self.assertEqual(len(messages), 1)
-        self.assertIn("X: 1.0", messages[0])
+        self.assertEqual(
+            messages[0], "San Andreas • mode: sidewalk • camera: third person"
+        )
         self.assertEqual(self.client.get("/chat?after=invalid").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=-1").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=2").json["messages"], [])
 
-    def test_location_and_loc_report_places_and_live_conditions(self):
+    def test_info_combines_location_settings_and_mission_and_replaces_location_commands(
+        self,
+    ):
         self.state["location"] = {
             "places": ["Las Colinas", "Los Santos"],
             "road": "near a pedestrian crossing",
@@ -330,16 +334,19 @@ class ChatIntegrationTests(unittest.TestCase):
             "heading": "northwest",
             "indoors": False,
         }
+        self.state["missions"] = {
+            "active": {"name": "Market", "position": [1932, 2, 3]}
+        }
         self.write("state.json", self.state)
         self.command("location")
         self.command("loc")
+        self.command("info")
         expected = (
-            "Las Colinas, Los Santos • near a pedestrian crossing • "
-            "Jul 14 4:32 PM (afternoon) • rain, strong wind • heading northwest"
+            "Las Colinas, Los Santos • Jul 14 4:32 PM (afternoon) • rain, strong wind • "
+            "heading northwest • mode: sidewalk • camera: third person • "
+            "Current mission: Travel to Market • 1.2 mi away"
         )
-        self.assertEqual(
-            self.client.get("/chat").json["messages"], [expected, expected]
-        )
+        self.assertEqual(self.client.get("/chat").json["messages"], [expected])
 
     def test_console_loads_and_handles_empty_or_unknown_commands(self):
         response = self.client.get("/")
