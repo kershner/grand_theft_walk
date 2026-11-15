@@ -4,7 +4,38 @@ import unittest
 
 from game import (ENTRY_EXIT_POOL, ENTRY_EXIT_SIZE, PED_POOL, PED_SIZE, RELATIONSHIP_TABLE,
                   GANG_WARS_ACTIVE, Game, RuntimeChanges, unlock_interiors, apply_peaceful_mode)
+from game import CONTROL_ACTIONS, WALK_ACTION, WALK_KEY, bind_walk_key
 from tests.helpers import MemoryFixture
+
+
+class WalkBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.mem = MemoryFixture()
+        self.walk = CONTROL_ACTIONS + WALK_ACTION * 0x20
+        self.mem.write(self.walk, struct.pack("<II", 1051, 1))
+        self.game, self.changes = Game(self.mem), RuntimeChanges(self.mem)
+
+    def test_rebinds_walk_without_modifiers_and_restores_existing_controls(self):
+        other_primary = CONTROL_ACTIONS + 3 * 0x20
+        other_secondary = CONTROL_ACTIONS + 5 * 0x20 + 8
+        self.mem.write(other_primary, struct.pack("<II", WALK_KEY, 2))
+        self.mem.write(other_secondary, struct.pack("<II", WALK_KEY, 3))
+        before = self.mem.read(CONTROL_ACTIONS, 59 * 0x20)
+        bind_walk_key(self.game, self.changes)
+        self.assertEqual(self.mem.u32(self.walk), WALK_KEY)
+        self.assertEqual(self.mem.u32(other_primary), 1056)
+        self.assertEqual(self.mem.u32(other_secondary), 1056)
+        self.assertEqual(self.mem.u32(other_primary + 4), 2)
+        bind_walk_key(self.game, self.changes)
+        self.assertEqual(self.changes.restore(), [])
+        self.assertEqual(self.mem.read(CONTROL_ACTIONS, 59 * 0x20), before)
+
+    def test_assigns_priority_for_a_previously_unbound_walk_key(self):
+        self.mem.write(self.walk, struct.pack("<II", 1056, 0))
+        bind_walk_key(self.game, self.changes)
+        self.assertEqual(self.mem.unpack(self.walk, "II"), (WALK_KEY, 1))
+        self.changes.restore()
+        self.assertEqual(self.mem.unpack(self.walk, "II"), (1056, 0))
 
 
 class InteriorTests(unittest.TestCase):

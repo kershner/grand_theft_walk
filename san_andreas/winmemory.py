@@ -1,4 +1,4 @@
-"""Windows process-memory access and keyboard/mouse input."""
+"""Windows process discovery, module enumeration, and process-memory access."""
 import ctypes as c
 from ctypes import wintypes as w
 import hashlib
@@ -17,6 +17,13 @@ class ProcessEntry(c.Structure):
                 ("pcPriClassBase", w.LONG), ("dwFlags", w.DWORD), ("szExeFile", w.WCHAR * 260)]
 
 
+class ModuleEntry(c.Structure):
+    _fields_ = [("dwSize", w.DWORD), ("th32ModuleID", w.DWORD), ("th32ProcessID", w.DWORD),
+                ("GlblcntUsage", w.DWORD), ("ProccntUsage", w.DWORD),
+                ("modBaseAddr", c.c_void_p), ("modBaseSize", w.DWORD), ("hModule", w.HMODULE),
+                ("szModule", w.WCHAR * 256), ("szExePath", w.WCHAR * 260)]
+
+
 def api(dll, name, args, result):
     function = getattr(dll, name)
     function.argtypes, function.restype = args, result
@@ -26,6 +33,8 @@ def api(dll, name, args, result):
 api(k32, "CreateToolhelp32Snapshot", [w.DWORD, w.DWORD], w.HANDLE)
 api(k32, "Process32FirstW", [w.HANDLE, c.POINTER(ProcessEntry)], w.BOOL)
 api(k32, "Process32NextW", [w.HANDLE, c.POINTER(ProcessEntry)], w.BOOL)
+api(k32, "Module32FirstW", [w.HANDLE, c.POINTER(ModuleEntry)], w.BOOL)
+api(k32, "Module32NextW", [w.HANDLE, c.POINTER(ModuleEntry)], w.BOOL)
 api(k32, "OpenProcess", [w.DWORD, w.BOOL, w.DWORD], w.HANDLE)
 api(k32, "CloseHandle", [w.HANDLE], w.BOOL)
 api(k32, "QueryFullProcessImageNameW", [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)], w.BOOL)
@@ -34,7 +43,6 @@ api(k32, "WriteProcessMemory", [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.
 api(k32, "GetExitCodeProcess", [w.HANDLE, c.POINTER(w.DWORD)], w.BOOL)
 api(u32, "GetForegroundWindow", [], w.HWND)
 api(u32, "GetWindowThreadProcessId", [w.HWND, c.POINTER(w.DWORD)], w.DWORD)
-api(u32, "GetAsyncKeyState", [c.c_int], c.c_short)
 
 
 def game_pids():
@@ -70,7 +78,6 @@ class Memory:
             self.exe = Path(name.value)
             if hashlib.sha256(self.exe.read_bytes()).hexdigest() != EXPECTED_EXE:
                 raise RuntimeError("Unsupported executable: this profile requires the verified modded 1.0 build.")
-            self.signature = self.read(0x400000, 64).hex()
         except Exception:
             self.close()
             raise
@@ -78,6 +85,23 @@ class Memory:
     def alive(self):
         code = w.DWORD()
         return bool(k32.GetExitCodeProcess(self.handle, c.byref(code)) and code.value == 259)
+
+    def module(self, name):
+        snapshot = k32.CreateToolhelp32Snapshot(0x18, self.pid)
+        if snapshot == c.c_void_p(-1).value:
+            raise c.WinError(c.get_last_error())
+        entry = ModuleEntry()
+        entry.dwSize = c.sizeof(entry)
+        try:
+            ok = k32.Module32FirstW(snapshot, c.byref(entry))
+            while ok:
+                if entry.szModule.casefold() == name.casefold():
+                    return {"base": entry.modBaseAddr, "size": entry.modBaseSize,
+                            "path": Path(entry.szExePath)}
+                ok = k32.Module32NextW(snapshot, c.byref(entry))
+            return None
+        finally:
+            k32.CloseHandle(snapshot)
 
     def close(self):
         if self.handle:
@@ -116,56 +140,3 @@ class Memory:
         return pid.value == self.pid
 
 
-class MouseInput(c.Structure):
-    _fields_ = [("dx", w.LONG), ("dy", w.LONG), ("mouseData", w.DWORD), ("dwFlags", w.DWORD),
-                ("time", w.DWORD), ("dwExtraInfo", c.c_size_t)]
-
-
-class KeyInput(c.Structure):
-    _fields_ = [("wVk", w.WORD), ("wScan", w.WORD), ("dwFlags", w.DWORD),
-                ("time", w.DWORD), ("dwExtraInfo", c.c_size_t)]
-
-
-class HardwareInput(c.Structure):
-    _fields_ = [("uMsg", w.DWORD), ("wParamL", w.WORD), ("wParamH", w.WORD)]
-
-
-class InputUnion(c.Union):
-    _fields_ = [("mi", MouseInput), ("ki", KeyInput), ("hi", HardwareInput)]
-
-
-class Input(c.Structure):
-    _fields_ = [("type", w.DWORD), ("data", InputUnion)]
-
-
-api(u32, "SendInput", [w.UINT, c.POINTER(Input), c.c_int], w.UINT)
-
-
-class Keys:
-    # Physical scan codes: W, S and Left Alt (the default pedestrian walk modifier).
-    SCANS = {"forward": 0x11, "back": 0x1F, "walk": 0x38}
-
-    def __init__(self):
-        self.held = set()
-
-    def set(self, desired):
-        desired = set(desired)
-        for key in sorted(self.held - desired):
-            self._send(key, False)
-            self.held.remove(key)
-        for key in sorted(desired - self.held, key=lambda name: name != "walk"):
-            self._send(key, True)
-            self.held.add(key)
-
-    def _send(self, name, down):
-        event = Input(type=1, data=InputUnion(ki=KeyInput(0, self.SCANS[name], 0x8 | (0 if down else 0x2), 0, 0)))
-        if u32.SendInput(1, c.byref(event), c.sizeof(Input)) != 1:
-            raise RuntimeError("Windows rejected game input. Run controller and game at the same privilege level.")
-
-    def turn(self, amount):
-        event = Input(type=0, data=InputUnion(mi=MouseInput(int(amount), 0, 0, 0x1, 0, 0)))
-        if u32.SendInput(1, c.byref(event), c.sizeof(Input)) != 1:
-            raise RuntimeError("Windows rejected mouse input.")
-
-    def release(self):
-        self.set(set())

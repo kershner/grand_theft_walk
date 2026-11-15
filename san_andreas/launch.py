@@ -11,7 +11,8 @@ import time
 
 from game import Game
 from saves import MENU, SAVE_PREFIX, atomic_json, valid_save
-from winmemory import Memory, Keys, EXPECTED_EXE, game_pids, k32, u32, w
+from winmemory import Memory, EXPECTED_EXE, game_pids, k32, w
+from controls import Keys, key_down
 from walker import run
 
 ROOT = Path(__file__).resolve().parent
@@ -48,6 +49,7 @@ class Startup:
     def __init__(self, memory, timeout):
         self.mem = memory
         self.game = Game(memory)
+        self.keys = Keys(focused=memory.foreground)
         self.deadline = time.monotonic() + timeout
         self.last_skip = 0
         self.bootstrap_intro = False
@@ -59,7 +61,7 @@ class Startup:
         while time.monotonic() < self.deadline:
             if not self.mem.alive():
                 raise RuntimeError("San Andreas exited during startup.")
-            if u32.GetAsyncKeyState(0x7B) & 0x8000:
+            if key_down("f12"):
                 raise RuntimeError("Startup cancelled with F12.")
             now = time.monotonic()
             if not self.mem.foreground():
@@ -92,18 +94,6 @@ class Startup:
         # Publish the action last. The game processes it on its own main thread.
         self.mem.write(MENU + 0x15D, bytes([page]))
 
-    def tap(self, scan):
-        if not self.mem.foreground():
-            return False
-        keys = Keys()
-        keys.SCANS = {"startup": scan}
-        try:
-            keys.set({"startup"})
-            time.sleep(0.08)
-        finally:
-            keys.release()
-        return True
-
     def free_roam(self):
         page = self.menu()
         if page == 41:
@@ -117,7 +107,7 @@ class Startup:
             return False
         if self.mem.byte(0xB5F851):
             # Skip only a running cutscene, never send space during walking.
-            self.tap(0x39)
+            self.keys.tap("space")
             return False
         mission_offset = self.mem.u32(0xA476AC)
         if mission_offset >= 200000:
@@ -173,7 +163,7 @@ class Startup:
             # Startup movies precede CCutsceneMgr and need their own skip input.
             # Stop issuing it as soon as the title menu appears.
             if time.monotonic() - self.last_skip >= 1.5:
-                if self.tap(0x1C):
+                if self.keys.tap("enter"):
                     self.last_skip = time.monotonic()
             return False
 
@@ -197,7 +187,7 @@ class Startup:
                     if self.mem.u32(MENU + 0x54) != 2:
                         self.mem.write(MENU + 0x54, struct.pack("<I", 2))
                     elif time.monotonic() - self.last_skip >= 1:
-                        if self.tap(0x1C):
+                        if self.keys.tap("enter"):
                             self.last_skip = time.monotonic()
                 else:
                     raise RuntimeError(f"Unexpected new-game screen: {page}")

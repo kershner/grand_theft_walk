@@ -53,7 +53,7 @@ class FocusTests(unittest.TestCase):
         memory.foreground.side_effect = [False, False, True]
         predicate = Mock(return_value="ready")
         startup = Startup(memory, 10)
-        with patch("launch.time.sleep"), patch("launch.u32.GetAsyncKeyState", return_value=0):
+        with patch("launch.time.sleep"), patch("launch.key_down", return_value=False):
             self.assertEqual(startup.wait("Test startup", predicate), "ready")
         predicate.assert_called_once_with()
         self.assertEqual(memory.foreground.call_count, 3)
@@ -62,9 +62,9 @@ class FocusTests(unittest.TestCase):
     def test_startup_never_sends_keys_in_background(self):
         memory = Mock()
         memory.foreground.return_value = False
-        with patch("launch.Keys") as keys:
-            self.assertFalse(Startup(memory, 10).tap(0x1C))
-        keys.assert_not_called()
+        with patch("controls.keyboard") as keyboard:
+            self.assertFalse(Startup(memory, 10).keys.tap("enter"))
+        keyboard.press.assert_not_called()
 
 
 class SaveSelectionTests(unittest.TestCase):

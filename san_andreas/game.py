@@ -14,6 +14,9 @@ PED_POOL = 0xB74490
 PED_SIZE = 0x7C4  # CPools stores CPed allocations in CCopPed-sized slots.
 RELATIONSHIP_TABLE = 0xC0BBE8
 GANG_WARS_ACTIVE = 0x96AB90
+CONTROL_ACTIONS = 0xB70198 + 0xB70
+WALK_ACTION = 17
+WALK_KEY = 1002  # RenderWare rsF2.
 ENTITY_POOLS = (("buildings", 0xB74498, 0x38), ("dummies", 0xB744A0, 0x38),
                 ("objects", 0xB7449C, 0x19C))  # Object pool uses CCutsceneObject storage.
 CHEAT_IDS = {"health": 61, "oxygen": 62, "no_wanted": 65, "no_hunger": 68, "ammo": 72}
@@ -228,6 +231,23 @@ def apply_protection(game, changes, state):
                 mem.write(wanted+offset, b"\0"*4)
     if mem.u32(state["player_info"]+0x144):
         mem.write(state["player_info"]+0x144, b"\0"*4)
+
+
+def bind_walk_key(game, changes):
+    keys = game.mem.read(CONTROL_ACTIONS, 59 * 0x20)
+    walk_offset = WALK_ACTION * 0x20
+    if struct.unpack_from("<I", keys, walk_offset)[0] > 1056:
+        raise RuntimeError("Invalid walk-control binding")
+    for action in range(59):
+        if action == WALK_ACTION:
+            continue
+        for keyboard_type in (0, 1):
+            offset = action * 0x20 + keyboard_type * 8
+            if struct.unpack_from("<I", keys, offset)[0] == WALK_KEY:
+                changes.patch(CONTROL_ACTIONS + offset, struct.pack("<I", 1056))
+    changes.patch(CONTROL_ACTIONS + walk_offset, struct.pack("<I", WALK_KEY))
+    if not struct.unpack_from("<I", keys, walk_offset + 4)[0]:
+        changes.patch(CONTROL_ACTIONS + walk_offset + 4, struct.pack("<I", 1))
 
 
 def unlock_regions(game, changes, include_barriers=True):
