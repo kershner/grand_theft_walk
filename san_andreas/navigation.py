@@ -1,5 +1,6 @@
 """San Andreas pedestrian path loading, waypoint selection, and steering."""
 
+import heapq
 import math
 import struct
 from collections import Counter, defaultdict
@@ -31,10 +32,17 @@ class SmoothTurn:
         self.last_at = None
 
     def step(self, desired, now):
-        dt = 1 / 120 if self.last_at is None else max(0.0, min(1 / 30, now - self.last_at))
+        dt = (
+            1 / 120
+            if self.last_at is None
+            else max(0.0, min(1 / 30, now - self.last_at))
+        )
         self.last_at = now
         desired = max(-self.limit, min(self.limit, desired))
-        change = max(-self.acceleration * dt, min(self.acceleration * dt, desired - self.velocity))
+        change = max(
+            -self.acceleration * dt,
+            min(self.acceleration * dt, desired - self.velocity),
+        )
         old = self.velocity
         self.velocity += change
         self.fraction += (old + self.velocity) * 0.5 * dt
@@ -56,7 +64,12 @@ def read_area(data, area):
     if len(data) < 20:
         raise ValueError(f"Truncated path header in area {area}")
     count, vehicles, pedestrians, car_links, addresses = struct.unpack_from("<5I", data)
-    if count != vehicles + pedestrians or count > 10000 or addresses > 100000 or car_links > 100000:
+    if (
+        count != vehicles + pedestrians
+        or count > 10000
+        or addresses > 100000
+        or car_links > 100000
+    ):
         raise ValueError(f"Invalid path counts in area {area}")
     links_at = 20 + count * 28 + car_links * 14
     allocated = addresses + 192 if addresses else 0
@@ -75,7 +88,10 @@ def read_area(data, area):
         if flags & 0xA0:  # Switched off or water, never vehicle nodes.
             continue
         links = tuple(
-            (struct.unpack_from("<HH", data, links_at + j * 4), bool(data[crossings_at + j] & 1))
+            (
+                struct.unpack_from("<HH", data, links_at + j * 4),
+                bool(data[crossings_at + j] & 1),
+            )
             for j in range(base, base + number)
         )
         nodes.append(Node((area, i), (x / 8, y / 8, z / 8), links))
@@ -136,6 +152,32 @@ class PedestrianGraph:
             default=None,
         )
 
+    def distances_to(self, destination, blocked=(), avoided=()):
+        """Reverse Dijkstra: exact routes on directed pedestrian links."""
+        reverse = defaultdict(list)
+        for key, node in self.nodes.items():
+            for target, _ in node.links:
+                if (
+                    target in self.nodes
+                    and (key, target) not in blocked
+                    and target not in avoided
+                ):
+                    reverse[target].append(
+                        (key, distance(node.position, self.nodes[target].position))
+                    )
+        costs = {destination: 0.0}
+        queue = [(0.0, destination)]
+        while queue:
+            cost, key = heapq.heappop(queue)
+            if cost != costs[key]:
+                continue
+            for previous, length in reverse[key]:
+                candidate = cost + length
+                if candidate < costs.get(previous, math.inf):
+                    costs[previous] = candidate
+                    heapq.heappush(queue, (candidate, previous))
+        return costs
+
 
 class SidewalkNavigator:
     def __init__(self, graph):
@@ -143,7 +185,23 @@ class SidewalkNavigator:
         self.visits = Counter()
         self.blocked = {}
         self.avoided = {}
+        self.destination = None
+        self.route_costs = {}
+        self.route_signature = None
         self.reset()
+
+    def set_destination(self, key):
+        self.destination = key
+
+    def update_route(self):
+        signature = (self.destination, frozenset(self.blocked), frozenset(self.avoided))
+        if signature != self.route_signature:
+            self.route_costs = (
+                self.graph.distances_to(self.destination, self.blocked, self.avoided)
+                if self.destination in self.graph.nodes
+                else {}
+            )
+            self.route_signature = signature
 
     def reset(self):
         self.target = self.previous = None
@@ -166,9 +224,13 @@ class SidewalkNavigator:
             return None
         self.avoided = {k: t for k, t in self.avoided.items() if t > now}
         self.blocked = {k: t for k, t in self.blocked.items() if t > now}
+        self.update_route()
         if self.target is not None:
             node = self.graph.nodes[self.target]
-            if distance(position, node.position) > 45 or abs(position[2] - node.position[2]) > 4:
+            if (
+                distance(position, node.position) > 45
+                or abs(position[2] - node.position[2]) > 4
+            ):
                 self.target = self.previous = None
         if self.target is None:
             node = self.graph.nearest(position, self.avoided)
@@ -186,13 +248,18 @@ class SidewalkNavigator:
             length = math.hypot(dx, dy)
             if length > 0.1:
                 beyond = (
-                    (position[0] - node.position[0]) * dx + (position[1] - node.position[1]) * dy
+                    (position[0] - node.position[0]) * dx
+                    + (position[1] - node.position[1]) * dy
                 ) >= 0
                 lateral = (
-                    abs((position[0] - start[0]) * dy - (position[1] - start[1]) * dx) / length
+                    abs((position[0] - start[0]) * dy - (position[1] - start[1]) * dx)
+                    / length
                 )
                 passed = beyond and lateral <= 3 and remaining <= 6
         if remaining <= 2 or (self.previous is None and remaining <= 4) or passed:
+            if node.key == self.destination:
+                self.message = "at mission destination"
+                return node.position
             options = [
                 (self.graph.nodes[key], crossing)
                 for key, crossing in node.links
@@ -201,24 +268,39 @@ class SidewalkNavigator:
                 and key not in self.avoided
             ]
             forward = [option for option in options if option[0].key != self.previous]
-            if forward:
+            if forward and (self.destination is None or self.turn):
                 options = forward
             if not options:
                 self.message = "pedestrian path blocked; waiting to retry"
                 return None
 
             def delta(option):
-                return angle_delta(heading_to(node.position, option[0].position), heading)
+                return angle_delta(
+                    heading_to(node.position, option[0].position), heading
+                )
 
             if len(options) > 1 and self.turn:
-                chosen = (
-                    max(options, key=delta)
-                    if self.turn == "left"
-                    else min(options, key=delta)
-                    if self.turn == "right"
-                    else min(options, key=lambda option: abs(delta(option)))
-                )
+                if self.turn == "left":
+                    chosen = max(options, key=delta)
+                elif self.turn == "right":
+                    chosen = min(options, key=delta)
+                else:
+                    chosen = min(options, key=lambda option: abs(delta(option)))
                 self.turn = None
+            elif self.destination is not None:
+                reachable = [
+                    option for option in options if option[0].key in self.route_costs
+                ]
+                if not reachable:
+                    self.message = "no pedestrian route to mission; waiting to retry"
+                    return None
+                chosen = min(
+                    reachable,
+                    key=lambda option: (
+                        distance(node.position, option[0].position)
+                        + self.route_costs[option[0].key]
+                    ),
+                )
             else:
                 chosen = min(
                     options,
@@ -231,7 +313,9 @@ class SidewalkNavigator:
             self.crossing = chosen[1]
             node = chosen[0]
             self.message = (
-                "following pedestrian crossing" if self.crossing else "following sidewalk"
+                "following pedestrian crossing"
+                if self.crossing
+                else "following sidewalk"
             )
         return node.position
 
@@ -242,4 +326,5 @@ class SidewalkNavigator:
             "crossing": self.crossing,
             "next_turn": self.turn,
             "status": self.message,
+            "destination": self.destination,
         }

@@ -46,7 +46,9 @@ def atomic_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        _retry_file_access(temporary.write_text, json.dumps(data, indent=2), encoding="utf-8")
+        _retry_file_access(
+            temporary.write_text, json.dumps(data, indent=2), encoding="utf-8"
+        )
         _retry_file_access(temporary.replace, path)
     finally:
         _retry_file_access(temporary.unlink, missing_ok=True)
@@ -97,10 +99,14 @@ class WalkerControl:
         try:
             state = read_json(self.state_dir / "state.json")
         except (OSError, ValueError) as error:
-            raise RuntimeError("Start the San Andreas walker controller first.") from error
+            raise RuntimeError(
+                "Start the San Andreas walker controller first."
+            ) from error
         age = time.time() - state.get("updated", 0)
         if state.get("controller") != "running" or not 0 <= age <= 5:
-            raise RuntimeError("The San Andreas walker controller is offline. Start it first.")
+            raise RuntimeError(
+                "The San Andreas walker controller is offline. Start it first."
+            )
         return state
 
     def request(self, name, args):
@@ -109,7 +115,6 @@ class WalkerControl:
                 raise RuntimeError("Game loading; please wait.")
             path = self.state_dir / "control.json"
             settings = read_json(path)
-            settings["mode"] = settings.get("mode")
             if settings.get("quit"):
                 raise RuntimeError("The walker controller is stopping; please wait.")
             if name == "back" and settings.get("mode") != "free":
@@ -128,10 +133,32 @@ class WalkerControl:
                 settings["mode"] = args[0]
             elif name == "camera":
                 settings["first_person"] = (
-                    args[0] == "first" if args else not settings.get("first_person", False)
+                    args[0] == "first"
+                    if args
+                    else not settings.get("first_person", False)
                 )
             atomic_json(path, settings)
             return settings
+
+    def vote(self, viewer, choice):
+        if not isinstance(viewer, str) or not viewer.strip():
+            raise ValueError("Could not identify your viewer account.")
+        state = self.snapshot()
+        poll = state.get("missions", {}).get("poll")
+        if not poll or time.time() >= poll["closes"]:
+            return "No mission vote is open. Use !mission to see the current mission."
+        if type(choice) is not int or not 1 <= choice <= 3:
+            raise ValueError("Vote with !vote 1, !vote 2, or !vote 3.")
+        atomic_json(
+            self.state_dir / "mission_votes" / f"{uuid.uuid4().hex}.json",
+            {
+                "poll": poll["id"],
+                "viewer": viewer.strip().casefold(),
+                "choice": choice,
+                "issued": time.time(),
+            },
+        )
+        return f"Vote submitted: {choice}. Your latest vote counts."
 
 
 def configure_logging(log_dir=DEFAULT_STATE_DIR):
@@ -139,7 +166,9 @@ def configure_logging(log_dir=DEFAULT_STATE_DIR):
     log_dir.mkdir(parents=True, exist_ok=True)
     path = log_dir / "san_andreas.log"
     root = logging.getLogger()
-    if any(isinstance(handler, ConcurrentRotatingFileHandler) for handler in root.handlers):
+    if any(
+        isinstance(handler, ConcurrentRotatingFileHandler) for handler in root.handlers
+    ):
         return path
 
     file_handler = ConcurrentRotatingFileHandler(

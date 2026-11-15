@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from dev_server import create_app
 
@@ -34,9 +35,21 @@ class ChatIntegrationTests(unittest.TestCase):
         self.write("state.json", self.state)
         self.app = create_app(self.root)
         self.client = self.app.test_client()
+        self.voting = self.app.extensions["gtw_bot"].command_voting
+        self.timer = Mock()
+        self.voting.timer_factory = self.timer
 
     def tearDown(self):
+        self.voting.close()
         self.folder.cleanup()
+
+    def finish_vote(self):
+        self.timer.call_args.args[1]()
+
+    def set_mode(self, mode):
+        settings = self.control()
+        settings["mode"] = mode
+        self.write("control.json", settings)
 
     def write(self, name, value):
         (self.root / name).write_text(json.dumps(value), encoding="utf-8")
@@ -72,10 +85,15 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def test_camera_and_mode_settings_validate_arguments(self):
         self.command("camera")
+        self.assertFalse(self.control()["first_person"])
+        self.finish_vote()
         self.assertTrue(self.control()["first_person"])
         self.command("camera third")
+        self.finish_vote()
         self.assertFalse(self.control()["first_person"])
         self.command("mode free")
+        self.assertEqual(self.control()["mode"], "sidewalk")
+        self.finish_vote()
         self.assertEqual(self.control()["mode"], "free")
         expected = self.control()
         for command in ("mode fly", "camera upside-down"):
@@ -83,7 +101,7 @@ class ChatIntegrationTests(unittest.TestCase):
             self.assertEqual(self.control(), expected)
 
     def test_direction_aliases_preserve_autowalk_and_send_amount(self):
-        self.command("mode free")
+        self.set_mode("free")
         for walking in (False, True):
             for alias, direction in (
                 ("l", "left"),
@@ -101,18 +119,24 @@ class ChatIntegrationTests(unittest.TestCase):
                     self.assertEqual(self.control()["steering"]["amount"], 100)
         self.command("f")
         self.assertEqual(self.control()["steering"]["amount"], 1)
-        self.assertEqual(self.client.get("/chat").json["messages"], ["Navigation mode: free."])
+        self.assertEqual(self.client.get("/chat").json["messages"], [])
 
     def test_back_requires_free_mode(self):
         self.command("b 2")
         self.assertEqual(self.control(), self.settings)
         self.assertEqual(
             self.client.get("/chat").json["messages"],
-            ["Back is unavailable in sidewalk mode. Use !mode free for manual movement."],
+            [
+                "Back is unavailable in sidewalk mode. Use !mode free for manual movement."
+            ],
         )
 
     def test_stopped_sidewalk_directions_explain_how_to_move(self):
-        for command, direction in (("l 10", "left"), ("r 10", "right"), ("f 2", "forward")):
+        for command, direction in (
+            ("l 10", "left"),
+            ("r 10", "right"),
+            ("f 2", "forward"),
+        ):
             self.command(command)
             self.assertFalse(self.control()["walking"])
             self.assertEqual(self.control()["steering"]["direction"], direction)
@@ -120,19 +144,83 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(
             messages,
             [
-                "Sidewalk mode: direction queued for the next junction. "
-                "Use !walk to continue or !mode free for manual movement."
+                (
+                    "Sidewalk mode: direction queued for the next junction. "
+                    "Use !walk to continue or !mode free for manual movement."
+                )
             ]
             * 3,
         )
 
     def test_mode_command_uses_singular_name(self):
         self.command("mode free")
+        self.finish_vote()
         self.command("mode sidewalk")
+        self.finish_vote()
         self.assertEqual(self.control()["mode"], "sidewalk")
         self.assertEqual(
             self.client.get("/chat").json["messages"][-1], "Navigation mode: sidewalk."
         )
+
+    def test_command_ballots_are_per_browser_and_can_change(self):
+        self.command("camera first")
+        other = self.app.test_client()
+        other.get("/cmd/no")
+        self.command("no")
+        self.command("yes")
+        self.assertEqual(sorted(self.voting.vote.votes.values()), ["no", "yes"])
+        self.command("mode free")
+        self.assertIn(
+            "Vote already in progress.", self.client.get("/chat").json["messages"]
+        )
+        self.finish_vote()
+        self.assertFalse(self.control()["first_person"])
+        self.assertTrue(
+            any(
+                "Vote failed! (1-1)" in message
+                for message in self.client.get("/chat").json["messages"]
+            )
+        )
+
+    def test_mission_ballots_and_announcements_are_independent_of_command_vote(self):
+        self.state["missions"] = {
+            "active": None,
+            "events": [{"id": "e1", "text": "Choose our next mission!"}],
+            "poll": {
+                "id": "round1",
+                "closes": time.time() + 60,
+                "counts": [0, 0, 0],
+                "options": [{"name": n} for n in ("Ganton", "Market", "Rodeo")],
+            },
+        }
+        self.write("state.json", self.state)
+        self.command("camera")
+        self.command("vote 2")
+        self.command("vote 3")
+        self.command("mission")
+        ballots = [
+            json.loads(p.read_text())
+            for p in (self.root / "mission_votes").glob("*.json")
+        ]
+        self.assertEqual(len(ballots), 2)
+        self.assertEqual(len({b["viewer"] for b in ballots}), 1)
+        self.assertTrue(self.voting.vote.active)
+        messages = self.client.get("/chat").json["messages"]
+        self.assertEqual(messages.count("Choose our next mission!"), 1)
+        self.assertEqual(
+            self.client.get("/chat").json["messages"].count("Choose our next mission!"),
+            1,
+        )
+        self.assertTrue(any("2: Market (0 votes)" in m for m in messages))
+
+    def test_info_includes_current_mission(self):
+        self.state["missions"] = {"active": {"name": "Market"}}
+        self.write("state.json", self.state)
+        self.command("info")
+        message = self.client.get("/chat").json["messages"][-1]
+        self.assertIn("Current mission: Travel to Market", message)
+        self.assertIn("mode: sidewalk", message)
+        self.assertIn("camera: third person.", message)
 
     def test_jump_is_silent_and_does_not_change_walking_or_steering(self):
         self.write("control.json", dict(self.settings, mode="free"))
@@ -172,7 +260,16 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def test_invalid_movement_is_silent_and_help_remains_available(self):
         with self.assertLogs("gtw_chat_bot", level="WARNING"):
-            for command in ("l 0", "r 101", "f nope", "b -1", "f 1.5", "f 2 3", "w nope", "s nope"):
+            for command in (
+                "l 0",
+                "r 101",
+                "f nope",
+                "b -1",
+                "f 1.5",
+                "f 2 3",
+                "w nope",
+                "s nope",
+            ):
                 self.command(command)
                 self.assertEqual(self.control(), self.settings)
         self.assertEqual(self.client.get("/chat").json["messages"], [])
@@ -208,7 +305,9 @@ class ChatIntegrationTests(unittest.TestCase):
             "Las Colinas, Los Santos • near a pedestrian crossing • "
             "Jul 14 16:32 (afternoon) • rain, strong wind • heading northwest"
         )
-        self.assertEqual(self.client.get("/chat").json["messages"], [expected, expected])
+        self.assertEqual(
+            self.client.get("/chat").json["messages"], [expected, expected]
+        )
 
     def test_console_loads_and_handles_empty_or_unknown_commands(self):
         response = self.client.get("/")

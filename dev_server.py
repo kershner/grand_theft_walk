@@ -1,13 +1,15 @@
-"""No Man's Walk's local chat console, connected to Grand Theft Walk."""
+"""Local chat console for Grand Theft Walk."""
 
 import argparse
 import asyncio
 import logging
 import socket
 import threading
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 
 from gtw_chat_bot import GTWBot
 from san_andreas.runtime import DEFAULT_STATE_DIR, WalkerControl, configure_logging
@@ -20,13 +22,27 @@ def create_app(state_dir=DEFAULT_STATE_DIR):
     messages = []
     messages_lock = threading.Lock()
     bot = GTWBot(control=WalkerControl(state_dir))
+    app.extensions["gtw_bot"] = bot
+    seen_events = set()
+
+    @app.before_request
+    def identify_viewer():
+        g.viewer = request.cookies.get("gtw_viewer") or uuid.uuid4().hex
+
+    @app.after_request
+    def remember_viewer(response):
+        response.set_cookie(
+            "gtw_viewer", g.viewer, httponly=True, samesite="Lax", max_age=31536000
+        )
+        return response
 
     class DevContext:
+        def __init__(self, viewer):
+            self.author = SimpleNamespace(id=viewer)
+
         async def send(self, text):
             with messages_lock:
                 messages.append(text)
-
-    ctx = DevContext()
 
     @app.route("/")
     def index():
@@ -42,7 +58,7 @@ def create_app(state_dir=DEFAULT_STATE_DIR):
         if not content.startswith("!"):
             content = "!" + content
         try:
-            asyncio.run(bot.process_chat_message(ctx, content))
+            asyncio.run(bot.process_chat_message(DevContext(g.viewer), content))
             return jsonify({"ok": True})
         except Exception as error:
             logger.exception("Chat command failed")
@@ -51,10 +67,19 @@ def create_app(state_dir=DEFAULT_STATE_DIR):
     @app.route("/chat")
     def chat():
         try:
+            events = bot.control.snapshot().get("missions", {}).get("events", [])
+        except RuntimeError:
+            events = []
+        try:
             after = max(0, int(request.args.get("after", 0)))
         except ValueError:
             after = 0
         with messages_lock:
+            messages.extend(bot.command_voting.drain_events())
+            for event in events:
+                if event["id"] not in seen_events:
+                    messages.append(event["text"])
+                    seen_events.add(event["id"])
             return jsonify({"messages": messages[after:], "cursor": len(messages)})
 
     return app

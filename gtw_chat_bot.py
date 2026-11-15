@@ -1,4 +1,4 @@
-"""Shared chat command handler for the local console and a future Twitch adapter."""
+"""Chat command parsing, voting and walker status replies."""
 
 import logging
 
@@ -8,6 +8,7 @@ from san_andreas.runtime import (
     NavigationModeError,
     WalkerControl,
 )
+from san_andreas.voting import CommandVoting
 
 HELP = {
     "walk": "!walk — Start autowalking. Alias: !w.",
@@ -17,12 +18,16 @@ HELP = {
     "forward": "!forward [1-100] — Move forward that many one-second steps in free mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] — Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
     "jump": "!jump — High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
-    "mode": "!mode <sidewalk|free> — Choose sidewalk navigation or free roaming.",
-    "camera": "!camera [first|third] — Toggle the camera or select a perspective.",
+    "mode": "!mode <sidewalk|free> — Start a 20-second vote for sidewalk navigation or free roaming.",
+    "camera": "!camera [first|third] — Start a 20-second vote to toggle the camera or select a perspective.",
+    "yes": "!yes — Vote yes on the active camera or mode vote.",
+    "no": "!no — Vote no on the active camera or mode vote.",
     "help": "!help [command] — Show commands or details for a command.",
     "more": "!more — Show the remaining commands.",
     "info": "!info — Show live walker status.",
     "location": "!location — Show the current area, game time, weather, and surroundings. Alias: !loc.",
+    "mission": "!mission — Show the active mission or the three destinations up for voting.",
+    "vote": "!vote <1|2|3> — Vote for the next mission. Your latest vote counts.",
 }
 ALIASES = {
     "w": "walk",
@@ -40,6 +45,7 @@ logger = logging.getLogger(__name__)
 class GTWBot:
     def __init__(self, control=None):
         self.control = control if control is not None else WalkerControl()
+        self.command_voting = CommandVoting(self._execute)
 
     async def process_chat_message(self, ctx, content):
         content = (content or "").strip()
@@ -53,7 +59,15 @@ class GTWBot:
         args = [arg.lower() for arg in parts[1:]]
         logger.debug("Chat command: !%s %s", name[:100], " ".join(args)[:200])
         try:
-            reply = self._reply(name, args)
+            author = getattr(ctx, "author", None)
+            viewer = getattr(author, "name", None) or getattr(author, "id", None)
+            viewer = str(viewer) if viewer else ""
+            if name == "vote" and len(args) == 1 and args[0] in ("1", "2", "3"):
+                reply = self.control.vote(viewer, int(args[0]))
+            elif name in ("yes", "no") and not args:
+                reply = self.command_voting.cast(viewer, name)
+            else:
+                reply = self._reply(name, args, viewer)
         except NavigationModeError as error:
             reply = str(error)
         except (OSError, ValueError, RuntimeError) as error:
@@ -64,19 +78,21 @@ class GTWBot:
         if reply:
             await ctx.send(reply)
 
-    def _reply(self, name, args):
+    def _reply(self, name, args, viewer=""):
         if name == "help":
             if args:
                 target = args[0].lstrip("!")
                 target = ALIASES.get(target, target)
-                return HELP.get(target, f"Unknown command: !{target}. Type !help for commands.")
+                return HELP.get(
+                    target, f"Unknown command: !{target}. Type !help for commands."
+                )
             return "Commands: !walk • !stop • !left • !right • !forward • !back • !jump • Type !more for more commands."
         if name == "more":
-            return (
-                "More: !mode • !camera • !help • !info • !location • Type !help <cmd> for details."
-            )
+            return "More: !mode • !camera • !yes • !no • !help • !info • !location • !mission • !vote • Type !help <cmd> for details."
         if name not in HELP:
-            return  # Match NMS: unrecognized commands are ignored.
+            return
+        if name in {"vote", "yes", "no"}:
+            return HELP[name]
         if name in DIRECTIONS:
             valid = not args or (
                 len(args) == 1
@@ -95,9 +111,24 @@ class GTWBot:
                 raise ValueError(HELP[name])
             return HELP[name]
 
-        if name in {"info", "location"}:
+        if name in {"info", "location", "mission"}:
             return self._status_reply(name)
 
+        if name in {"camera", "mode"}:
+            state = self.control.snapshot()
+            if not state.get("ready"):
+                raise RuntimeError("Game loading; please wait.")
+            if name == "mode":
+                description = f"Navigation mode: {args[0]}."
+            elif args:
+                description = f"Camera: {args[0]} person."
+            else:
+                description = "Toggle camera perspective."
+            return self.command_voting.start(name, args, viewer, description)
+
+        return self._execute(name, args)
+
+    def _execute(self, name, args):
         settings = self.control.request(name, args)
         if name in {"walk", "stop"}:
             return "Autowalk toggled"
@@ -114,13 +145,37 @@ class GTWBot:
 
     def _status_reply(self, name):
         state = self.control.snapshot()
+        if name == "mission":
+            missions = state.get("missions", {})
+            active = missions.get("active")
+            if active:
+                x, y, z = active["position"]
+                return (
+                    f"Mission: {active['name']} • Meeting point: {x:.1f}, {y:.1f}, {z:.1f} • "
+                    f"Standing: {missions['held_seconds']:g}/{missions['hold_seconds']:g} seconds."
+                )
+            poll = missions.get("poll")
+            if poll:
+                return (
+                    "Vote for the next mission! "
+                    + " • ".join(
+                        f"{i}: {d['name']} ({poll['counts'][i - 1]} votes)"
+                        for i, d in enumerate(poll["options"], 1)
+                    )
+                    + " • !vote 1/2/3"
+                )
+            return missions.get("error") or "Waiting for mission destinations."
         if name == "info":
             settings = state.get("settings", {})
             perspective = "first" if settings.get("first_person") else "third"
-            return (
+            reply = (
                 f"Grand Theft Walk — San Andreas • {state.get('walking', 'waiting')} • "
                 f"mode: {settings.get('mode', 'unknown')} • camera: {perspective} person."
             )
+            mission = state.get("missions", {}).get("active")
+            if mission:
+                reply += f" • Current mission: Travel to {mission['name']}"
+            return reply
         if not state.get("ready"):
             return "Game loading; please wait."
         location = state.get("location")
