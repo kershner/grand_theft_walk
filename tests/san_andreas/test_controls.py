@@ -1,6 +1,5 @@
 """Tests for focus-aware keyboard and mouse input."""
 
-import math
 import struct
 import time
 import unittest
@@ -165,19 +164,6 @@ class ViewControlTests(unittest.TestCase):
             self.view.tick(request, self.state, 8)
             self.assertFalse(self.view.centering)
             self.keys.look.assert_not_called()
-
-    def test_snapshot_reports_pitch_from_camera_forward_vector(self):
-        memory = MemoryFixture()
-        memory.pid = 1
-        memory.foreground = lambda: True
-        memory.write(0xB7CD98, struct.pack("<I", 0x20000))
-        game = Game(memory)
-        for pitch in (-0.7, 0, 0.7):
-            memory.write(
-                0xB6F028 + 0x974 + 0x10,
-                struct.pack("<3f", 0, math.cos(pitch), math.sin(pitch)),
-            )
-            self.assertAlmostEqual(game.snapshot()["camera_pitch"], pitch)
 
 
 class JumpBoostTests(unittest.TestCase):

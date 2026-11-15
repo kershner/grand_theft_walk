@@ -2,7 +2,6 @@
 
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field
 
 
@@ -34,7 +33,7 @@ class CommandVoting:
         self.timer_factory = timer_factory
         self.vote = VoteState()
         self.lock = threading.Lock()
-        self.events = deque()
+        self.events = []
         self.closes_at = 0.0
 
     def start(self, name, args, starter, help_text):
@@ -92,8 +91,8 @@ class CommandVoting:
 
     def drain_events(self):
         with self.lock:
-            events = list(self.events)
-            self.events.clear()
+            events = self.events
+            self.events = []
             return events
 
     def close(self):

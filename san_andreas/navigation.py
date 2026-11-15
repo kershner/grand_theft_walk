@@ -47,6 +47,17 @@ class SmoothTurn:
         self.velocity = self.fraction = 0.0
         self.last_at = None
 
+    def nudge(self, remaining, now):
+        """Return a smoothed mouse delta and the unconsumed requested amount."""
+        amount = self.step(remaining * 2.0, now)
+        if amount * remaining > 0:
+            amount = int(math.copysign(min(abs(amount), abs(remaining)), amount))
+            remaining -= amount
+        elif not remaining:
+            amount = 0
+            self.reset()
+        return amount, remaining
+
     def step(self, desired, now):
         dt = (
             1 / 120

@@ -78,6 +78,19 @@ def control_request(direction=None, amount=None):
     return request
 
 
+def queue_movement(settings, direction, amount=1):
+    if direction == "jump":
+        settings["jump"] = control_request()
+        return
+    field = "view" if direction in VIEW_COMMANDS else "steering"
+    request = control_request(direction)
+    if direction in DIRECTIONS or direction == "center":
+        request["amount"] = amount
+    settings[field] = request
+    if direction in {"walk", "stop"}:
+        settings["walking"] = direction == "walk"
+
+
 def request_expired(request):
     issued = request.get("issued")
     return not isinstance(issued, (int, float)) or not 0 <= time.time() - issued <= 10
@@ -136,17 +149,8 @@ class WalkerControl:
                 raise NavigationModeError(
                     "Back is unavailable in sidewalk mode. Use !mode free for manual movement."
                 )
-            if name in VIEW_COMMANDS:
-                amount = int(args[0]) if args else 1
-                settings["view"] = control_request(name, amount)
-            elif name == "jump":
-                settings["jump"] = control_request()
-            elif name in MOVEMENT_COMMANDS:
-                settings["steering"] = control_request(name)
-                if name in DIRECTIONS:
-                    settings["steering"]["amount"] = int(args[0]) if args else 1
-                if name in {"walk", "stop"}:
-                    settings["walking"] = name == "walk"
+            if name in MOVEMENT_COMMANDS:
+                queue_movement(settings, name, int(args[0]) if args else 1)
             elif name == "mode":
                 settings["mode"] = args[0]
             elif name == "camera":

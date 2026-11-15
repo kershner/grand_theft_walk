@@ -65,12 +65,7 @@ class GTWBot:
             author = getattr(ctx, "author", None)
             viewer = getattr(author, "name", None) or getattr(author, "id", None)
             viewer = str(viewer) if viewer else ""
-            if name == "vote" and len(args) == 1 and args[0] in ("1", "2", "3"):
-                reply = self.control.vote(viewer, int(args[0]))
-            elif name in ("yes", "no") and not args:
-                reply = self.command_voting.cast(viewer, name)
-            else:
-                reply = self._reply(name, args, viewer)
+            reply = self._reply(name, args, viewer)
         except NavigationModeError as error:
             reply = str(error)
         except (OSError, ValueError, RuntimeError) as error:
@@ -94,8 +89,12 @@ class GTWBot:
             return "More: !up • !down • !center • !mode • !camera • !help • !info • Type !help <cmd> for details."
         if name not in HELP:
             return
-        if name in {"vote", "yes", "no"}:
+        if name == "vote":
+            if len(args) == 1 and args[0] in ("1", "2", "3"):
+                return self.control.vote(viewer, int(args[0]))
             return HELP[name]
+        if name in {"yes", "no"}:
+            return HELP[name] if args else self.command_voting.cast(viewer, name)
         if name in DIRECTIONS:
             valid = not args or (
                 len(args) == 1

@@ -107,7 +107,7 @@ class MissionTests(unittest.TestCase):
         self.tick(60)
         restored = MissionSystem(self.root, self.graph, self.destinations)
         self.assertEqual(restored.data["active"], self.system.data["active"])
-        self.assertEqual(restored.held, 0)
+        self.assertEqual(restored.standing_seconds, 0)
 
     def activate(self):
         self.system.data["active"] = self.destinations[0]
@@ -142,19 +142,19 @@ class MissionTests(unittest.TestCase):
                 self.activate()
                 self.tick(0)
                 self.tick(0.25)
-                self.assertGreater(self.system.held, 0)
+                self.assertGreater(self.system.standing_seconds, 0)
                 self.state.update(changed)
                 self.tick(0.5, usable, saving=saving)
-                self.assertEqual(self.system.held, 0)
+                self.assertEqual(self.system.standing_seconds, 0)
         self.create_mission()
         self.activate()
         self.tick(0)
         self.tick(0.1)
         self.tick(10)
-        self.assertEqual(self.system.held, 0)
+        self.assertEqual(self.system.standing_seconds, 0)
         self.state["position"]["x"] = 0.5
         self.tick(10.1)
-        self.assertEqual(self.system.held, 0)
+        self.assertEqual(self.system.standing_seconds, 0)
 
     def test_configurable_duration_and_invalid_config(self):
         atomic_json(self.root / "mission_config.json", {"hold_seconds": 1})

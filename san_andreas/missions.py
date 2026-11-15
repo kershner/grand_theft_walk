@@ -1,12 +1,12 @@
 """Controller-owned, persistent missions and viewer ballots."""
 
-import json
 import math
 import random
 import time
 import uuid
 import zlib
 from collections import defaultdict
+from copy import deepcopy
 from pathlib import Path
 
 from runtime import atomic_json, mission_distance, read_json
@@ -74,29 +74,28 @@ def load_destinations(game_directory, graph, read_text):
 
 class MissionSystem:
     def __init__(self, state_dir, graph, destinations, rng=None):
-        self.root = Path(state_dir)
+        self.state_dir = Path(state_dir)
         self.graph = graph
         self.destinations = destinations
         self.rng = rng or random.Random()
-        self.config = load_config(self.root / "mission_config.json")
+        self.config = load_config(self.state_dir / "mission_config.json")
         try:
-            self.data = read_json(self.root / "mission.json")
+            self.data = read_json(self.state_dir / "mission.json")
         except FileNotFoundError:
             self.data = {"active": None, "poll": None, "completed": 0, "events": []}
-        self.held = 0.0
-        self.last_tick = None
-        self.anchor = None
-        self.next_io = 0.0
+        self.standing_seconds = 0.0
+        self.last_tick_at = None
+        self.standing_origin = None
+        self.next_vote_check_at = 0.0
         self.error = None
-        self.saved_payload = None
+        self.saved_state = None
         if self.data["active"]:
             self.data["poll"] = None
 
     def save(self):
-        payload = json.dumps(self.data, sort_keys=True)
-        if payload != self.saved_payload:
-            atomic_json(self.root / "mission.json", self.data)
-            self.saved_payload = payload
+        if self.data != self.saved_state:
+            atomic_json(self.state_dir / "mission.json", self.data)
+            self.saved_state = deepcopy(self.data)
 
     def event(self, text):
         self.data["events"].append({"id": uuid.uuid4().hex, "text": text})
@@ -126,7 +125,7 @@ class MissionSystem:
     def drain_votes(self):
         poll = self.data["poll"]
         consumed = []
-        for path in (self.root / "mission_votes").glob("*.json"):
+        for path in (self.state_dir / "mission_votes").glob("*.json"):
             try:
                 ballot = read_json(path)
             except (ValueError, OSError):
@@ -172,22 +171,22 @@ class MissionSystem:
         )
 
     def _update_standing(self, state, now, standing):
-        elapsed = 0 if self.last_tick is None else now - self.last_tick
-        self.last_tick = now
+        elapsed = 0 if self.last_tick_at is None else now - self.last_tick_at
+        self.last_tick_at = now
         if not standing:
-            self.anchor = None
-            self.held = 0.0
+            self.standing_origin = None
+            self.standing_seconds = 0.0
             return
         position = tuple(state["position"][axis] for axis in ("x", "y", "z"))
         if (
-            self.anchor is None
-            or math.dist(position, self.anchor) > STANDING_DRIFT
+            self.standing_origin is None
+            or math.dist(position, self.standing_origin) > STANDING_DRIFT
             or not 0 <= elapsed <= MAX_FRAME_GAP
         ):
-            self.anchor = position
-            self.held = 0.0
+            self.standing_origin = position
+            self.standing_seconds = 0.0
         else:
-            self.held += elapsed
+            self.standing_seconds += elapsed
 
     def _complete_mission(self):
         name = self.data["active"]["name"]
@@ -195,9 +194,9 @@ class MissionSystem:
         self.data["last_completed"] = name
         self.data["completed"] += 1
         self.data["active"] = None
-        self.anchor = None
-        self.held = 0.0
-        self.next_io = 0.0
+        self.standing_origin = None
+        self.standing_seconds = 0.0
+        self.next_vote_check_at = 0.0
         self.save()
 
     def _select_mission(self, poll):
@@ -248,10 +247,10 @@ class MissionSystem:
             and state.get("move_state") in (0, 1)
         )
         self._update_standing(state, now, standing)
-        if self.data["active"] and self.held >= self.config["hold_seconds"]:
+        if self.data["active"] and self.standing_seconds >= self.config["hold_seconds"]:
             self._complete_mission()
-        if now >= self.next_io:
-            self.next_io = now + POLL_INTERVAL
+        if now >= self.next_vote_check_at:
+            self.next_vote_check_at = now + POLL_INTERVAL
             self.drain_votes()
             if not self.data["active"]:
                 poll = self.data["poll"]
@@ -272,7 +271,7 @@ class MissionSystem:
             "active": self.data["active"],
             "poll": poll,
             "hold_seconds": self.config["hold_seconds"],
-            "held_seconds": round(self.held, 1),
+            "held_seconds": round(self.standing_seconds, 1),
             "completed": self.data["completed"],
             "events": self.data["events"],
             "available_locations": len(self.destinations),

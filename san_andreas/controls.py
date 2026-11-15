@@ -11,6 +11,7 @@ from navigation import SmoothTurn
 from runtime import request_expired
 
 logger = logging.getLogger(__name__)
+MOUSE_UNITS_PER_STEP = 10
 
 
 def can_control(state):
@@ -140,42 +141,37 @@ class ViewControl:
         self.center_deadline = 0.0
         self.turn.reset()
 
+    def accept_request(self, request, now):
+        if not isinstance(request, dict) or request.get("id") == self.last_request:
+            return
+        self.last_request = request.get("id")
+        if request_expired(request):
+            return
+        direction = request.get("direction")
+        amount = request.get("amount", 1)
+        if direction == "center":
+            self.cancel()
+            self.centering = True
+            self.center_deadline = now + 8
+        elif direction in ("up", "down") and type(amount) is int and 1 <= amount <= 100:
+            self.centering = False
+            self.pending += (
+                (-1 if direction == "up" else 1) * amount * MOUSE_UNITS_PER_STEP
+            )
+
     def tick(self, request, state, now, saving=False):
         if not can_control(state) or saving:
             self.cancel()
             return
-        if isinstance(request, dict) and request.get("id") != self.last_request:
-            self.last_request = request.get("id")
-            if not request_expired(request):
-                direction = request.get("direction")
-                amount = request.get("amount", 1)
-                if direction == "center":
-                    self.cancel()
-                    self.centering = True
-                    self.center_deadline = now + 8
-                elif (
-                    direction in ("up", "down")
-                    and type(amount) is int
-                    and 1 <= amount <= 100
-                ):
-                    self.centering = False
-                    self.pending += (-1 if direction == "up" else 1) * amount * 10
+        self.accept_request(request, now)
         if self.centering:
             pitch = state.get("camera_pitch")
             if pitch is None or abs(pitch) <= 0.02 or now >= self.center_deadline:
                 self.cancel()
                 return
-            desired = pitch * 140
+            pixels = self.turn.step(pitch * 140, now)
         else:
-            desired = self.pending * 2
-        pixels = self.turn.step(desired, now)
-        if not self.centering:
-            if pixels * self.pending > 0:
-                pixels = max(-abs(self.pending), min(abs(self.pending), pixels))
-                self.pending -= pixels
-            elif not self.pending:
-                self.turn.reset()
-                pixels = 0
+            pixels, self.pending = self.turn.nudge(self.pending, now)
         if pixels:
             self.keys.look(pixels)
 

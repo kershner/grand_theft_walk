@@ -10,7 +10,14 @@ import sys
 import time
 from pathlib import Path
 
-from controls import HighJump, Hotkeys, Keys, ViewControl, can_control
+from controls import (
+    MOUSE_UNITS_PER_STEP,
+    HighJump,
+    Hotkeys,
+    Keys,
+    ViewControl,
+    can_control,
+)
 from game import (
     FirstPersonCamera,
     Game,
@@ -36,10 +43,9 @@ from runtime import (
     DEFAULTS,
     DIRECTIONS,
     MODES,
-    VIEW_COMMANDS,
     atomic_json,
     configure_logging,
-    control_request,
+    queue_movement,
     read_controls,
     read_json,
     request_expired,
@@ -50,7 +56,6 @@ from winmemory import Memory, api, elevate, k32, w
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_STEP = 1.0
-TURN_PER_STEP = 10
 # Player walk animation speed relative to native pace; valid range: 0.1..1.0.
 WALK_SPEED_MULTIPLIER = 0.75
 api(k32, "CreateMutexW", [ctypes.c_void_p, w.BOOL, w.LPCWSTR], w.HANDLE)
@@ -119,7 +124,7 @@ class Walking:
             self.navigator.turn = direction
         elif direction in ("left", "right"):
             self.manual_turn += (
-                (-1 if direction == "left" else 1) * amount * TURN_PER_STEP
+                (-1 if direction == "left" else 1) * amount * MOUSE_UNITS_PER_STEP
             )
         elif direction in ("forward", "back"):
             self.reverse_until = 0.0
@@ -184,7 +189,7 @@ class Walking:
             self.reverse_until = 0.0
             self.origin, self.progress_at = position, now
         status = "walking freely"
-        desired_turn = self.manual_turn * 2.0
+        desired_turn = 0.0
         if mode == "sidewalk":
             if self.navigator is None:
                 self.stop()
@@ -230,15 +235,10 @@ class Walking:
                 self.navigator.avoid_target(now)
                 self.stop()
                 return "rejoining pedestrian path after no route progress"
-        turn = self.smooth_turn.step(desired_turn, now)
         if mode == "free":
-            # Consume the queued nudge without overshooting its requested amount.
-            if turn * self.manual_turn > 0:
-                turn = int(math.copysign(min(abs(turn), abs(self.manual_turn)), turn))
-                self.manual_turn -= turn
-            elif not self.manual_turn:
-                turn = 0
-                self.smooth_turn.reset()
+            turn, self.manual_turn = self.smooth_turn.nudge(self.manual_turn, now)
+        else:
+            turn = self.smooth_turn.step(desired_turn, now)
         if turn:
             self.keys.turn(turn)
         if mode == "free" and (self.manual_direction or not enabled):
@@ -643,10 +643,7 @@ def main():
                 parser.error(
                     "Specify left, right, forward, back, up, down, center or stop."
                 )
-            field = "view" if args.value in VIEW_COMMANDS else "steering"
-            settings[field] = control_request(args.value, args.amount)
-            if args.value == "stop":
-                settings["walking"] = False
+            queue_movement(settings, args.value, args.amount)
         else:
             if args.value not in ("on", "off"):
                 parser.error("Specify on or off.")
