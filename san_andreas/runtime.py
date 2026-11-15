@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import threading
 import time
 import uuid
@@ -25,6 +26,19 @@ DEFAULTS = {
     "autosave": True,
     "first_person": False,
 }
+
+
+def mission_distance(state, mission):
+    position = state.get("position")
+    target = mission.get("position")
+    if not state.get("ready") or not position or not target:
+        return "Distance unavailable"
+    meters = math.hypot(position["x"] - target[0], position["y"] - target[1])
+    feet = round(meters / 0.3048)
+    if feet < 5280:
+        return f"{feet:,} ft away"
+    miles = f"{feet / 5280:,.1f}".removesuffix(".0")
+    return f"{miles} mi away"
 
 
 def _retry_file_access(operation, *args, **kwargs):

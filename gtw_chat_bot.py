@@ -7,6 +7,7 @@ from san_andreas.runtime import (
     MOVEMENT_COMMANDS,
     NavigationModeError,
     WalkerControl,
+    mission_distance,
 )
 from san_andreas.voting import CommandVoting
 
@@ -152,6 +153,7 @@ class GTWBot:
                 x, y, z = active["position"]
                 return (
                     f"Mission: {active['name']} • Meeting point: {x:.1f}, {y:.1f}, {z:.1f} • "
+                    f"{mission_distance(state, active)} • "
                     f"Standing: {missions['held_seconds']:g}/{missions['hold_seconds']:g} seconds."
                 )
             poll = missions.get("poll")
@@ -159,7 +161,7 @@ class GTWBot:
                 return (
                     "Vote for the next mission! "
                     + " • ".join(
-                        f"{i}: {d['name']} ({poll['counts'][i - 1]} votes)"
+                        f"{i}: {d['name']} ({mission_distance(state, d)}, {poll['counts'][i - 1]} votes)"
                         for i, d in enumerate(poll["options"], 1)
                     )
                     + " • !vote 1/2/3"
@@ -174,7 +176,10 @@ class GTWBot:
             )
             mission = state.get("missions", {}).get("active")
             if mission:
-                reply += f" • Current mission: Travel to {mission['name']}"
+                reply += (
+                    f" • Current mission: Travel to {mission['name']}"
+                    f" • {mission_distance(state, mission)}"
+                )
             return reply
         if not state.get("ready"):
             return "Game loading; please wait."

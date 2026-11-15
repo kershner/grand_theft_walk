@@ -190,7 +190,10 @@ class ChatIntegrationTests(unittest.TestCase):
                 "id": "round1",
                 "closes": time.time() + 60,
                 "counts": [0, 0, 0],
-                "options": [{"name": n} for n in ("Ganton", "Market", "Rodeo")],
+                "options": [
+                    {"name": name, "position": [301, 402, 3]}
+                    for name in ("Ganton", "Market", "Rodeo")
+                ],
             },
         }
         self.write("state.json", self.state)
@@ -211,7 +214,9 @@ class ChatIntegrationTests(unittest.TestCase):
             self.client.get("/chat").json["messages"].count("Choose our next mission!"),
             1,
         )
-        self.assertTrue(any("2: Market (0 votes)" in m for m in messages))
+        self.assertTrue(
+            any("2: Market (1,640 ft away, 0 votes)" in m for m in messages)
+        )
 
     def test_info_includes_current_mission(self):
         self.state["missions"] = {"active": {"name": "Market"}}
@@ -221,6 +226,33 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertIn("Current mission: Travel to Market", message)
         self.assertIn("mode: sidewalk", message)
         self.assertIn("camera: third person.", message)
+
+    def test_mission_distance_updates_in_mission_and_info_replies(self):
+        self.state["missions"] = {
+            "active": {"name": "Market", "position": [301, 402, 10]},
+            "held_seconds": 0,
+            "hold_seconds": 30,
+        }
+        for position, expected in (
+            ({"x": 1, "y": 2, "z": 3}, "1,640 ft"),
+            ({"x": 301, "y": 402, "z": 10}, "0 ft"),
+            ({"x": 300, "y": 402, "z": 10}, "3 ft"),
+            ({"x": -699, "y": 402, "z": 10}, "3,281 ft"),
+            ({"x": 301 - 1609.344, "y": 402, "z": 10}, "1 mi"),
+            ({"x": -12199, "y": 402, "z": 10}, "7.8 mi"),
+        ):
+            self.state["position"] = position
+            self.write("state.json", self.state)
+            for command in ("mission", "info"):
+                self.command(command)
+                message = self.client.get("/chat").json["messages"][-1]
+                self.assertIn(f" • {expected} away", message)
+        self.state["ready"] = False
+        self.write("state.json", self.state)
+        self.command("mission")
+        self.assertIn(
+            "Distance unavailable", self.client.get("/chat").json["messages"][-1]
+        )
 
     def test_jump_is_silent_and_does_not_change_walking_or_steering(self):
         self.write("control.json", dict(self.settings, mode="free"))
@@ -292,7 +324,7 @@ class ChatIntegrationTests(unittest.TestCase):
             "places": ["Las Colinas", "Los Santos"],
             "road": "near a pedestrian crossing",
             "date": "Jul 14",
-            "time": "16:32",
+            "time": "4:32 PM",
             "period": "afternoon",
             "weather": "rain, strong wind",
             "heading": "northwest",
@@ -303,7 +335,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.command("loc")
         expected = (
             "Las Colinas, Los Santos • near a pedestrian crossing • "
-            "Jul 14 16:32 (afternoon) • rain, strong wind • heading northwest"
+            "Jul 14 4:32 PM (afternoon) • rain, strong wind • heading northwest"
         )
         self.assertEqual(
             self.client.get("/chat").json["messages"], [expected, expected]

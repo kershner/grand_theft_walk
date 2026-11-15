@@ -26,7 +26,9 @@ WALK_ACTION = 17
 WALK_KEY = 1002  # RenderWare rsF2.
 JUMP_ACTION = 12
 JUMP_KEY = 32  # Space; F1/F2/F3 also trigger hardcoded replay actions.
-JUMP_SPEED = math.sqrt(0.96)  # Original one-shot boost; native physics limits the height.
+JUMP_SPEED = math.sqrt(
+    0.96
+)  # Original one-shot boost; native physics limits the height.
 ENTITY_POOLS = (
     ("buildings", 0xB74498, 0x38),
     ("dummies", 0xB744A0, 0x38),
@@ -35,7 +37,9 @@ ENTITY_POOLS = (
 CHEAT_IDS = {"health": 61, "oxygen": 62, "no_wanted": 65, "no_hunger": 68, "ammo": 72}
 
 CAMERA_MODULE = "ZMenuSA.asi"
-CAMERA_MODULE_SHA256 = "931718c7ef9eef64933ec60cbf7b4f8a5a59216bff6933770f4449a9def280d0"
+CAMERA_MODULE_SHA256 = (
+    "931718c7ef9eef64933ec60cbf7b4f8a5a59216bff6933770f4449a9def280d0"
+)
 FIRST_PERSON = 0x582EF2
 ROTATE_PLAYER = 0x582F38
 ZONE_COUNT = 0xBA3794
@@ -65,7 +69,20 @@ WEATHER_NAMES = (
     "interior lighting",
     "interior lighting",
 )
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
 
 
 def read_game_text(path):
@@ -89,7 +106,9 @@ def read_game_text(path):
     if len(keys) % 8:
         raise ValueError("Invalid game text keys")
     return {
-        key: re.sub(r"~[^~]*~", "", text[start:].split(b"\0", 1)[0].decode("cp1252")).strip()
+        key: re.sub(
+            r"~[^~]*~", "", text[start:].split(b"\0", 1)[0].decode("cp1252")
+        ).strip()
         for start, key in struct.iter_unpack("<II", keys)
         if start < len(text)
     }
@@ -103,7 +122,9 @@ class Game:
     def location(self, state):
         if self.place_names is None:
             try:
-                self.place_names = read_game_text(self.mem.exe.parent / "text" / "american.gxt")
+                self.place_names = read_game_text(
+                    self.mem.exe.parent / "text" / "american.gxt"
+                )
             except (OSError, ValueError) as error:
                 logger.warning("Place names unavailable: %s", error)
                 self.place_names = {}
@@ -129,7 +150,9 @@ class Game:
         blend = self.mem.unpack(0xC8130C, "f")[0]
         weather = new if blend >= 0.5 else old
         conditions = (
-            WEATHER_NAMES[weather] if 0 <= weather < len(WEATHER_NAMES) else "unknown weather"
+            WEATHER_NAMES[weather]
+            if 0 <= weather < len(WEATHER_NAMES)
+            else "unknown weather"
         )
         rain = self.mem.unpack(0xC81324, "f")[0]
         fog = self.mem.unpack(0xC81300, "f")[0]
@@ -167,11 +190,19 @@ class Game:
         )
         return {
             "places": places[:3] or ["San Andreas"],
-            "time": f"{hours:02}:{minutes:02}" if hours < 24 and minutes < 60 else None,
-            "date": f"{MONTHS[month - 1]} {day}" if 1 <= month <= 12 and 1 <= day <= 31 else None,
+            "time": (
+                f"{hours % 12 or 12}:{minutes:02} {'AM' if hours < 12 else 'PM'}"
+                if hours < 24 and minutes < 60
+                else None
+            ),
+            "date": f"{MONTHS[month - 1]} {day}"
+            if 1 <= month <= 12 and 1 <= day <= 31
+            else None,
             "period": period,
             "weather": ", ".join(details),
-            "heading": compass[int((state["heading"] % math.tau) / math.tau * 8 + 0.5) % 8],
+            "heading": compass[
+                int((state["heading"] % math.tau) / math.tau * 8 + 0.5) % 8
+            ],
             "indoors": state["interior"] != 0,
         }
 
@@ -203,7 +234,11 @@ class Game:
         ]
 
     def barrier_entities(self):
-        slots = {e["slot"] for e in self.ipls() if e["name"].lower() in {"barriers1", "barriers2"}}
+        slots = {
+            e["slot"]
+            for e in self.ipls()
+            if e["name"].lower() in {"barriers1", "barriers2"}
+        }
         result = []
         if not slots:
             return result
@@ -222,7 +257,8 @@ class Game:
                             "identity": raw[start + 0x20 : start + 0x24].hex(),
                             "ipl": raw[start + 0x2E],
                             "flags": raw[start + 0x1C],
-                            "pool_map": self.mem.u32(self.mem.u32(global_address) + 4) + i,
+                            "pool_map": self.mem.u32(self.mem.u32(global_address) + 4)
+                            + i,
                             "generation": bitmap[i],
                         }
                     )
@@ -252,7 +288,9 @@ class Game:
                 {
                     "address": address,
                     "flags": flags,
-                    "name": block[:8].split(b"\0", 1)[0].decode("ascii", errors="replace"),
+                    "name": block[:8]
+                    .split(b"\0", 1)[0]
+                    .decode("ascii", errors="replace"),
                     "hours": tuple(block[0x34:0x36]),
                     "guard": (
                         "enex",
@@ -310,7 +348,9 @@ class Game:
         block = self.mem.read(ped, 0x7A0)
         matrix = struct.unpack_from("<I", block, 0x14)[0]
         position = (
-            self.mem.unpack(matrix + 0x30, "3f") if matrix else struct.unpack_from("<3f", block, 4)
+            self.mem.unpack(matrix + 0x30, "3f")
+            if matrix
+            else struct.unpack_from("<3f", block, 4)
         )
         health, max_health, armor = struct.unpack_from("<3f", block, 0x540)
         heading = struct.unpack_from("<f", block, 0x558)[0]
@@ -322,9 +362,9 @@ class Game:
             and camera_x * camera_x + camera_y * camera_y > 0.01
             else None
         )
-        if not all(math.isfinite(v) for v in (*position, health, max_health, heading)) or any(
-            abs(v) > 20000 for v in position
-        ):
+        if not all(
+            math.isfinite(v) for v in (*position, health, max_health, heading)
+        ) or any(abs(v) > 20000 for v in position):
             raise RuntimeError(
                 "Player state failed validation; refusing to use this memory profile."
             )
@@ -351,7 +391,9 @@ class Game:
             "armor": armor,
             "interior": block[0x2F],
             "in_vehicle": in_vehicle,
-            "vehicle": struct.unpack_from("<I", block, 0x58C)[0] if in_vehicle else None,
+            "vehicle": struct.unpack_from("<I", block, 0x58C)[0]
+            if in_vehicle
+            else None,
             "ped_state": ped_state,
             "move_state": move_state,
             "wanted_pointer": wanted,
@@ -366,7 +408,8 @@ class Game:
             "proof_flags": block[0x42],
             "gang_wars_active": bool(self.mem.byte(GANG_WARS_ACTIVE)),
             "cheats": {
-                name: bool(self.mem.byte(CHEATS + index)) for name, index in CHEAT_IDS.items()
+                name: bool(self.mem.byte(CHEATS + index))
+                for name, index in CHEAT_IDS.items()
             },
         }
 
@@ -431,8 +474,15 @@ class WalkingPace:
             if not 0 < value <= 10:
                 continue
             identity = (
-                state["player_info"], ped, state["identity"], clump, data, address,
-                block[0xC:0x18],  # Node count, group, nodes, and hierarchy identify this anim.
+                state["player_info"],
+                ped,
+                state["identity"],
+                clump,
+                data,
+                address,
+                block[
+                    0xC:0x18
+                ],  # Node count, group, nodes, and hierarchy identify this anim.
             )
             yield identity, address + 0x24, speed
 
@@ -445,8 +495,12 @@ class WalkingPace:
             previous = self.owned.get(identity)
             if moving:
                 # Use the original speed, not our last write: never compound the slowdown.
-                original = previous[0] if previous and current == previous[1] else current
-                scaled = struct.pack("<f", struct.unpack("<f", original)[0] * self.multiplier)
+                original = (
+                    previous[0] if previous and current == previous[1] else current
+                )
+                scaled = struct.pack(
+                    "<f", struct.unpack("<f", original)[0] * self.multiplier
+                )
                 if current != scaled:
                     self.mem.write(address, scaled)
                 owned[identity] = (original, scaled)
@@ -468,7 +522,9 @@ class RuntimeChanges:
         mask = bytes([255] * len(after)) if mask is None else mask
         key = (address, len(after))
         if key in self.entries and self.entries[key]["guard"] != guard:
-            del self.entries[key]  # Allocation was reused; its old bits are no longer ours.
+            del self.entries[
+                key
+            ]  # Allocation was reused; its old bits are no longer ours.
         if key not in self.entries:
             self.entries[key] = {
                 "address": address,
@@ -478,7 +534,8 @@ class RuntimeChanges:
                 "guard": guard,
             }
         value = bytes(
-            (old & (~bits & 255)) | (new & bits) for old, new, bits in zip(before, after, mask)
+            (old & (~bits & 255)) | (new & bits)
+            for old, new, bits in zip(before, after, mask)
         )
         if before != value:
             self.mem.write(address, value)
@@ -488,7 +545,10 @@ class RuntimeChanges:
             return True
         if guard[0] == "ped":
             _, info, ped, identity = guard
-            return self.mem.u32(info) == ped and self.mem.read(ped + 0x20, 4).hex() == identity
+            return (
+                self.mem.u32(info) == ped
+                and self.mem.read(ped + 0x20, 4).hex() == identity
+            )
         if guard[0] == "enex":
             _, pointer, objects, bitmap, slot, generation, identity = guard
             return (
@@ -496,7 +556,8 @@ class RuntimeChanges:
                 and self.mem.u32(pointer) == objects
                 and self.mem.u32(pointer + 4) == bitmap
                 and self.mem.byte(bitmap + slot) == generation
-                and self.mem.read(objects + slot * ENTRY_EXIT_SIZE, 0x30).hex() == identity
+                and self.mem.read(objects + slot * ENTRY_EXIT_SIZE, 0x30).hex()
+                == identity
             )
         if guard[0] == "relationships":
             return self.mem.u32(RELATIONSHIP_TABLE) == guard[1]
@@ -539,8 +600,8 @@ class RuntimeChanges:
 def apply_protection(game, changes, state):
     mem = game.mem
     guard = ("ped", state["player_info"], state["ped"], state["identity"])
-    for name in CHEAT_IDS:
-        changes.patch(CHEATS + CHEAT_IDS[name], b"\x01")
+    for cheat_id in CHEAT_IDS.values():
+        changes.patch(CHEATS + cheat_id, b"\x01")
     # Bullet/fire/collision/melee/invulnerable/explosion proofs; preserve other physical bits.
     changes.patch(state["ped"] + 0x42, b"\xfc", b"\xfc", guard)
     # Prevent critical headshots and disable the explicit player-damage permission.
@@ -550,7 +611,9 @@ def apply_protection(game, changes, state):
     changes.patch(state["player_info"] + 0x14E, b"\x01")  # Player-info fire immunity.
     # Desired gameplay values, not reversible settings: don't resurrect or restore old health.
     if 0 < state["health"] < max(100.0, state["max_health"]):
-        mem.write(state["ped"] + 0x540, struct.pack("<f", max(100.0, state["max_health"])))
+        mem.write(
+            state["ped"] + 0x540, struct.pack("<f", max(100.0, state["max_health"]))
+        )
     if state["wanted_pointer"]:
         wanted = state["wanted_pointer"]
         for offset in (0, 4, 0x2C, 0x30):
@@ -627,7 +690,9 @@ def apply_peaceful_mode(game, changes):
     mask = struct.pack("<I", 0xF)  # PLAYER1, PLAYER2, PLAYER_NETWORK, PLAYER_UNUSED.
     for kind in range(32):
         for offset in (12, 16):  # Dislike, hate; retain respect/like/other targets.
-            changes.patch(table + kind * 20 + offset, bytes(4), mask, ("relationships", table))
+            changes.patch(
+                table + kind * 20 + offset, bytes(4), mask, ("relationships", table)
+            )
     changes.patch(GANG_WARS_ACTIVE, b"\0")
     pedestrians = game.pedestrians()
     for ped in pedestrians:

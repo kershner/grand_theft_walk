@@ -1,11 +1,14 @@
 """San Andreas pedestrian path loading, waypoint selection, and steering."""
 
 import heapq
+import logging
 import math
 import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def angle_delta(target, current):
@@ -18,6 +21,19 @@ def heading_to(origin, target):
 
 def distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def closest_point_on_segment(position, start, end):
+    """Project onto the horizontal segment and interpolate its height."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length_squared = dx * dx + dy * dy
+    if length_squared == 0:
+        return end
+    progress = (
+        (position[0] - start[0]) * dx + (position[1] - start[1]) * dy
+    ) / length_squared
+    progress = max(0.0, min(1.0, progress))
+    return tuple(a + progress * (b - a) for a, b in zip(start, end))
 
 
 class SmoothTurn:
@@ -227,10 +243,20 @@ class SidewalkNavigator:
         self.update_route()
         if self.target is not None:
             node = self.graph.nodes[self.target]
-            if (
-                distance(position, node.position) > 45
-                or abs(position[2] - node.position[2]) > 4
-            ):
+            reference = node.position
+            if self.previous is not None:
+                start = self.graph.nodes[self.previous].position
+                reference = closest_point_on_segment(position, start, node.position)
+            offset = distance(position, reference)
+            height_error = abs(position[2] - reference[2])
+            if offset > 45 or height_error > 4:
+                logger.debug(
+                    "Rejoining path: edge %s -> %s, offset %.1f, height error %.1f",
+                    self.previous,
+                    self.target,
+                    offset,
+                    height_error,
+                )
                 self.target = self.previous = None
         if self.target is None:
             node = self.graph.nearest(position, self.avoided)

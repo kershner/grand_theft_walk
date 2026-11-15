@@ -67,6 +67,7 @@ class MissionTests(unittest.TestCase):
         poll = self.system.data["poll"]
         self.assertEqual(len({d["name"] for d in poll["options"]}), 3)
         self.assertEqual(poll["closes"] - poll["opened"], 60)
+        self.assertIn("ft away)", self.system.data["events"][-1]["text"])
         self.ballot("Alice", 1, 101)
         self.ballot("alice", 2, 102)
         self.ballot("bob", 2, 103)

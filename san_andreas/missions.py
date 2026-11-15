@@ -9,7 +9,7 @@ import zlib
 from collections import defaultdict
 from pathlib import Path
 
-from runtime import atomic_json, read_json
+from runtime import atomic_json, mission_distance, read_json
 from voting import cast_ballot, tally
 
 DEFAULT_CONFIG = {
@@ -229,7 +229,8 @@ class MissionSystem:
         }
         self.error = None
         labels = " • ".join(
-            f"{index}: {option['name']}" for index, option in enumerate(options, 1)
+            f"{index}: {option['name']} ({mission_distance(state, option)})"
+            for index, option in enumerate(options, 1)
         )
         self.event(
             f"Choose our next mission! {labels} • !vote 1/2/3 • {self.config['vote_seconds']:g} seconds"

@@ -127,11 +127,15 @@ class LocationTests(unittest.TestCase):
     def test_neighborhood_city_clock_and_compass_come_from_game_state(self):
         location = self.game.location(self.state)
         self.assertEqual(location["places"], ["Las Colinas", "Los Santos"])
-        self.assertEqual(location["time"], "16:32")
+        self.assertEqual(location["time"], "4:32 PM")
         self.assertEqual(location["date"], "Jul 14")
         self.assertEqual(location["period"], "afternoon")
         self.assertEqual(location["heading"], "north")
         self.assertFalse(location["indoors"])
+        for hour, minute, expected in ((0, 0, "12:00 AM"), (12, 0, "12:00 PM"),
+                                       (9, 5, "9:05 AM"), (23, 59, "11:59 PM")):
+            self.mem.write(0xB70152, bytes((minute, hour, 14, 7)))
+            self.assertEqual(self.game.location(self.state)["time"], expected)
 
     def test_effective_rain_wind_and_wet_roads_are_reported(self):
         self.mem.write(0xC81324, struct.pack("<f", 0.8))
