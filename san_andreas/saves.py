@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from runtime import atomic_json
+from runtime import atomic_json, read_json
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class NativeSaveRequest:
     def start(self, slot):
         if self.busy:
             raise RuntimeError("A native save is already in progress")
-        manifest = json.loads((self.folder / "manifest.json").read_text())
+        manifest = read_json(self.folder / "manifest.json")
         if manifest.get("format") != 1:
             raise ValueError("Invalid native save bridge manifest")
         for name in ("save_request.exe", "save_bridge.dll"):
@@ -124,7 +124,7 @@ class Autosave:
         return mission < 200000 and not (mission and self.mem.u32(0xA49960 + mission) == 1)
 
     def target(self):
-        record = json.loads((self.state_dir / "launch.json").read_text())
+        record = read_json(self.state_dir / "launch.json")
         slot = record.get("slot")
         if type(slot) is not int or slot not in range(8):
             raise ValueError("Invalid walker save slot")

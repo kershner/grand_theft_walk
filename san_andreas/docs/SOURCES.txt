@@ -26,6 +26,13 @@ CPools.cpp / CPool.h: entity-pool headers and allocation/generation flags.
 CBuilding.h / CDummy.h / CCutsceneObject.h: actual pool-entry sizes.
 CIplStore.cpp / IplDef.h: IPL pool and its names/record layout.
 CTimer.cpp: pause and game-time fields.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Zone.h
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/TheZones.h
+Navigation zones: count=0xBA3794, array=0xBA3798, stride=0x20; text key=+8,
+six signed bounding coordinates=+0x10. Names come from american.gxt MAIN text.
+CClock.cpp: minute/hour/day/month=0xB70152..0xB70155.
+CWeather.cpp: effective rain/fog/wind/wet roads and interpolated old/new weather.
+Pedestrian nodes supply nearby path/crossing context; they contain no street names.
 CPad.h and the live GetPad machine code at 0x53FB70: disabled-controls field and pad base.
 
 https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Stats.h

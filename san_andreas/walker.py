@@ -37,6 +37,7 @@ from runtime import (
     configure_logging,
     control_request,
     read_controls,
+    read_json,
     request_expired,
 )
 from saves import Autosave
@@ -104,7 +105,7 @@ class Walking:
         if not usable:
             return False
         self.set_mode(mode)
-        if mode == "sidewalks":
+        if mode == "sidewalk":
             if self.navigator is None or direction not in ("left", "right", "forward"):
                 return False
             self.navigator.turn = direction
@@ -172,7 +173,7 @@ class Walking:
             self.origin, self.progress_at = position, now
         status = "walking freely"
         desired_turn = self.manual_turn * 2.0
-        if mode == "sidewalks":
+        if mode == "sidewalk":
             if self.navigator is None:
                 self.stop()
                 return "sidewalk paths unavailable; switch to free roam: " + str(
@@ -227,7 +228,7 @@ class Walking:
                 return f"stepping {self.manual_direction}"
             self.keys.release()
             return "turning" if self.manual_turn else "stopped"
-        if mode == "sidewalks" and self.aligning:
+        if mode == "sidewalk" and self.aligning:
             self.keys.set({"walk"})
             self.origin, self.progress_at, self.approach_at = position, now, now
             return "aligning with pedestrian path"
@@ -280,7 +281,7 @@ class Controller:
         self.report = {}
         logger.info(
             "Controller ready. Return to the game.\n"
-            "F11 first-person | F5 sidewalks/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
+            "F11 first-person | F5 sidewalk/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
             "Protection, peaceful mode, map and interior access enabled. Autosave every 60 seconds."
         )
         logger.info(
@@ -326,7 +327,7 @@ class Controller:
                     self.settings["first_person"] = not self.settings["first_person"]
                 elif key == "f5":
                     self.settings["mode"] = (
-                        "free" if self.settings["mode"] == "sidewalks" else "sidewalks"
+                        "free" if self.settings["mode"] == "sidewalk" else "sidewalk"
                     )
                 elif key == "f6":
                     self.settings["walking"] = not self.settings["walking"]
@@ -381,6 +382,19 @@ class Controller:
     def write_report(self, status):
         movement = self.movement
         self.report = self.game.snapshot()
+        if self.report.get("ready"):
+            self.report["location"] = self.game.location(self.report)
+            if movement.navigator and self.report["interior"] == 0:
+                position = self.report["position"]
+                nearby = movement.navigator.graph.nearest(
+                    (position["x"], position["y"], position["z"]), radius=8
+                )
+                if nearby:
+                    self.report["location"]["road"] = (
+                        "near a pedestrian crossing"
+                        if any(crossing for _, crossing in nearby.links)
+                        else "near a pedestrian path"
+                    )
         self.report.update(
             controller="running",
             walking=status,
@@ -536,12 +550,12 @@ def main():
         path = args.state_dir / "control.json"
         if not path.exists():
             raise RuntimeError("Start the controller before sending it commands.")
-        settings = json.loads(path.read_text())
+        settings = read_json(path)
         if args.command == "stop":
             settings["quit"] = True
         elif args.command == "mode":
             if args.value not in MODES:
-                parser.error("Specify sidewalks or free.")
+                parser.error("Specify sidewalk or free.")
             settings["mode"] = args.value
         elif args.command == "camera":
             if args.value not in ("first", "third"):

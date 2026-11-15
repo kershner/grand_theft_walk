@@ -4,6 +4,7 @@ import hashlib
 import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -19,15 +20,88 @@ from game import (
     ROTATE_PLAYER,
     WALK_ACTION,
     WALK_KEY,
+    ZONE_COUNT,
+    ZONES,
     FirstPersonCamera,
     Game,
     RuntimeChanges,
     apply_peaceful_mode,
     bind_walk_key,
+    read_game_text,
     unlock_interiors,
 )
 
 from .helpers import MemoryFixture
+
+
+class LocationTests(unittest.TestCase):
+    def setUp(self):
+        self.mem = MemoryFixture()
+        self.game = Game(self.mem)
+        self.game.place_names = {}
+        zones = []
+        for key, name, bounds in (
+            (b"SAN_AND", "San Andreas", (-3000, -3000, -500, 3000, 3000, 500)),
+            (b"LA", "Los Santos", (0, -3000, -500, 3000, 0, 500)),
+            (b"CHC", "Las Colinas", (1900, -1100, 0, 2200, -900, 200)),
+        ):
+            self.game.place_names[zlib.crc32(key) ^ 0xFFFFFFFF] = name
+            zones.append(struct.pack("<8s8s6hhBB", key, key, *bounds, 0, 0, 1))
+        self.mem.write(ZONE_COUNT, struct.pack("<h", len(zones)))
+        self.mem.write(ZONES, b"".join(zones))
+        self.mem.write(0xB70152, bytes((32, 16, 14, 7)))
+        self.state = {"position": {"x": 2017, "y": -978, "z": 37}, "heading": 0.0, "interior": 0}
+
+    def test_neighborhood_city_clock_and_compass_come_from_game_state(self):
+        location = self.game.location(self.state)
+        self.assertEqual(location["places"], ["Las Colinas", "Los Santos"])
+        self.assertEqual(location["time"], "16:32")
+        self.assertEqual(location["date"], "Jul 14")
+        self.assertEqual(location["period"], "afternoon")
+        self.assertEqual(location["heading"], "north")
+        self.assertFalse(location["indoors"])
+
+    def test_effective_rain_wind_and_wet_roads_are_reported(self):
+        self.mem.write(0xC81324, struct.pack("<f", 0.8))
+        self.mem.write(0xC812F0, struct.pack("<f", 0.8))
+        self.mem.write(0xC81308, struct.pack("<f", 1.0))
+        self.assertEqual(self.game.location(self.state)["weather"], "heavy rain, strong wind")
+        self.mem.write(0xC81324, struct.pack("<f", 0.0))
+        self.assertEqual(
+            self.game.location(self.state)["weather"], "clear skies, strong wind, wet roads"
+        )
+
+    def test_fog_sandstorms_and_night_are_distinguished(self):
+        self.mem.write(0xC81300, struct.pack("<f", 0.9))
+        self.assertEqual(self.game.location(self.state)["weather"], "dense fog")
+        self.mem.write(0xC812F4, struct.pack("<f", 0.5))
+        self.mem.write(0xB70153, bytes((23,)))
+        location = self.game.location(self.state)
+        self.assertEqual(location["weather"], "sandstorm")
+        self.assertEqual(location["period"], "night")
+
+    def test_interiors_and_missing_zone_data_do_not_invent_places(self):
+        self.mem.write(ZONE_COUNT, struct.pack("<h", 0))
+        self.state["interior"] = 5
+        location = self.game.location(self.state)
+        self.assertEqual(location["places"], ["San Andreas"])
+        self.assertTrue(location["indoors"])
+
+    def test_game_text_tables_decode_real_labels_and_reject_truncation(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "american.gxt"
+        key = zlib.crc32(b"CHC") ^ 0xFFFFFFFF
+        keys = struct.pack("<II", 0, key)
+        text = b"~b~Las Colinas~s~\0"
+        data = struct.pack("<HH", 4, 8)
+        for tag, chunk in ((b"TABL", b"unused"), (b"TKEY", keys), (b"TDAT", text)):
+            data += struct.pack("<4sI", tag, len(chunk)) + chunk
+        path.write_bytes(data)
+        self.assertEqual(read_game_text(path)[key], "Las Colinas")
+        path.write_bytes(data[:-1])
+        with self.assertRaisesRegex(ValueError, "Truncated"):
+            read_game_text(path)
 
 
 class WalkBindingTests(unittest.TestCase):

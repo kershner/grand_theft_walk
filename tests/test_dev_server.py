@@ -15,7 +15,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.root = Path(self.folder.name)
         self.settings = {
             "walking": False,
-            "mode": "sidewalks",
+            "mode": "sidewalk",
             "first_person": False,
             "protection": True,
             "autosave": True,
@@ -63,7 +63,11 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertTrue(self.control()["protection"])
         self.assertEqual(
             self.client.get("/chat").json["messages"],
-            ["Autowalk toggled", "Autowalk toggled"],
+            [
+                "Autowalk toggled",
+                "Sidewalk mode: direction queued for the next junction. Use !mode free for manual movement.",
+                "Autowalk toggled",
+            ],
         )
 
     def test_camera_and_mode_settings_validate_arguments(self):
@@ -100,13 +104,38 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get("/chat").json["messages"], ["Navigation mode: free."])
 
     def test_back_requires_free_mode(self):
-        with self.assertLogs("gtw_chat_bot", level="WARNING") as logs:
-            self.command("b 2")
+        self.command("b 2")
         self.assertEqual(self.control(), self.settings)
-        self.assertEqual(self.client.get("/chat").json["messages"], [])
-        self.assertIn("mode free", logs.output[0])
+        self.assertEqual(
+            self.client.get("/chat").json["messages"],
+            ["Back is unavailable in sidewalk mode. Use !mode free for manual movement."],
+        )
+
+    def test_stopped_sidewalk_directions_explain_how_to_move(self):
+        for command, direction in (("l 10", "left"), ("r 10", "right"), ("f 2", "forward")):
+            self.command(command)
+            self.assertFalse(self.control()["walking"])
+            self.assertEqual(self.control()["steering"]["direction"], direction)
+        messages = self.client.get("/chat").json["messages"]
+        self.assertEqual(
+            messages,
+            [
+                "Sidewalk mode: direction queued for the next junction. "
+                "Use !walk to continue or !mode free for manual movement."
+            ]
+            * 3,
+        )
+
+    def test_mode_command_uses_singular_name(self):
+        self.command("mode free")
+        self.command("mode sidewalk")
+        self.assertEqual(self.control()["mode"], "sidewalk")
+        self.assertEqual(
+            self.client.get("/chat").json["messages"][-1], "Navigation mode: sidewalk."
+        )
 
     def test_jump_is_silent_and_does_not_change_walking_or_steering(self):
+        self.write("control.json", dict(self.settings, mode="free"))
         self.command("l 3")
         steering = self.control()["steering"]
         for command, walking in (("jump", False), ("j", True)):
@@ -160,6 +189,26 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get("/chat?after=invalid").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=-1").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=2").json["messages"], [])
+
+    def test_location_and_loc_report_places_and_live_conditions(self):
+        self.state["location"] = {
+            "places": ["Las Colinas", "Los Santos"],
+            "road": "near a pedestrian crossing",
+            "date": "Jul 14",
+            "time": "16:32",
+            "period": "afternoon",
+            "weather": "rain, strong wind",
+            "heading": "northwest",
+            "indoors": False,
+        }
+        self.write("state.json", self.state)
+        self.command("location")
+        self.command("loc")
+        expected = (
+            "Las Colinas, Los Santos • near a pedestrian crossing • "
+            "Jul 14 16:32 (afternoon) • rain, strong wind • heading northwest"
+        )
+        self.assertEqual(self.client.get("/chat").json["messages"], [expected, expected])
 
     def test_console_loads_and_handles_empty_or_unknown_commands(self):
         response = self.client.get("/")

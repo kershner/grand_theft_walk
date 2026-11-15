@@ -12,7 +12,7 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "runtime"
-MODES = ("sidewalks", "free")
+MODES = ("sidewalk", "free")
 DIRECTIONS = {"left", "right", "forward", "back"}
 MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump"}
 DEFAULTS = {
@@ -20,21 +20,36 @@ DEFAULTS = {
     "protection": True,
     "unlock_map": True,
     "quit": False,
-    "mode": "sidewalks",
+    "mode": "sidewalk",
     "peaceful": True,
     "autosave": True,
     "first_person": False,
 }
 
 
+def _retry_file_access(operation, *args, **kwargs):
+    # Windows can briefly deny access while another process replaces the file.
+    for attempt in range(6):
+        try:
+            return operation(*args, **kwargs)
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.005 * 2**attempt)
+
+
+def read_json(path):
+    return json.loads(_retry_file_access(path.read_text, encoding="utf-8"))
+
+
 def atomic_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        _retry_file_access(temporary.write_text, json.dumps(data, indent=2), encoding="utf-8")
+        _retry_file_access(temporary.replace, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        _retry_file_access(temporary.unlink, missing_ok=True)
 
 
 def control_request(direction=None, amount=None):
@@ -53,17 +68,22 @@ def request_expired(request):
 
 def read_controls(path, settings):
     try:
-        requested = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+        requested = read_json(path)
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
         return
     for key, default in DEFAULTS.items():
         if isinstance(default, bool) and isinstance(requested.get(key), bool):
             settings[key] = requested[key]
-    if requested.get("mode") in MODES:
-        settings["mode"] = requested["mode"]
+    mode = requested.get("mode")
+    if mode in MODES:
+        settings["mode"] = mode
     for key in ("steering", "jump"):
         if isinstance(requested.get(key), dict):
             settings[key] = requested[key]
+
+
+class NavigationModeError(RuntimeError):
+    """A movement command needs a different navigation mode."""
 
 
 class WalkerControl:
@@ -75,7 +95,7 @@ class WalkerControl:
 
     def snapshot(self):
         try:
-            state = json.loads((self.state_dir / "state.json").read_text(encoding="utf-8"))
+            state = read_json(self.state_dir / "state.json")
         except (OSError, ValueError) as error:
             raise RuntimeError("Start the San Andreas walker controller first.") from error
         age = time.time() - state.get("updated", 0)
@@ -88,11 +108,14 @@ class WalkerControl:
             if not self.snapshot().get("ready"):
                 raise RuntimeError("Game loading; please wait.")
             path = self.state_dir / "control.json"
-            settings = json.loads(path.read_text(encoding="utf-8"))
+            settings = read_json(path)
+            settings["mode"] = settings.get("mode")
             if settings.get("quit"):
                 raise RuntimeError("The walker controller is stopping; please wait.")
             if name == "back" and settings.get("mode") != "free":
-                raise RuntimeError("Use !mode free before moving backward.")
+                raise NavigationModeError(
+                    "Back is unavailable in sidewalk mode. Use !mode free for manual movement."
+                )
             if name == "jump":
                 settings["jump"] = control_request()
             elif name in MOVEMENT_COMMANDS:

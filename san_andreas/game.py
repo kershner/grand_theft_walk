@@ -1,8 +1,13 @@
 """San Andreas 1.0 runtime profile. See docs/SOURCES.txt for the verified layouts."""
 
 import hashlib
+import logging
 import math
+import re
 import struct
+import zlib
+
+logger = logging.getLogger(__name__)
 
 PLAYER_INFO = 0xB7CD98
 CHEATS = 0x969130
@@ -33,11 +38,142 @@ CAMERA_MODULE = "ZMenuSA.asi"
 CAMERA_MODULE_SHA256 = "931718c7ef9eef64933ec60cbf7b4f8a5a59216bff6933770f4449a9def280d0"
 FIRST_PERSON = 0x582EF2
 ROTATE_PLAYER = 0x582F38
+ZONE_COUNT = 0xBA3794
+ZONES = 0xBA3798
+WEATHER_NAMES = (
+    "clear skies",
+    "clear skies",
+    "smoggy",
+    "smoggy",
+    "cloudy",
+    "clear skies",
+    "clear skies",
+    "cloudy",
+    "rainy",
+    "foggy",
+    "clear skies",
+    "clear skies",
+    "cloudy",
+    "clear skies",
+    "clear skies",
+    "cloudy",
+    "rainy",
+    "clear skies",
+    "clear skies",
+    "sandstorm",
+    "underwater",
+    "interior lighting",
+    "interior lighting",
+)
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def read_game_text(path):
+    data = path.read_bytes()
+    if len(data) < 4 or struct.unpack_from("<HH", data) != (4, 8):
+        raise ValueError("Unsupported game text format")
+    chunks, offset = {}, 4
+    while offset + 8 <= len(data):
+        tag, size = struct.unpack_from("<4sI", data, offset)
+        end = offset + 8 + size
+        if end > len(data):
+            raise ValueError("Truncated game text table")
+        if tag in (b"TKEY", b"TDAT"):
+            chunks[tag] = data[offset + 8 : end]
+        offset = end
+        if len(chunks) == 2:
+            break
+    if len(chunks) != 2:
+        raise ValueError("Missing game text tables")
+    keys, text = chunks[b"TKEY"], chunks[b"TDAT"]
+    if len(keys) % 8:
+        raise ValueError("Invalid game text keys")
+    return {
+        key: re.sub(r"~[^~]*~", "", text[start:].split(b"\0", 1)[0].decode("cp1252")).strip()
+        for start, key in struct.iter_unpack("<II", keys)
+        if start < len(text)
+    }
 
 
 class Game:
     def __init__(self, memory):
         self.mem = memory
+        self.place_names = None
+
+    def location(self, state):
+        if self.place_names is None:
+            try:
+                self.place_names = read_game_text(self.mem.exe.parent / "text" / "american.gxt")
+            except (OSError, ValueError) as error:
+                logger.warning("Place names unavailable: %s", error)
+                self.place_names = {}
+        position = state["position"]
+        x, y, z = (position[axis] for axis in ("x", "y", "z"))
+        matches = []
+        count = self.mem.unpack(ZONE_COUNT, "h")[0]
+        if 0 < count <= 380:
+            data = self.mem.read(ZONES, count * 0x20)
+            for offset in range(0, len(data), 0x20):
+                x1, y1, z1, x2, y2, z2 = struct.unpack_from("<6h", data, offset + 0x10)
+                if x1 <= x <= x2 and y1 <= y <= y2 and z1 <= z <= z2:
+                    key = data[offset + 8 : offset + 16].split(b"\0", 1)[0]
+                    name = self.place_names.get(zlib.crc32(key.upper()) ^ 0xFFFFFFFF)
+                    if name:
+                        matches.append((x2 - x1 + y2 - y1, name))
+        places = list(dict.fromkeys(name for _, name in sorted(matches)))
+        if len(places) > 1 and "San Andreas" in places:
+            places.remove("San Andreas")
+        minutes, hours, day, month = self.mem.read(0xB70152, 4)
+        old = self.mem.unpack(0xC81320, "h")[0]
+        new = self.mem.unpack(0xC8131C, "h")[0]
+        blend = self.mem.unpack(0xC8130C, "f")[0]
+        weather = new if blend >= 0.5 else old
+        conditions = (
+            WEATHER_NAMES[weather] if 0 <= weather < len(WEATHER_NAMES) else "unknown weather"
+        )
+        rain = self.mem.unpack(0xC81324, "f")[0]
+        fog = self.mem.unpack(0xC81300, "f")[0]
+        if self.mem.unpack(0xC812F4, "f")[0] > 0.1:
+            conditions = "sandstorm"
+        elif rain > 0.1:
+            conditions = "heavy rain" if rain > 0.6 else "rain"
+        elif fog > 0.1:
+            conditions = "dense fog" if fog > 0.6 else "foggy"
+        details = [conditions]
+        if self.mem.unpack(0xC812F0, "f")[0] > 0.6:
+            details.append("strong wind")
+        if self.mem.unpack(0xC81308, "f")[0] > 0.1 and rain <= 0.1:
+            details.append("wet roads")
+        period = (
+            "dawn"
+            if 5 <= hours < 7
+            else "morning"
+            if 7 <= hours < 12
+            else "afternoon"
+            if 12 <= hours < 17
+            else "evening"
+            if 17 <= hours < 20
+            else "night"
+        )
+        compass = (
+            "north",
+            "northwest",
+            "west",
+            "southwest",
+            "south",
+            "southeast",
+            "east",
+            "northeast",
+        )
+        return {
+            "places": places[:3] or ["San Andreas"],
+            "time": f"{hours:02}:{minutes:02}" if hours < 24 and minutes < 60 else None,
+            "date": f"{MONTHS[month - 1]} {day}" if 1 <= month <= 12 and 1 <= day <= 31 else None,
+            "period": period,
+            "weather": ", ".join(details),
+            "heading": compass[int((state["heading"] % math.tau) / math.tau * 8 + 0.5) % 8],
+            "indoors": state["interior"] != 0,
+        }
 
     def pool(self, global_address, stride):
         pointer = self.mem.u32(global_address)

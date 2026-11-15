@@ -3,7 +3,6 @@
 import argparse
 import ctypes
 import hashlib
-import json
 import logging
 import struct
 import subprocess
@@ -13,7 +12,7 @@ from pathlib import Path
 
 from controls import Keys, key_down
 from game import Game
-from runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging
+from runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging, read_json
 from saves import MENU, SAVE_PREFIX, valid_save
 from walker import run
 from winmemory import EXPECTED_EXE, Memory, elevate, game_pids, k32
@@ -185,7 +184,7 @@ class Startup:
         if not prefix or not Path(prefix).is_absolute():
             raise RuntimeError("The game did not provide a valid normal save folder.")
         record_path = state_dir / "launch.json"
-        record = json.loads(record_path.read_text()) if record_path.exists() else None
+        record = read_json(record_path) if record_path.exists() else None
         slot, path, create = choose_save(prefix, record)
         logger.info("Normal save slot %s: %s", slot + 1, path)
         if create:

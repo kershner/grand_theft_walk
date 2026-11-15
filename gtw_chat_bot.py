@@ -2,22 +2,27 @@
 
 import logging
 
-from san_andreas.runtime import DIRECTIONS, MOVEMENT_COMMANDS, WalkerControl
+from san_andreas.runtime import (
+    DIRECTIONS,
+    MOVEMENT_COMMANDS,
+    NavigationModeError,
+    WalkerControl,
+)
 
 HELP = {
     "walk": "!walk — Start autowalking. Alias: !w.",
     "stop": "!stop — Stop movement without exiting the controller. Alias: !s.",
-    "left": "!left [1-100] — Turn left in free mode; choose the next left on sidewalks. Alias: !l. Default: 1.",
-    "right": "!right [1-100] — Turn right in free mode; choose the next right on sidewalks. Alias: !r. Default: 1.",
+    "left": "!left [1-100] — Turn left in free mode; choose the next left in sidewalk mode. Alias: !l. Default: 1.",
+    "right": "!right [1-100] — Turn right in free mode; choose the next right in sidewalk mode. Alias: !r. Default: 1.",
     "forward": "!forward [1-100] — Move forward that many one-second steps in free mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] — Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
     "jump": "!jump — High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
-    "mode": "!mode <sidewalks|free> — Choose sidewalk navigation or free roaming.",
+    "mode": "!mode <sidewalk|free> — Choose sidewalk navigation or free roaming.",
     "camera": "!camera [first|third] — Toggle the camera or select a perspective.",
     "help": "!help [command] — Show commands or details for a command.",
     "more": "!more — Show the remaining commands.",
     "info": "!info — Show live walker status.",
-    "location": "!location — Show live San Andreas coordinates. Alias: !loc.",
+    "location": "!location — Show the current area, game time, weather, and surroundings. Alias: !loc.",
 }
 ALIASES = {
     "w": "walk",
@@ -49,16 +54,13 @@ class GTWBot:
         logger.debug("Chat command: !%s %s", name[:100], " ".join(args)[:200])
         try:
             reply = self._reply(name, args)
+        except NavigationModeError as error:
+            reply = str(error)
         except (OSError, ValueError, RuntimeError) as error:
             reply = str(error)
-            if name not in MOVEMENT_COMMANDS:
-                logger.warning("!%s: %s", name[:100], reply)
-        if name in MOVEMENT_COMMANDS:
-            if reply:
-                logger.warning("!%s: %s", name, reply)
-            elif name in {"walk", "stop"}:
-                await ctx.send("Autowalk toggled")
-            return
+            logger.warning("!%s: %s", name[:100], reply)
+            if name in MOVEMENT_COMMANDS:
+                return
         if reply:
             await ctx.send(reply)
 
@@ -83,18 +85,27 @@ class GTWBot:
                 and 1 <= int(args[0]) <= 100
             )
         elif name == "mode":
-            valid = args in (["sidewalks"], ["free"])
+            valid = args in (["sidewalk"], ["free"])
         elif name == "camera":
             valid = args in ([], ["first"], ["third"])
         else:
             valid = not args
         if not valid:
+            if name in MOVEMENT_COMMANDS:
+                raise ValueError(HELP[name])
             return HELP[name]
 
         if name in {"info", "location"}:
             return self._status_reply(name)
 
         settings = self.control.request(name, args)
+        if name in {"walk", "stop"}:
+            return "Autowalk toggled"
+        if name in DIRECTIONS and settings["mode"] == "sidewalk":
+            hint = "Use !mode free for manual movement."
+            if not settings["walking"]:
+                hint = "Use !walk to continue or !mode free for manual movement."
+            return f"Sidewalk mode: direction queued for the next junction. {hint}"
         if name == "mode":
             return f"Navigation mode: {settings['mode']}."
         if name == "camera":
@@ -112,6 +123,18 @@ class GTWBot:
             )
         if not state.get("ready"):
             return "Game loading; please wait."
+        location = state.get("location")
+        if location:
+            parts = [", ".join(location["places"])]
+            if location.get("indoors"):
+                parts.append("indoors")
+            elif location.get("road"):
+                parts.append(location["road"])
+            clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
+            if clock:
+                parts.append(f"{clock} ({location['period']})")
+            parts.extend((location["weather"], f"heading {location['heading']}"))
+            return " • ".join(parts)
         position = state["position"]
         return (
             f"San Andreas • X: {position['x']:.1f} • Y: {position['y']:.1f} • "
