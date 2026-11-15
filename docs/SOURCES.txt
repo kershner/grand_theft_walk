@@ -1,0 +1,80 @@
+Runtime profile: the verified San Andreas 1.0 executable used by this setup.
+SHA256: a559aa772fd136379155efa71f00c47aad34bbfeae6196b0fe1047d0645cbd26
+
+Offsets and layouts checked against the community source projects below.
+The controller is Python using the Windows APIs; it does not call these native
+functions on a remote thread or overwrite executable instructions.
+
+https://github.com/DK22Pac/plugin-sdk/tree/master/plugin_sa/game_sa
+CWorld.cpp / CPlayerInfo.h: player table, record size, player-info fields.
+CPed.h / CPlayerData.h: player identity, health, heading, vehicle flag, damage permission.
+CPhysical.h: damage-proof bit fields.
+CEntity.h: visibility/collision bits and IPL index.
+CPlaceable.h: matrix/position lookup.
+CCheat.cpp / CCheat.h: active-cheat array and health/oxygen/wanted/hunger/ammo flags.
+CWanted.h / CWanted.cpp: wanted record and wanted/chaos offsets.
+CPools.cpp / CPool.h: entity-pool headers and allocation/generation flags.
+CBuilding.h / CDummy.h / CCutsceneObject.h: actual pool-entry sizes.
+CIplStore.cpp / IplDef.h: IPL pool and its names/record layout.
+CTimer.cpp: pause and game-time fields.
+CPad.h and the live GetPad machine code at 0x53FB70: disabled-controls field and pad base.
+
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Stats.h
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Stats.cpp
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Enums/eStats.h
+STAT_CITY_UNLOCKED=181; integer stat indices start at 120.
+
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/TheZones.h
+ZonesVisited: 100 boolean tiles at 0xBA3730; count at 0xBA372C.
+
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/IplStore.cpp
+Explains why setting a city stat alone is insufficient to remove bridge barriers.
+The Python prototype preserves barrier entities and only clears their collision
+and visibility bits, using the verified barriers1/barriers2 IPL membership.
+
+Hands-free launch/save bootstrap:
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/MenuManager.cpp
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Frontend/MenuManager_Input.cpp
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Frontend/MenuManager_Process.cpp
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Frontend/MenuManager_Internal.h
+https://github.com/DK22Pac/plugin-sdk/blob/master/plugin_sa/game_sa/CMenuManager.h
+FrontEndMenuManager=0xBA6748; original PC field offsets verified against SDK.
+Requests are processed by the game's menu loop; no remote native calls/hooks.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/C_PcSave.h
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/GenericGameStorage.cpp
+Normal save prefix=0xC16F18; original PC saves have a trailing byte-sum checksum.
+GenerateGameFilename at 0x6190A0 and its format/extension strings were also checked
+against the verified installed executable.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Scripts/TheScripts.h
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Scripts/TheScripts.cpp
+OnAMissionFlag=0xA476AC is an offset into ScriptSpace=0xA49960, not a boolean.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/CutsceneMgr.h
+Running-cutscene flag=0xB5F851; skip input is only sent during running cutscenes.
+
+First-save INTRO completion (verified against installed script bytecode):
+CRunningScript layout:
+https://github.com/DK22Pac/plugin-sdk/blob/master/plugin_sa/game_sa/CRunningScript.h
+Opcode definitions used for decoding:
+https://github.com/sannybuilder/library/blob/master/sa/sa.json
+Installed main.scm SHA256:
+c06162725bbc5429f7a871a29633ae5faa5b1f6a23ddbaa42c8d2fed70021b3e
+Loaded INTRO is at ScriptSpace+200000; first 10682 bytes SHA256:
+5715d5cd355df00beae42775b1a9531f97d23c5687ab48df95779422bfc1ae6c
+Only during initial save creation, with the player controllable outdoors and
+INTRO waiting in its final objective loop (IP offsets 9700..9993), redirect
+its current IP to offset 38: existing GOSUB -9996, then TERMINATE_THIS_SCRIPT.
+Cleanup restores world scripts/blips, releases the bike, resets the on-mission
+flag, and executes MISSION_HAS_FINISHED. No script bytecode is overwritten.
+The generated normal save was successfully reloaded and walking observed.
+
+Existing building entrance access:
+https://github.com/DK22Pac/plugin-sdk/blob/master/plugin_sa/game_sa/CEntryExit.h
+https://github.com/DK22Pac/plugin-sdk/blob/master/plugin_sa/game_sa/CEntryExitManager.cpp
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/EntryExit.cpp
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/EntryExitManager.cpp
+Entry/exit pool pointer=0x96A7D8; record size=0x3C; flags=+0x30;
+opening/closing hours=+0x34/+0x35. Set ENABLE_ACCESS (0x4000), clear
+DISABLE_ON_FOOT (0x80) and DISABLE_EXIT (0x800), set hours 0..24.
+Skip unallocated/deleted and zero-size placeholder portals. Preserve all other
+flags, geometry, destination links, global mission/cutscene restrictions and
+transition state. Restore owned fields only if pool/allocation/identity match.

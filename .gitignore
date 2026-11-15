@@ -1,0 +1,47 @@
+# Local game setup and generated state
+/installer/
+/runtime/
+
+# Python environments, caches, and test output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+/build/
+/dist/
+*.egg-info/
+
+# Local credentials; keep example configurations
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Native build intermediates
+/native/*.def
+/native/*.o
+/native/*.obj
+/native/*.pdb
+/native/*.ilk
+/native/*.exp
+/native/*.lib
+!/native/save_bridge.dll
+!/native/save_request.exe
+
+# Logs, temporary files, and editor/OS clutter
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
