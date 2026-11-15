@@ -16,6 +16,9 @@ HELP = {
     "stop": "!stop — Stop movement without exiting the controller. Alias: !s.",
     "left": "!left [1-100] — Turn left in free mode; choose the next left in sidewalk mode. Alias: !l. Default: 1.",
     "right": "!right [1-100] — Turn right in free mode; choose the next right in sidewalk mode. Alias: !r. Default: 1.",
+    "up": "!up [1-100] — Look up in either navigation mode. Alias: !u. Default: 1.",
+    "down": "!down [1-100] — Look down in either navigation mode. Alias: !d. Default: 1.",
+    "center": "!center — Level the view without changing direction or navigation mode.",
     "forward": "!forward [1-100] — Move forward that many one-second steps in free mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] — Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
     "jump": "!jump — High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
@@ -26,7 +29,6 @@ HELP = {
     "help": "!help [command] — Show commands or details for a command.",
     "more": "!more — Show the remaining commands.",
     "info": "!info — Show the current area, game time, weather, navigation mode, camera, and mission.",
-    "mission": "!mission — Show the active mission or the three destinations up for voting.",
     "vote": "!vote <1|2|3> — Vote for the next mission. Your latest vote counts.",
 }
 ALIASES = {
@@ -34,6 +36,8 @@ ALIASES = {
     "s": "stop",
     "l": "left",
     "r": "right",
+    "u": "up",
+    "d": "down",
     "f": "forward",
     "b": "back",
     "j": "jump",
@@ -87,7 +91,7 @@ class GTWBot:
                 )
             return "Commands: !walk • !stop • !left • !right • !forward • !back • !jump • Type !more for more commands."
         if name == "more":
-            return "More: !mode • !camera • !yes • !no • !help • !info • !mission • !vote • Type !help <cmd> for details."
+            return "More: !up • !down • !center • !mode • !camera • !help • !info • Type !help <cmd> for details."
         if name not in HELP:
             return
         if name in {"vote", "yes", "no"}:
@@ -110,8 +114,8 @@ class GTWBot:
                 raise ValueError(HELP[name])
             return HELP[name]
 
-        if name in {"info", "mission"}:
-            return self._status_reply(name)
+        if name == "info":
+            return self._info_reply()
 
         if name in {"camera", "mode"}:
             state = self.control.snapshot()
@@ -131,7 +135,7 @@ class GTWBot:
         settings = self.control.request(name, args)
         if name in {"walk", "stop"}:
             return "Autowalk toggled"
-        if name in DIRECTIONS and settings["mode"] == "sidewalk":
+        if name in {"left", "right", "forward"} and settings["mode"] == "sidewalk":
             hint = "Use !mode free for manual movement."
             if not settings["walking"]:
                 hint = "Use !walk to continue or !mode free for manual movement."
@@ -142,29 +146,8 @@ class GTWBot:
             perspective = "first" if settings["first_person"] else "third"
             return f"Camera: {perspective} person."
 
-    def _status_reply(self, name):
+    def _info_reply(self):
         state = self.control.snapshot()
-        if name == "mission":
-            missions = state.get("missions", {})
-            active = missions.get("active")
-            if active:
-                x, y, z = active["position"]
-                return (
-                    f"Mission: {active['name']} • Meeting point: {x:.1f}, {y:.1f}, {z:.1f} • "
-                    f"{mission_distance(state, active)} • "
-                    f"Standing: {missions['held_seconds']:g}/{missions['hold_seconds']:g} seconds."
-                )
-            poll = missions.get("poll")
-            if poll:
-                return (
-                    "Vote for the next mission! "
-                    + " • ".join(
-                        f"{i}: {d['name']} ({mission_distance(state, d)}, {poll['counts'][i - 1]} votes)"
-                        for i, d in enumerate(poll["options"], 1)
-                    )
-                    + " • !vote 1/2/3"
-                )
-            return missions.get("error") or "Waiting for mission destinations."
         if not state.get("ready"):
             return "Game loading; please wait."
         location = state.get("location") or {}

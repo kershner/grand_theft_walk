@@ -7,6 +7,7 @@ from ctypes import wintypes as w
 
 import keyboard
 from game import bind_jump_key
+from navigation import SmoothTurn
 from runtime import request_expired
 
 logger = logging.getLogger(__name__)
@@ -96,9 +97,20 @@ class Keys:
         return True
 
     def turn(self, amount):
-        if not amount or not self.focused():
+        self.move_mouse(amount, 0)
+
+    def look(self, amount):
+        self.move_mouse(0, amount)
+
+    def move_mouse(self, horizontal, vertical):
+        if not (horizontal or vertical) or not self.focused():
             return
-        event = Input(type=0, data=InputData(mouse=MouseInput(int(amount), 0, 0, 1, 0, 0)))
+        event = Input(
+            type=0,
+            data=InputData(
+                mouse=MouseInput(int(horizontal), int(vertical), 0, 1, 0, 0)
+            ),
+        )
         if _user32.SendInput(1, c.byref(event), c.sizeof(Input)) != 1:
             raise RuntimeError("Windows rejected mouse input")
 
@@ -109,10 +121,63 @@ class Keys:
             try:
                 keyboard.release(self.bindings[action])
                 self.held.remove(action)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - Release every key before reraising the first failure.
                 failure = failure or error
         if failure is not None:
             raise failure
+
+
+class ViewControl:
+    def __init__(self, focused=None):
+        self.keys = Keys(focused=focused)
+        self.turn = SmoothTurn()
+        self.last_request = None
+        self.cancel()
+
+    def cancel(self):
+        self.pending = 0
+        self.centering = False
+        self.center_deadline = 0.0
+        self.turn.reset()
+
+    def tick(self, request, state, now, saving=False):
+        if not can_control(state) or saving:
+            self.cancel()
+            return
+        if isinstance(request, dict) and request.get("id") != self.last_request:
+            self.last_request = request.get("id")
+            if not request_expired(request):
+                direction = request.get("direction")
+                amount = request.get("amount", 1)
+                if direction == "center":
+                    self.cancel()
+                    self.centering = True
+                    self.center_deadline = now + 8
+                elif (
+                    direction in ("up", "down")
+                    and type(amount) is int
+                    and 1 <= amount <= 100
+                ):
+                    self.centering = False
+                    self.pending += (-1 if direction == "up" else 1) * amount * 10
+        if self.centering:
+            pitch = state.get("camera_pitch")
+            if pitch is None or abs(pitch) <= 0.02 or now >= self.center_deadline:
+                self.cancel()
+                return
+            desired = pitch * 140
+        else:
+            desired = self.pending * 2
+        pixels = self.turn.step(desired, now)
+        if not self.centering:
+            if pixels * self.pending > 0:
+                pixels = max(-abs(self.pending), min(abs(self.pending), pixels))
+                self.pending -= pixels
+            elif not self.pending:
+                self.turn.reset()
+                pixels = 0
+        if pixels:
+            self.keys.look(pixels)
 
 
 class HighJump:
@@ -137,7 +202,11 @@ class HighJump:
             else:
                 if now >= self.release_at:
                     self.keys.release()
-                if state["in_air"] and not state["standing"] and state["vertical_speed"] > 0:
+                if (
+                    state["in_air"]
+                    and not state["standing"]
+                    and state["vertical_speed"] > 0
+                ):
                     if self.game.boost_jump(state):
                         logger.info("High jump boosted")
                     self.cancel()

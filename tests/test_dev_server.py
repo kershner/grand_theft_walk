@@ -131,6 +131,37 @@ class ChatIntegrationTests(unittest.TestCase):
             ],
         )
 
+    def test_view_commands_work_in_both_modes_without_replacing_steering(self):
+        for mode in ("free", "sidewalk"):
+            for walking in (False, True):
+                settings = dict(
+                    self.settings,
+                    mode=mode,
+                    walking=walking,
+                    steering={"id": "queued-turn", "direction": "left"},
+                )
+                self.write("control.json", settings)
+                for command, direction, amount in (
+                    ("up", "up", 1),
+                    ("u 100", "up", 100),
+                    ("down 10", "down", 10),
+                    ("d", "down", 1),
+                    ("center", "center", 1),
+                ):
+                    self.command(command)
+                    updated = self.control()
+                    self.assertEqual(updated["steering"], settings["steering"])
+                    self.assertEqual(updated["view"]["direction"], direction)
+                    self.assertEqual(updated["view"]["amount"], amount)
+                    self.assertEqual(updated["walking"], walking)
+                    self.assertEqual(updated["mode"], mode)
+        self.assertEqual(self.client.get("/chat").json["messages"], [])
+        expected = self.control()
+        with self.assertLogs("gtw_chat_bot", level="WARNING"):
+            for command in ("up 0", "down 101", "center 5", "up nope"):
+                self.command(command)
+                self.assertEqual(self.control(), expected)
+
     def test_stopped_sidewalk_directions_explain_how_to_move(self):
         for command, direction in (
             ("l 10", "left"),
@@ -200,7 +231,6 @@ class ChatIntegrationTests(unittest.TestCase):
         self.command("camera")
         self.command("vote 2")
         self.command("vote 3")
-        self.command("mission")
         ballots = [
             json.loads(p.read_text())
             for p in (self.root / "mission_votes").glob("*.json")
@@ -214,9 +244,7 @@ class ChatIntegrationTests(unittest.TestCase):
             self.client.get("/chat").json["messages"].count("Choose our next mission!"),
             1,
         )
-        self.assertTrue(
-            any("2: Market (1,640 ft away, 0 votes)" in m for m in messages)
-        )
+        self.assertIn("Vote submitted: 3. Your latest vote counts.", messages)
 
     def test_info_includes_current_mission(self):
         self.state["missions"] = {"active": {"name": "Market"}}
@@ -227,7 +255,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertIn("mode: sidewalk", message)
         self.assertIn("camera: third person •", message)
 
-    def test_mission_distance_updates_in_mission_and_info_replies(self):
+    def test_mission_distance_updates_in_info_replies(self):
         self.state["missions"] = {
             "active": {"name": "Market", "position": [301, 402, 10]},
             "held_seconds": 0,
@@ -243,15 +271,14 @@ class ChatIntegrationTests(unittest.TestCase):
         ):
             self.state["position"] = position
             self.write("state.json", self.state)
-            for command in ("mission", "info"):
-                self.command(command)
-                message = self.client.get("/chat").json["messages"][-1]
-                self.assertIn(f" • {expected} away", message)
+            self.command("info")
+            message = self.client.get("/chat").json["messages"][-1]
+            self.assertIn(f" • {expected} away", message)
         self.state["ready"] = False
         self.write("state.json", self.state)
-        self.command("mission")
+        self.command("info")
         self.assertIn(
-            "Distance unavailable", self.client.get("/chat").json["messages"][-1]
+            "Game loading; please wait.", self.client.get("/chat").json["messages"][-1]
         )
 
     def test_jump_is_silent_and_does_not_change_walking_or_steering(self):
@@ -357,7 +384,18 @@ class ChatIntegrationTests(unittest.TestCase):
             response.close()
         self.assertEqual(self.client.get("/cmd/%20").status_code, 400)
         self.command("unknown")
+        self.command("mission")
         self.assertEqual(self.client.get("/chat").json["messages"], [])
+        self.command("more")
+        self.assertEqual(
+            self.client.get("/chat").json["messages"][-1],
+            "More: !up • !down • !center • !mode • !camera • !help • !info • Type !help <cmd> for details.",
+        )
+        self.command("help mission")
+        self.assertEqual(
+            self.client.get("/chat").json["messages"][-1],
+            "Unknown command: !mission. Type !help for commands.",
+        )
 
 
 if __name__ == "__main__":

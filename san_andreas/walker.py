@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from controls import HighJump, Hotkeys, Keys, can_control
+from controls import HighJump, Hotkeys, Keys, ViewControl, can_control
 from game import (
     FirstPersonCamera,
     Game,
@@ -36,6 +36,7 @@ from runtime import (
     DEFAULTS,
     DIRECTIONS,
     MODES,
+    VIEW_COMMANDS,
     atomic_json,
     configure_logging,
     control_request,
@@ -290,6 +291,7 @@ class Controller:
         self.autosave = Autosave(mem, self.state_dir)
         self.camera = FirstPersonCamera(mem)
         self.jump = HighJump(self.game, self.bindings)
+        self.view = ViewControl(focused=mem.foreground)
         self.hotkeys = Hotkeys(("f5", "f6", "f7", "f8", "f9", "f11", "f12"))
         self.settings = dict(DEFAULTS, walking=args.walk)
         previous = {}
@@ -321,6 +323,8 @@ class Controller:
         self.settings["walking"] = False
         self.movement.stop()
         self.jump.cancel()
+        self.view.cancel()
+        self.view.last_request = self.settings.get("view", {}).get("id")
         self.jump.last_request = self.settings.get("jump", {}).get("id")
         self.last_steering = self.settings.get("steering", {}).get("id")
 
@@ -469,6 +473,7 @@ class Controller:
             return False
         saving = self.autosave.tick(state, now, self.settings["autosave"])
         self.jump.tick(self.settings.get("jump"), state, now, saving=saving)
+        self.view.tick(self.settings.get("view"), state, now, saving=saving)
         holding = self.missions.tick(state, now, can_control(state), saving)
         if self.movement.navigator:
             active = self.missions.data["active"]
@@ -504,6 +509,7 @@ class Controller:
         return True
 
     def close(self):
+        self.view.cancel()
         try:
             try:
                 self.jump.cancel()
@@ -633,9 +639,12 @@ def main():
                 parser.error("Specify first or third.")
             settings["first_person"] = args.value == "first"
         elif args.command == "steer":
-            if args.value not in ("left", "right", "forward", "back", "stop"):
-                parser.error("Specify left, right, forward, back or stop.")
-            settings["steering"] = control_request(args.value, args.amount)
+            if args.value not in DIRECTIONS | {"center", "stop"}:
+                parser.error(
+                    "Specify left, right, forward, back, up, down, center or stop."
+                )
+            field = "view" if args.value in VIEW_COMMANDS else "steering"
+            settings[field] = control_request(args.value, args.amount)
             if args.value == "stop":
                 settings["walking"] = False
         else:

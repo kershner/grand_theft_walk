@@ -14,8 +14,9 @@ LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "runtime"
 MODES = ("sidewalk", "free")
-DIRECTIONS = {"left", "right", "forward", "back"}
-MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump"}
+DIRECTIONS = {"left", "right", "forward", "back", "up", "down"}
+VIEW_COMMANDS = {"up", "down", "center"}
+MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump", "center"}
 DEFAULTS = {
     "walking": False,
     "protection": True,
@@ -93,7 +94,7 @@ def read_controls(path, settings):
     mode = requested.get("mode")
     if mode in MODES:
         settings["mode"] = mode
-    for key in ("steering", "jump"):
+    for key in ("steering", "jump", "view"):
         if isinstance(requested.get(key), dict):
             settings[key] = requested[key]
 
@@ -135,7 +136,10 @@ class WalkerControl:
                 raise NavigationModeError(
                     "Back is unavailable in sidewalk mode. Use !mode free for manual movement."
                 )
-            if name == "jump":
+            if name in VIEW_COMMANDS:
+                amount = int(args[0]) if args else 1
+                settings["view"] = control_request(name, amount)
+            elif name == "jump":
                 settings["jump"] = control_request()
             elif name in MOVEMENT_COMMANDS:
                 settings["steering"] = control_request(name)
@@ -160,7 +164,7 @@ class WalkerControl:
         state = self.snapshot()
         poll = state.get("missions", {}).get("poll")
         if not poll or time.time() >= poll["closes"]:
-            return "No mission vote is open. Use !mission to see the current mission."
+            return "No mission vote is open. Use !info to see the current mission."
         if type(choice) is not int or not 1 <= choice <= 3:
             raise ValueError("Vote with !vote 1, !vote 2, or !vote 3.")
         atomic_json(

@@ -409,6 +409,7 @@ class ControllerTests(unittest.TestCase):
         self.controller.settings = dict(DEFAULTS)
         self.controller.movement = Mock()
         self.controller.jump = Mock()
+        self.controller.view = Mock()
         self.controller.last_steering = None
 
     def test_steering_waits_until_accepted_and_runs_only_once(self):
@@ -431,6 +432,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.controller.settings["walking"])
         self.controller.movement.stop.assert_called_once()
         self.controller.jump.cancel.assert_called_once()
+        self.controller.view.cancel.assert_called_once()
         self.assertEqual(self.controller.jump.last_request, jump["id"])
 
     def test_cleanup_restores_game_even_if_releasing_jump_key_fails(self):

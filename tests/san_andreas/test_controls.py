@@ -1,11 +1,12 @@
 """Tests for focus-aware keyboard and mouse input."""
 
+import math
 import struct
 import time
 import unittest
 from unittest.mock import Mock, call, patch
 
-from controls import HighJump, Hotkeys, Keys
+from controls import HighJump, Hotkeys, Keys, ViewControl
 from game import (
     CONTROL_ACTIONS,
     JUMP_ACTION,
@@ -15,11 +16,21 @@ from game import (
     RuntimeChanges,
     bind_jump_key,
 )
+from runtime import control_request
 
 from .helpers import MemoryFixture
 
 
 class InputTests(unittest.TestCase):
+    def test_vertical_mouse_input_preserves_the_horizontal_axis_and_checks_focus(self):
+        with patch("controls._user32.SendInput", return_value=1) as send:
+            self.keys.look(-12)
+            event = send.call_args.args[1]._obj
+            self.assertEqual((event.data.mouse.dx, event.data.mouse.dy), (0, -12))
+            self.focused.return_value = False
+            self.keys.look(12)
+            self.assertEqual(send.call_count, 1)
+
     def setUp(self):
         self.backend = patch("controls.keyboard")
         self.keyboard = self.backend.start()
@@ -32,7 +43,9 @@ class InputTests(unittest.TestCase):
         self.keys.set({"walk", "forward"})
         self.assertEqual(self.keyboard.press.call_args_list, [call("f2"), call("w")])
         self.keys.release()
-        self.assertCountEqual(self.keyboard.release.call_args_list, [call("f2"), call("w")])
+        self.assertCountEqual(
+            self.keyboard.release.call_args_list, [call("f2"), call("w")]
+        )
         self.assertFalse(self.keys.held)
 
     def test_losing_focus_releases_owned_keys_without_pressing_new_ones(self):
@@ -50,9 +63,11 @@ class InputTests(unittest.TestCase):
         self.keyboard.press.assert_not_called()
 
     def test_tap_releases_key_even_when_waiting_raises(self):
-        with patch("controls.time.sleep", side_effect=RuntimeError("interrupted")):
-            with self.assertRaises(RuntimeError):
-                self.keys.tap("enter")
+        with (
+            patch("controls.time.sleep", side_effect=RuntimeError("interrupted")),
+            self.assertRaises(RuntimeError),
+        ):
+            self.keys.tap("enter")
         self.keyboard.press.assert_called_once_with("enter")
         self.keyboard.release.assert_called_once_with("enter")
 
@@ -80,6 +95,89 @@ class InputTests(unittest.TestCase):
         self.keyboard.release.assert_called_once_with("w")
         self.keyboard.press.assert_called_once_with("s")
         self.assertEqual(self.keys.held, {"walk", "back"})
+
+
+class ViewControlTests(unittest.TestCase):
+    def setUp(self):
+        keys_patch = patch("controls.Keys")
+        self.keys = keys_patch.start().return_value
+        self.addCleanup(keys_patch.stop)
+        self.view = ViewControl()
+        self.state = {
+            "ready": True,
+            "foreground": True,
+            "paused": False,
+            "controls_disabled": False,
+            "in_vehicle": False,
+            "health": 100,
+            "player_state": 0,
+            "camera_pitch": 0.0,
+        }
+
+    def test_numbered_looks_are_finite_and_do_not_move_the_walker(self):
+        for direction, sign in (("up", -1), ("down", 1)):
+            self.view.cancel()
+            self.keys.reset_mock()
+            request = control_request(direction, 10)
+            for step in range(600):
+                self.view.tick(request, self.state, step / 120)
+            pixels = [call.args[0] for call in self.keys.look.call_args_list]
+            self.assertEqual(sum(pixels), sign * 100)
+            self.assertTrue(all(abs(pixel) <= 2 for pixel in pixels))
+            self.assertEqual(self.view.pending, 0)
+            self.keys.turn.assert_not_called()
+            self.keys.set.assert_not_called()
+
+    def test_center_uses_live_pitch_and_replaces_pending_looks(self):
+        for pitch in (-0.7, 0.7):
+            self.view.tick(control_request("up", 100), self.state, 0)
+            self.state["camera_pitch"] = pitch
+            self.keys.look.side_effect = lambda pixels: self.state.update(
+                camera_pitch=self.state["camera_pitch"] - pixels * 0.005
+            )
+            request = control_request("center")
+            for step in range(960):
+                self.view.tick(request, self.state, step / 120)
+            self.assertLessEqual(abs(self.state["camera_pitch"]), 0.02)
+            self.assertFalse(self.view.centering)
+            self.assertEqual(self.view.pending, 0)
+
+    def test_focus_loss_and_saving_cancel_pending_looks(self):
+        for saving in (False, True):
+            self.state["foreground"] = True
+            request = control_request("up", 100)
+            self.view.tick(request, self.state, 0)
+            self.keys.reset_mock()
+            self.state["foreground"] = saving
+            self.view.tick(request, self.state, 1, saving=saving)
+            self.assertEqual(self.view.pending, 0)
+            self.keys.look.assert_not_called()
+            self.state["foreground"] = True
+            self.view.tick(request, self.state, 2)
+            self.keys.look.assert_not_called()
+
+    def test_center_stops_when_pitch_is_missing_or_does_not_respond(self):
+        for pitch in (None, 0.7):
+            self.state["camera_pitch"] = pitch
+            request = control_request("center")
+            self.view.tick(request, self.state, 0)
+            self.keys.reset_mock()
+            self.view.tick(request, self.state, 8)
+            self.assertFalse(self.view.centering)
+            self.keys.look.assert_not_called()
+
+    def test_snapshot_reports_pitch_from_camera_forward_vector(self):
+        memory = MemoryFixture()
+        memory.pid = 1
+        memory.foreground = lambda: True
+        memory.write(0xB7CD98, struct.pack("<I", 0x20000))
+        game = Game(memory)
+        for pitch in (-0.7, 0, 0.7):
+            memory.write(
+                0xB6F028 + 0x974 + 0x10,
+                struct.pack("<3f", 0, math.cos(pitch), math.sin(pitch)),
+            )
+            self.assertAlmostEqual(game.snapshot()["camera_pitch"], pitch)
 
 
 class JumpBoostTests(unittest.TestCase):

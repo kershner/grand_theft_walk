@@ -354,12 +354,18 @@ class Game:
         )
         health, max_health, armor = struct.unpack_from("<3f", block, 0x540)
         heading = struct.unpack_from("<f", block, 0x558)[0]
-        camera_x, camera_y, _ = self.mem.unpack(0xB6F028 + 0x974 + 0x10, "3f")
+        camera_x, camera_y, camera_z = self.mem.unpack(0xB6F028 + 0x974 + 0x10, "3f")
         camera_heading = (
             math.atan2(-camera_x, camera_y)
             if math.isfinite(camera_x)
             and math.isfinite(camera_y)
             and camera_x * camera_x + camera_y * camera_y > 0.01
+            else None
+        )
+        camera_pitch = (
+            math.atan2(camera_z, math.hypot(camera_x, camera_y))
+            if all(math.isfinite(value) for value in (camera_x, camera_y, camera_z))
+            and camera_x * camera_x + camera_y * camera_y + camera_z * camera_z > 0.01
             else None
         )
         if not all(
@@ -383,6 +389,7 @@ class Game:
             "position": dict(zip(("x", "y", "z"), position)),
             "heading": heading,
             "camera_heading": camera_heading,
+            "camera_pitch": camera_pitch,
             "standing": bool(block[0x46C] & 1),
             "in_air": bool(block[0x46D] & 2),
             "vertical_speed": struct.unpack_from("<f", block, 0x4C)[0],
