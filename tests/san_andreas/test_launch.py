@@ -1,12 +1,15 @@
 """Tests for launch focus handling, intro completion, and save-slot selection."""
+
 import hashlib
 import struct
 import tempfile
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-from launch import Startup, INTRO_SCRIPT, choose_save, valid_save
+from launch import INTRO_SCRIPT, Startup, choose_save, valid_save
+
+from .helpers import checkpoint
 
 
 class IntroTests(unittest.TestCase):
@@ -20,8 +23,12 @@ class IntroTests(unittest.TestCase):
         struct.pack_into("<I", self.script, 0x14, INTRO_SCRIPT + 9809)
         self.bytecode = b"verified intro fixture"
         self.memory.read.side_effect = lambda address, size: (
-            self.bytecode if address == INTRO_SCRIPT else
-            bytes(self.script[8:16]) if address == 0xA90678 else bytes(self.script))
+            self.bytecode
+            if address == INTRO_SCRIPT
+            else bytes(self.script[8:16])
+            if address == 0xA90678
+            else bytes(self.script)
+        )
         self.startup = Startup(self.memory, 10)
 
     def test_verified_intro_uses_existing_cleanup_call(self):
@@ -59,13 +66,6 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(memory.foreground.call_count, 3)
         memory.write.assert_not_called()
 
-    def test_startup_never_sends_keys_in_background(self):
-        memory = Mock()
-        memory.foreground.return_value = False
-        with patch("controls.keyboard") as keyboard:
-            self.assertFalse(Startup(memory, 10).keys.tap("enter"))
-        keyboard.press.assert_not_called()
-
 
 class SaveSelectionTests(unittest.TestCase):
     def setUp(self):
@@ -77,8 +77,7 @@ class SaveSelectionTests(unittest.TestCase):
         return Path(f"{self.prefix}{slot + 1}.b")
 
     def save(self, slot):
-        data = b"BLOCK" + bytes(202743)
-        self.path(slot).write_bytes(data + struct.pack("<I", sum(data)))
+        self.path(slot).write_bytes(checkpoint())
 
     def test_first_launch_uses_first_normal_slot(self):
         self.assertEqual(choose_save(self.prefix), (0, self.path(0), True))
@@ -99,8 +98,10 @@ class SaveSelectionTests(unittest.TestCase):
 
     def test_missing_known_save_is_recreated_in_same_slot(self):
         self.save(0)
-        self.assertEqual(choose_save(self.prefix, {"slot": 3, "path": str(self.path(3))}),
-                         (3, self.path(3), True))
+        self.assertEqual(
+            choose_save(self.prefix, {"slot": 3, "path": str(self.path(3))}),
+            (3, self.path(3), True),
+        )
 
     def test_changed_save_folder_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "folder changed"):

@@ -1,4 +1,11 @@
+"""In-memory fixture for game memory tests."""
+
 import struct
+
+
+def checkpoint(marker=0):
+    data = b"BLOCK" + bytes((marker,)) + bytes(202742)
+    return data + struct.pack("<I", sum(data))
 
 
 class MemoryFixture:

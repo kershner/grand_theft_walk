@@ -1,24 +1,43 @@
+"""Tests for pedestrian paths, steering, and walking recovery."""
+
+import json
 import math
 import struct
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
-from navigation import Node, PedestrianGraph, SidewalkNavigator, SmoothTurn, angle_delta, heading_to, read_area
-from walker import Walking
+from navigation import (
+    Node,
+    PedestrianGraph,
+    SidewalkNavigator,
+    SmoothTurn,
+    angle_delta,
+    heading_to,
+    read_area,
+)
+from runtime import DEFAULTS, control_request
+from walker import Controller, Walking
 
 
 def graph_fixture():
     positions = [(0, 0, 0), (0, -6, 0), (-6, 0, 0), (6, 0, 0), (0, 6, 0)]
-    return PedestrianGraph([Node((0, i), position,
-                                tuple(((0, j), j == 3) for j in (range(1, 5) if i == 0 else [0])))
-                            for i, position in enumerate(positions)])
+    return PedestrianGraph(
+        [
+            Node(
+                (0, i), position, tuple(((0, j), j == 3) for j in (range(1, 5) if i == 0 else [0]))
+            )
+            for i, position in enumerate(positions)
+        ]
+    )
 
 
 class GraphTests(unittest.TestCase):
     def test_heading_and_wrap_match_game_convention(self):
         self.assertAlmostEqual(heading_to((0, 0), (1, 0)), -math.pi / 2)
         self.assertAlmostEqual(heading_to((0, 0), (-1, 0)), math.pi / 2)
-        self.assertAlmostEqual(angle_delta(-math.pi + .1, math.pi - .1), .2)
+        self.assertAlmostEqual(angle_delta(-math.pi + 0.1, math.pi - 0.1), 0.2)
 
     def test_parser_excludes_vehicle_nodes_and_retains_crossing_links(self):
         count, links = 3, 2
@@ -48,19 +67,20 @@ class GraphTests(unittest.TestCase):
         graph = graph_fixture()
         self.assertIsNone(graph.nearest((0, 0, 10)))
         self.assertIsNone(graph.nearest((1000, 1000, 0)))
-        self.assertEqual(graph.nearest((.1, .1, 0)).key, (0, 0))
+        self.assertEqual(graph.nearest((0.1, 0.1, 0)).key, (0, 0))
 
 
 class SmoothTurnTests(unittest.TestCase):
     def test_high_frequency_output_has_no_large_turn_steps(self):
         turn = SmoothTurn()
-        turn.last_at = 0.
+        turn.last_at = 0.0
         amounts = [turn.step(160, i / 120) for i in range(1, 241)]
         self.assertTrue(all(abs(amount) <= 2 for amount in amounts))
         self.assertGreater(sum(amounts), 200)
+
     def test_acceleration_and_speed_limit_prevent_large_mouse_bursts(self):
         turn = SmoothTurn()
-        amounts = [turn.step(10000, i * .05) for i in range(40)]
+        amounts = [turn.step(10000, i * 0.05) for i in range(40)]
         self.assertLessEqual(amounts[0], 1)
         self.assertTrue(all(abs(amount) <= 8 for amount in amounts))
         self.assertLessEqual(turn.velocity, 160)
@@ -68,11 +88,11 @@ class SmoothTurnTests(unittest.TestCase):
     def test_reversal_brakes_before_turning_other_way(self):
         turn = SmoothTurn()
         for i in range(20):
-            turn.step(160, i * .05)
-        turn.step(-160, 1.)
+            turn.step(160, i * 0.05)
+        turn.step(-160, 1.0)
         self.assertGreater(turn.velocity, 0)
         for i in range(1, 25):
-            turn.step(-160, 1. + i * .05)
+            turn.step(-160, 1.0 + i * 0.05)
         self.assertLess(turn.velocity, 0)
 
     def test_long_frame_does_not_dump_accumulated_movement(self):
@@ -99,6 +119,7 @@ class NavigatorTests(unittest.TestCase):
 
     def test_far_lateral_position_does_not_skip_a_waypoint(self):
         self.assertEqual(self.navigator.waypoint((5, 1, 0), 0, 0, 0), (0, 0, 0))
+
     def setUp(self):
         self.navigator = SidewalkNavigator(graph_fixture())
         self.navigator.target, self.navigator.previous = (0, 0), (0, 1)
@@ -145,7 +166,7 @@ class MovementTests(unittest.TestCase):
                     self.assertIn("aligning", self.movement.tick(self.state, True, "sidewalks"))
                 self.keys.set.assert_called_with({"walk"})
             self.assertEqual(self.movement.recoveries, 0)
-            self.state["camera_heading"] = math.pi - .1
+            self.state["camera_heading"] = math.pi - 0.1
             with patch("walker.time.monotonic", return_value=6):
                 self.movement.tick(self.state, True, "sidewalks")
             self.keys.set.assert_called_with({"walk", "forward"})
@@ -160,8 +181,9 @@ class MovementTests(unittest.TestCase):
                     status = self.movement.tick(self.state, True, "sidewalks")
         self.assertIn("no route progress", status)
         self.assertIsNone(self.movement.navigator.target)
+
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
-        self.state["camera_heading"] = 0.
+        self.state["camera_heading"] = 0.0
         self.state["heading"] = -math.pi / 2
         self.movement.mode = "sidewalks"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, 10, 0)):
@@ -171,12 +193,12 @@ class MovementTests(unittest.TestCase):
     def test_large_turn_does_not_flip_at_angle_wrap(self):
         self.movement.mode = "sidewalks"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, -10, 0)):
-            self.state["camera_heading"] = -.01
+            self.state["camera_heading"] = -0.01
             with patch("walker.time.monotonic", return_value=0):
                 self.movement.tick(self.state, True, "sidewalks")
             first = self.movement.turn_direction
-            self.state["camera_heading"] = .01
-            with patch("walker.time.monotonic", return_value=.05):
+            self.state["camera_heading"] = 0.01
+            with patch("walker.time.monotonic", return_value=0.05):
                 self.movement.tick(self.state, True, "sidewalks")
         self.assertEqual(self.movement.turn_direction, first)
 
@@ -185,9 +207,19 @@ class MovementTests(unittest.TestCase):
         self.keys = self.keys_patch.start().return_value
         self.addCleanup(self.keys_patch.stop)
         self.movement = Walking(graph_fixture())
-        self.state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
-                          player_state=0, health=100, in_vehicle=False, ped_state=1,
-                          position=dict(x=0, y=0, z=0), heading=0, interior=0)
+        self.state = dict(
+            ready=True,
+            foreground=True,
+            paused=False,
+            controls_disabled=False,
+            player_state=0,
+            health=100,
+            in_vehicle=False,
+            ped_state=1,
+            position=dict(x=0, y=0, z=0),
+            heading=0,
+            interior=0,
+        )
 
     def test_background_releases_keys_and_never_steers(self):
         self.state["foreground"] = False
@@ -198,7 +230,9 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(self.movement.steer("left", "free", self.state))
 
     def test_free_mode_does_not_consult_pedestrian_graph(self):
-        with patch.object(self.movement.navigator, "waypoint", side_effect=AssertionError("graph used")):
+        with patch.object(
+            self.movement.navigator, "waypoint", side_effect=AssertionError("graph used")
+        ):
             self.assertEqual(self.movement.tick(self.state, True, "free"), "walking freely")
         self.keys.set.assert_called_with({"walk", "forward"})
 
@@ -222,11 +256,11 @@ class MovementTests(unittest.TestCase):
     def test_manual_turn_is_spread_across_ticks_and_cancelled_on_alt_tab(self):
         with patch("walker.time.monotonic", return_value=0):
             self.movement.tick(self.state, True, "free")
-        self.assertTrue(self.movement.steer("left", "free", self.state))
+        self.assertTrue(self.movement.steer("left", "free", self.state, 25))
         self.keys.turn.assert_not_called()
         for i in range(1, 161):
-            self.state["position"] = dict(x=i * .1, y=0, z=0)
-            with patch("walker.time.monotonic", return_value=i * .05):
+            self.state["position"] = dict(x=i * 0.1, y=0, z=0)
+            with patch("walker.time.monotonic", return_value=i * 0.05):
                 self.movement.tick(self.state, True, "free")
         amounts = [call.args[0] for call in self.keys.turn.call_args_list]
         self.assertEqual(sum(amounts), -250)
@@ -236,6 +270,131 @@ class MovementTests(unittest.TestCase):
         self.movement.tick(self.state, True, "free")
         self.assertEqual(self.movement.manual_turn, 0)
         self.assertEqual(self.movement.smooth_turn.velocity, 0)
+
+    def test_numbered_turns_work_while_stopped_without_pressing_forward(self):
+        for direction, sign in (("left", -1), ("right", 1)):
+            with self.subTest(direction=direction):
+                self.movement.stop()
+                self.keys.reset_mock()
+                self.assertTrue(self.movement.steer(direction, "free", self.state, 10))
+                for i in range(600):
+                    with patch("walker.time.monotonic", return_value=i / 120):
+                        self.movement.tick(self.state, False, "free")
+                amounts = [call.args[0] for call in self.keys.turn.call_args_list]
+                self.assertEqual(sum(amounts), sign * 100)
+                self.keys.set.assert_not_called()
+                self.assertEqual(self.movement.manual_turn, 0)
+
+    def test_forward_and_back_are_finite_while_stopped(self):
+        for direction in ("forward", "back"):
+            with self.subTest(direction=direction):
+                self.movement.stop()
+                with patch("walker.time.monotonic", return_value=10):
+                    self.assertTrue(self.movement.steer(direction, "free", self.state, 3))
+                for now in (10, 11, 12.9):
+                    with patch("walker.time.monotonic", return_value=now):
+                        self.assertEqual(
+                            self.movement.tick(self.state, False), f"stepping {direction}"
+                        )
+                    self.keys.set.assert_called_with({"walk", direction})
+                self.keys.reset_mock()
+                with patch("walker.time.monotonic", return_value=13):
+                    self.assertEqual(self.movement.tick(self.state, False), "stopped")
+                self.keys.set.assert_not_called()
+                self.keys.release.assert_called()
+
+    def test_manual_back_resumes_existing_autowalk_when_finished(self):
+        with patch("walker.time.monotonic", return_value=10):
+            self.movement.steer("back", "free", self.state, 2)
+            self.movement.tick(self.state, True)
+        self.keys.set.assert_called_with({"walk", "back"})
+        with patch("walker.time.monotonic", return_value=12):
+            self.assertEqual(self.movement.tick(self.state, True), "walking freely")
+        self.keys.set.assert_called_with({"walk", "forward"})
+
+    def test_stop_and_focus_loss_cancel_finite_steps(self):
+        for cancel in ("stop", "background"):
+            with self.subTest(cancel=cancel):
+                self.state["foreground"] = True
+                self.movement.steer("forward", "free", self.state, 100)
+                if cancel == "stop":
+                    self.movement.stop()
+                else:
+                    self.state["foreground"] = False
+                self.keys.reset_mock()
+                self.movement.tick(self.state, False)
+                self.assertIsNone(self.movement.manual_direction)
+                self.keys.set.assert_not_called()
+                self.keys.release.assert_called()
+
+    def test_invalid_amount_never_queues_movement(self):
+        for amount in (0, 101, -1, 1.5, "10", True):
+            with self.subTest(amount=amount):
+                self.assertFalse(self.movement.steer("forward", "free", self.state, amount))
+                self.assertIsNone(self.movement.manual_direction)
+
+    def test_backing_up_covers_manual_steps_and_obstacle_recovery(self):
+        with patch("walker.time.monotonic", return_value=10):
+            self.movement.steer("back", "free", self.state, 2)
+        self.assertTrue(self.movement.backing_up(10))
+        self.assertTrue(self.movement.backing_up(11.9))
+        self.assertFalse(self.movement.backing_up(12))
+        self.movement.stop()
+        self.assertFalse(self.movement.backing_up(10))
+        self.movement.reverse_until = 15
+        self.assertTrue(self.movement.backing_up(14))
+        self.assertFalse(self.movement.backing_up(15))
+
+
+class ControllerTests(unittest.TestCase):
+    def setUp(self):
+        self.controller = Controller.__new__(Controller)
+        self.controller.settings = dict(DEFAULTS)
+        self.controller.movement = Mock()
+        self.controller.jump = Mock()
+        self.controller.last_steering = None
+
+    def test_steering_waits_until_accepted_and_runs_only_once(self):
+        request = control_request("left", 10)
+        self.controller.settings["steering"] = request
+        self.controller.movement.steer.side_effect = [False, True]
+        self.controller.handle_steering({})
+        self.assertIsNone(self.controller.last_steering)
+        self.controller.handle_steering({})
+        self.controller.handle_steering({})
+        self.assertEqual(self.controller.last_steering, request["id"])
+        self.assertEqual(self.controller.movement.steer.call_count, 2)
+
+    def test_stop_cancels_movement_and_pending_jump(self):
+        jump = control_request()
+        self.controller.settings.update(walking=True, jump=jump, steering=control_request("stop"))
+        self.controller.handle_steering({})
+        self.assertFalse(self.controller.settings["walking"])
+        self.controller.movement.stop.assert_called_once()
+        self.controller.jump.cancel.assert_called_once()
+        self.assertEqual(self.controller.jump.last_request, jump["id"])
+
+    def test_cleanup_restores_game_even_if_releasing_jump_key_fails(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.controller.state_dir = Path(folder.name)
+        self.controller.mem = Mock()
+        self.controller.autosave = Mock()
+        self.controller.autosave.report.return_value = {}
+        self.controller.camera = Mock()
+        self.controller.report = {}
+        for name in ("bindings", "protection", "world", "peaceful"):
+            changes = Mock()
+            changes.restore.return_value = []
+            setattr(self.controller, name, changes)
+        self.controller.jump.cancel.side_effect = RuntimeError("key release failed")
+        with self.assertRaisesRegex(RuntimeError, "key release failed"):
+            self.controller.close()
+        self.controller.movement.stop.assert_called_once()
+        self.controller.camera.close.assert_called_once()
+        self.controller.bindings.restore.assert_called_once()
+        report = json.loads((self.controller.state_dir / "state.json").read_text())
+        self.assertEqual(report["controller"], "stopped")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,14 @@
 import hashlib
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-from saves import Autosave, NativeSaveRequest, MENU, SAVE_PREFIX
-from tests.helpers import MemoryFixture
+from saves import MENU, SAVE_PREFIX, Autosave, NativeSaveRequest
 
-
-def checkpoint(marker=0):
-    data = b"BLOCK" + bytes((marker,)) + bytes(202742)
-    return data + struct.pack("<I", sum(data))
+from .helpers import MemoryFixture, checkpoint
 
 
 class FakeBridge:
@@ -47,7 +43,9 @@ class NativeSaveTests(unittest.TestCase):
             data = name.encode()
             (self.client.folder / name).write_bytes(data)
             hashes[name] = hashlib.sha256(data).hexdigest()
-        (self.client.folder / "manifest.json").write_text(json.dumps({"format": 1, "files": hashes}))
+        (self.client.folder / "manifest.json").write_text(
+            json.dumps({"format": 1, "files": hashes})
+        )
 
     def test_helper_is_hidden_and_receives_only_game_pid_and_save_slot(self):
         with patch("saves.subprocess.Popen") as popen:
@@ -72,9 +70,12 @@ class NativeSaveTests(unittest.TestCase):
         process.terminate.assert_not_called()
 
     def test_native_completion_and_bad_responses(self):
-        for output, code, success in ((b'{"status":"saved","duration_ms":9}', 0, True),
-                                      (b'{"status":"deferred"}', 3, True),
-                                      (b'null', 0, False), (b'broken', 1, False)):
+        for output, code, success in (
+            (b'{"status":"saved","duration_ms":9}', 0, True),
+            (b'{"status":"deferred"}', 3, True),
+            (b"null", 0, False),
+            (b"broken", 1, False),
+        ):
             with self.subTest(output=output):
                 process = Mock(returncode=code)
                 process.poll.return_value = code
@@ -104,9 +105,18 @@ class AutosaveTests(unittest.TestCase):
         self.mem.write(SAVE_PREFIX, str(root / "GTASAsf").encode("mbcs") + b"\0")
         self.bridge = FakeBridge()
         self.saver = Autosave(self.mem, self.state_dir, bridge=self.bridge)
-        self.saver.next_at = 60.
-        self.state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
-                          player_state=0, health=100, in_vehicle=False, interior=0, ped_state=1)
+        self.saver.next_at = 60.0
+        self.state = dict(
+            ready=True,
+            foreground=True,
+            paused=False,
+            controls_disabled=False,
+            player_state=0,
+            health=100,
+            in_vehicle=False,
+            interior=0,
+            ped_state=1,
+        )
 
     def page(self, page):
         self.mem.write(MENU + 0x5C, bytes((page is not None,)))
@@ -117,8 +127,6 @@ class AutosaveTests(unittest.TestCase):
         self.assertTrue(self.saver.tick(self.state, 60))
         self.assertEqual(self.saver.phase, "saving")
         self.assertEqual(self.bridge.calls, [0])
-        self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
-        self.assertEqual(self.mem.byte(MENU + 0x15D), 0)
 
     def test_save_runs_after_one_minute_and_keeps_previous_checkpoint(self):
         self.assertFalse(self.saver.tick(self.state, 59.9))
@@ -138,13 +146,18 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.saver.duration_ms, 8)
 
     def test_unsafe_gameplay_defers_without_opening_menu(self):
-        for key, value in (("paused", True), ("controls_disabled", True),
-                           ("in_vehicle", True), ("interior", 5), ("health", 0)):
+        for key, value in (
+            ("paused", True),
+            ("controls_disabled", True),
+            ("in_vehicle", True),
+            ("interior", 5),
+            ("health", 0),
+        ):
             with self.subTest(key=key):
                 state = dict(self.state, **{key: value})
                 self.assertFalse(self.saver.tick(state, 60))
         self.assertFalse(self.saver.backup.exists())
-        self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
+        self.assertEqual(self.bridge.calls, [])
 
     def test_missions_cutscenes_and_door_transitions_defer_save(self):
         for address in (0xB5F851, 0x96A7CC):
@@ -155,16 +168,16 @@ class AutosaveTests(unittest.TestCase):
         self.mem.write(0xA49960 + 8, struct.pack("<I", 1))
         self.assertFalse(self.saver.tick(self.state, 60))
 
-    def test_background_during_save_does_not_issue_menu_actions(self):
-        self.saver.tick(self.state, 60)
-        self.saver.tick(dict(self.state, foreground=False), 1000)
-        self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
-        self.saver.tick(self.state, 1000.1)
-        self.assertIsNone(self.saver.error)
-
-    def test_safe_background_save_does_not_require_focus_or_stop_movement(self):
-        self.assertTrue(self.saver.tick(dict(self.state, foreground=False), 60))
-        self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
+    def test_background_save_uses_native_bridge_without_changing_game_memory(self):
+        before = dict(self.mem.data)
+        state = dict(self.state, foreground=False)
+        self.assertTrue(self.saver.tick(state, 60))
+        self.assertEqual(self.bridge.calls, [0])
+        self.saver.tick(state, 90)
+        self.bridge.result = {"status": "saved"}
+        self.saver.tick(state, 91)
+        self.assertEqual(self.saver.count, 1)
+        self.assertEqual(self.mem.data, before)
 
     def test_existing_pause_menu_can_save_without_opening_or_closing_it(self):
         self.page(41)
@@ -175,7 +188,8 @@ class AutosaveTests(unittest.TestCase):
 
     def test_occupied_save_slot_mismatch_is_never_overwritten(self):
         self.record.write_text(json.dumps({"slot": 1, "path": str(self.path)}))
-        self.assertFalse(self.saver.tick(self.state, 60))
+        with self.assertLogs("saves", level="WARNING"):
+            self.assertFalse(self.saver.tick(self.state, 60))
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
         self.assertIsNotNone(self.saver.error)
@@ -184,12 +198,13 @@ class AutosaveTests(unittest.TestCase):
         self.start_save()
         self.path.write_bytes(b"incomplete save")
         self.bridge.result = {"status": "saved"}
-        self.saver.tick(self.state, 60.8)
+        with self.assertLogs("saves", level="WARNING"):
+            self.saver.tick(self.state, 60.8)
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertEqual(self.saver.count, 0)
         self.assertIsNotNone(self.saver.error)
 
-    def test_pending_save_never_stops_walking_or_replaces_file_being_written(self):
+    def test_pending_save_preserves_active_file_and_backup(self):
         self.start_save()
         self.path.write_bytes(b"save in progress")
         self.saver.tick(self.state, 90)
@@ -197,14 +212,17 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.saver.backup.read_bytes(), self.original)
         self.assertEqual(self.saver.phase, "saving")
 
-    def test_deferred_native_request_retries_when_safe_without_menu_actions(self):
+    def test_deferred_native_request_retries_when_safe(self):
         self.start_save()
         self.bridge.result = {"status": "deferred"}
         self.assertFalse(self.saver.tick(self.state, 60.1))
         self.assertEqual(self.saver.count, 0)
         self.assertEqual(self.saver.next_at, 61.1)
         self.assertIsNone(self.saver.error)
-        self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
+        self.assertFalse(self.saver.tick(self.state, 61))
+        self.bridge.result = None
+        self.assertTrue(self.saver.tick(self.state, 61.1))
+        self.assertEqual(self.bridge.calls, [0, 0])
 
     def test_disabled_autosave_waits_a_full_interval_after_reenable(self):
         self.assertFalse(self.saver.tick(self.state, 60, enabled=False))

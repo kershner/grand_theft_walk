@@ -8,7 +8,16 @@ functions on a remote thread or overwrite executable instructions.
 https://github.com/DK22Pac/plugin-sdk/tree/master/plugin_sa/game_sa
 CWorld.cpp / CPlayerInfo.h: player table, record size, player-info fields.
 CPed.h / CPlayerData.h: player identity, health, heading, vehicle flag, damage permission.
-CPhysical.h: damage-proof bit fields.
+CPhysical.h: damage-proof bit fields; m_vecMoveSpeed=+0x44 (vertical speed=+0x4C).
+CPed.h: standing=+0x46C bit 0; in-air=+0x46D bit 1.
+CControllerConfigManager.h: PED_JUMPING=12; jump temporarily uses Space (32).
+Avoid F1/F2/F3 for jump: replay shortcuts are handled outside configurable actions.
+High jump waits for native takeoff, then applies one upward boost of sqrt(0.96).
+Gravity and air resistance are left unchanged. Actual height depends on native physics.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Entity/Physical.cpp
+ApplyGravity subtracts timestep * 0.008 from vertical speed.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Tasks/TaskTypes/TaskSimpleJump.cpp
+Native takeoff sets in-air and clears standing; horizontal speed remains game-owned.
 CEntity.h: visibility/collision bits and IPL index.
 CPlaceable.h: matrix/position lookup.
 CCheat.cpp / CCheat.h: active-cheat array and health/oxygen/wanted/hunger/ammo flags.

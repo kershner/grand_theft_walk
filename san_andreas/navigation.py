@@ -1,9 +1,10 @@
 """San Andreas pedestrian path loading, waypoint selection, and steering."""
+
+import math
+import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-import math
 from pathlib import Path
-import struct
 
 
 def angle_delta(target, current):
@@ -20,26 +21,27 @@ def distance(a, b):
 
 class SmoothTurn:
     """Acceleration-limited mouse velocity, with fractional movement retained."""
-    def __init__(self, speed=160., acceleration=320.):
+
+    def __init__(self, speed=160.0, acceleration=320.0):
         self.limit, self.acceleration = speed, acceleration
         self.reset()
 
     def reset(self):
-        self.velocity = self.fraction = 0.
+        self.velocity = self.fraction = 0.0
         self.last_at = None
 
     def step(self, desired, now):
-        dt = 1 / 120 if self.last_at is None else max(0., min(1 / 30, now - self.last_at))
+        dt = 1 / 120 if self.last_at is None else max(0.0, min(1 / 30, now - self.last_at))
         self.last_at = now
         desired = max(-self.limit, min(self.limit, desired))
         change = max(-self.acceleration * dt, min(self.acceleration * dt, desired - self.velocity))
         old = self.velocity
         self.velocity += change
-        self.fraction += (old + self.velocity) * .5 * dt
+        self.fraction += (old + self.velocity) * 0.5 * dt
         amount = math.trunc(self.fraction + math.copysign(1e-9, self.fraction))
         self.fraction -= amount
         if abs(self.fraction) < 1e-8:
-            self.fraction = 0.
+            self.fraction = 0.0
         return amount
 
 
@@ -72,8 +74,10 @@ def read_area(data, area):
             raise ValueError(f"Invalid pedestrian node in area {area}")
         if flags & 0xA0:  # Switched off or water, never vehicle nodes.
             continue
-        links = tuple((struct.unpack_from("<HH", data, links_at + j * 4),
-                       bool(data[crossings_at + j] & 1)) for j in range(base, base + number))
+        links = tuple(
+            (struct.unpack_from("<HH", data, links_at + j * 4), bool(data[crossings_at + j] & 1))
+            for j in range(base, base + number)
+        )
         nodes.append(Node((area, i), (x / 8, y / 8, z / 8), links))
     return nodes
 
@@ -84,10 +88,14 @@ class PedestrianGraph:
         self.nodes = {}
         self.cells = defaultdict(list)
         for key, node in original.items():
-            links = tuple((target, crossing) for target, crossing in node.links
-                          if target in original and target != key
-                          and distance(node.position, original[target].position) <= 75
-                          and abs(node.position[2] - original[target].position[2]) <= 8)
+            links = tuple(
+                (target, crossing)
+                for target, crossing in node.links
+                if target in original
+                and target != key
+                and distance(node.position, original[target].position) <= 75
+                and abs(node.position[2] - original[target].position[2]) <= 8
+            )
             if links:
                 self.nodes[key] = Node(key, node.position, links)
         for node in self.nodes.values():
@@ -110,12 +118,23 @@ class PedestrianGraph:
 
     def nearest(self, position, excluded=(), radius=25):
         cx, cy = self.cell(position)
-        candidates = (self.nodes[key] for x in range(cx - 1, cx + 2)
-                      for y in range(cy - 1, cy + 2) for key in self.cells.get((x, y), ())
-                      if key not in excluded)
-        return min((node for node in candidates if abs(node.position[2] - position[2]) <= 3
-                    and distance(node.position, position) <= radius),
-                   key=lambda node: distance(node.position, position), default=None)
+        candidates = (
+            self.nodes[key]
+            for x in range(cx - 1, cx + 2)
+            for y in range(cy - 1, cy + 2)
+            for key in self.cells.get((x, y), ())
+            if key not in excluded
+        )
+        return min(
+            (
+                node
+                for node in candidates
+                if abs(node.position[2] - position[2]) <= 3
+                and distance(node.position, position) <= radius
+            ),
+            key=lambda node: distance(node.position, position),
+            default=None,
+        )
 
 
 class SidewalkNavigator:
@@ -165,38 +184,62 @@ class SidewalkNavigator:
             start = self.graph.nodes[self.previous].position
             dx, dy = node.position[0] - start[0], node.position[1] - start[1]
             length = math.hypot(dx, dy)
-            if length > .1:
-                beyond = ((position[0] - node.position[0]) * dx
-                          + (position[1] - node.position[1]) * dy) >= 0
-                lateral = abs((position[0] - start[0]) * dy - (position[1] - start[1]) * dx) / length
+            if length > 0.1:
+                beyond = (
+                    (position[0] - node.position[0]) * dx + (position[1] - node.position[1]) * dy
+                ) >= 0
+                lateral = (
+                    abs((position[0] - start[0]) * dy - (position[1] - start[1]) * dx) / length
+                )
                 passed = beyond and lateral <= 3 and remaining <= 6
         if remaining <= 2 or (self.previous is None and remaining <= 4) or passed:
-            options = [(self.graph.nodes[key], crossing) for key, crossing in node.links
-                       if key in self.graph.nodes and (node.key, key) not in self.blocked
-                       and key not in self.avoided]
+            options = [
+                (self.graph.nodes[key], crossing)
+                for key, crossing in node.links
+                if key in self.graph.nodes
+                and (node.key, key) not in self.blocked
+                and key not in self.avoided
+            ]
             forward = [option for option in options if option[0].key != self.previous]
             if forward:
                 options = forward
             if not options:
                 self.message = "pedestrian path blocked; waiting to retry"
                 return None
+
             def delta(option):
                 return angle_delta(heading_to(node.position, option[0].position), heading)
+
             if len(options) > 1 and self.turn:
-                chosen = (max(options, key=delta) if self.turn == "left" else
-                          min(options, key=delta) if self.turn == "right" else
-                          min(options, key=lambda option: abs(delta(option))))
+                chosen = (
+                    max(options, key=delta)
+                    if self.turn == "left"
+                    else min(options, key=delta)
+                    if self.turn == "right"
+                    else min(options, key=lambda option: abs(delta(option)))
+                )
                 self.turn = None
             else:
-                chosen = min(options, key=lambda option:
-                             abs(delta(option)) + min(self.visits[option[0].key], 8) * 0.8)
+                chosen = min(
+                    options,
+                    key=lambda option: (
+                        abs(delta(option)) + min(self.visits[option[0].key], 8) * 0.8
+                    ),
+                )
             self.visits[node.key] += 1
             self.previous, self.target = node.key, chosen[0].key
             self.crossing = chosen[1]
             node = chosen[0]
-            self.message = "following pedestrian crossing" if self.crossing else "following sidewalk"
+            self.message = (
+                "following pedestrian crossing" if self.crossing else "following sidewalk"
+            )
         return node.position
 
     def report(self):
-        return {"target": self.target, "previous": self.previous, "crossing": self.crossing,
-                "next_turn": self.turn, "status": self.message}
+        return {
+            "target": self.target,
+            "previous": self.previous,
+            "crossing": self.crossing,
+            "next_turn": self.turn,
+            "status": self.message,
+        }

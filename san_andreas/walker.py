@@ -1,30 +1,56 @@
 """Live walking controller, navigation modes, hotkeys, and runtime game settings."""
+
 import argparse
 import ctypes
 import json
+import logging
 import math
-from pathlib import Path
 import random
-import subprocess
 import sys
 import time
-import uuid
+from pathlib import Path
 
-from winmemory import Memory, k32, api, w
-from controls import Keys, Hotkeys
-from game import Game, RuntimeChanges, apply_protection, unlock_regions, unlock_interiors, apply_peaceful_mode, bind_walk_key
-from navigation import PedestrianGraph, SidewalkNavigator, SmoothTurn, angle_delta, heading_to
-from saves import Autosave, atomic_json
-from camera import FirstPersonCamera
+from controls import HighJump, Hotkeys, Keys, can_control
+from game import (
+    FirstPersonCamera,
+    Game,
+    RuntimeChanges,
+    apply_peaceful_mode,
+    apply_protection,
+    bind_walk_key,
+    unlock_interiors,
+    unlock_regions,
+)
+from navigation import (
+    PedestrianGraph,
+    SidewalkNavigator,
+    SmoothTurn,
+    angle_delta,
+    heading_to,
+)
+from runtime import (
+    DEFAULT_STATE_DIR,
+    DEFAULTS,
+    DIRECTIONS,
+    MODES,
+    atomic_json,
+    configure_logging,
+    control_request,
+    read_controls,
+    request_expired,
+)
+from saves import Autosave
+from winmemory import Memory, api, elevate, k32, w
 
-MODES = ("sidewalks", "free")
-DEFAULTS = {"walking": False, "protection": True, "unlock_map": True, "quit": False,
-            "mode": "sidewalks", "peaceful": True, "autosave": True, "first_person": False}
+logger = logging.getLogger(__name__)
+
+SECONDS_PER_STEP = 1.0
+TURN_PER_STEP = 10
 api(k32, "CreateMutexW", [ctypes.c_void_p, w.BOOL, w.LPCWSTR], w.HANDLE)
 
 
 def distance(a, b):
-    return math.hypot(a["x"]-b["x"], a["y"]-b["y"])
+    return math.hypot(a["x"] - b["x"], a["y"] - b["y"])
 
 
 def request_admin(args):
@@ -32,20 +58,21 @@ def request_admin(args):
         return False
     if args.elevated:
         raise RuntimeError("Windows did not grant access to the running game.")
-    launch = ctypes.windll.shell32.ShellExecuteW
-    launch.argtypes = [w.HWND, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, ctypes.c_int]
-    launch.restype = ctypes.c_void_p
-    parameters = [str(Path(__file__).resolve()), "run", "--state-dir", str(args.state_dir), "--elevated"]
+    parameters = [
+        str(Path(__file__).resolve()),
+        "run",
+        "--state-dir",
+        str(args.state_dir),
+        "--elevated",
+    ]
     if args.walk:
         parameters.append("--walk")
     if args.seconds:
         parameters += ["--seconds", str(args.seconds)]
     if getattr(args, "mode", None) in MODES:
         parameters += ["--mode", args.mode]
-    print("Accept the Windows administrator prompt so Python can control the running game.", flush=True)
-    result = launch(None, "runas", sys.executable, subprocess.list2cmdline(parameters), str(Path(__file__).parent), 1)
-    if not result or result <= 32:
-        raise RuntimeError("Windows administrator approval was cancelled.")
+    logger.info("Accept the Windows administrator prompt so Python can control the running game.")
+    elevate(parameters, Path(__file__).parent)
     return True
 
 
@@ -53,8 +80,8 @@ class Walking:
     def __init__(self, graph=None, navigation_error=None, focused=None):
         self.keys = Keys({"forward": "w", "back": "s", "walk": "f2"}, focused=focused)
         self.origin = None
-        self.progress_at = 0.
-        self.reverse_until = 0.
+        self.progress_at = 0.0
+        self.reverse_until = 0.0
         self.turn_after_reverse = 0
         self.recoveries = 0
         self.mode = None
@@ -62,32 +89,43 @@ class Walking:
         self.navigation_error = navigation_error
         self.smooth_turn = SmoothTurn()
         self.manual_turn = 0
+        self.manual_direction = None
+        self.manual_until = 0.0
         self.turn_direction = 0
         self.aligning = False
         self.route_target = None
         self.best_target_distance = None
-        self.approach_at = 0.
+        self.approach_at = 0.0
 
-    def steer(self, direction, mode, state):
-        usable = (state.get("ready") and state["foreground"] and not state["paused"]
-                  and not state["controls_disabled"] and not state["in_vehicle"]
-                  and state["health"] > 0 and state["player_state"] == 0)
+    def steer(self, direction, mode, state, amount=1):
+        if type(amount) is not int or not 1 <= amount <= 100:
+            return False
+        usable = can_control(state)
         if not usable:
             return False
+        self.set_mode(mode)
         if mode == "sidewalks":
-            if self.navigator is None:
+            if self.navigator is None or direction not in ("left", "right", "forward"):
                 return False
             self.navigator.turn = direction
         elif direction in ("left", "right"):
-            self.manual_turn = max(-500, min(500, self.manual_turn + (-250 if direction == "left" else 250)))
+            self.manual_turn += (-1 if direction == "left" else 1) * amount * TURN_PER_STEP
+        elif direction in ("forward", "back"):
+            self.reverse_until = 0.0
+            self.manual_direction = direction
+            self.manual_until = time.monotonic() + amount * SECONDS_PER_STEP
+        else:
+            return False
         return True
 
     def stop(self):
         self.keys.release()
         self.origin = None
-        self.reverse_until = 0.
+        self.reverse_until = 0.0
         self.smooth_turn.reset()
         self.manual_turn = 0
+        self.manual_direction = None
+        self.manual_until = 0.0
         self.turn_direction = 0
         self.aligning = False
         self.route_target = None
@@ -100,15 +138,26 @@ class Walking:
                 self.navigator.reset()
             self.mode = mode
 
+    def backing_up(self, now):
+        return (
+            self.manual_direction == "back" and now < self.manual_until or now < self.reverse_until
+        )
+
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
-        usable = (state.get("ready") and state["foreground"] and not state["paused"]
-                  and not state["controls_disabled"] and state["player_state"] == 0
-                  and state["health"] > 0 and not state["in_vehicle"] and state["ped_state"] in (0, 1))
-        if not enabled or not usable:
+        usable = can_control(state) and state["ped_state"] in (0, 1)
+        if not usable:
             self.stop()
-            return "stopped" if not enabled else "waiting for active on-foot gameplay"
+            return "waiting for active on-foot gameplay"
         now = time.monotonic()
+        if self.manual_direction and now >= self.manual_until:
+            self.manual_direction = None
+            self.keys.release()
+            self.origin = None
+        manual = mode == "free" and (self.manual_direction or self.manual_turn)
+        if not enabled and not manual:
+            self.stop()
+            return "stopped"
         position = state["position"]
         if self.reverse_until:
             if now < self.reverse_until:
@@ -119,16 +168,22 @@ class Walking:
                 self.manual_turn = self.turn_after_reverse
             elif self.navigator:
                 self.navigator.avoid_target(now)
-            self.reverse_until = 0.
+            self.reverse_until = 0.0
             self.origin, self.progress_at = position, now
         status = "walking freely"
-        desired_turn = self.manual_turn * 2.
+        desired_turn = self.manual_turn * 2.0
         if mode == "sidewalks":
             if self.navigator is None:
                 self.stop()
-                return "sidewalk paths unavailable; switch to free roam: " + str(self.navigation_error)
+                return "sidewalk paths unavailable; switch to free roam: " + str(
+                    self.navigation_error
+                )
             waypoint = self.navigator.waypoint(
-                (position["x"], position["y"], position["z"]), state["heading"], state["interior"], now)
+                (position["x"], position["y"], position["z"]),
+                state["heading"],
+                state["interior"],
+                now,
+            )
             if waypoint is None:
                 self.stop()
                 return self.navigator.message
@@ -138,18 +193,18 @@ class Walking:
             error = angle_delta(heading_to((position["x"], position["y"]), waypoint), facing)
             if abs(error) > 2.6 and self.turn_direction:
                 error = math.copysign(abs(error), self.turn_direction)
-            elif abs(error) > .04:
+            elif abs(error) > 0.04:
                 self.turn_direction = 1 if error > 0 else -1
             else:
                 self.turn_direction = 0
-            desired_turn = -error * 140 if abs(error) > .04 else 0.
+            desired_turn = -error * 140 if abs(error) > 0.04 else 0.0
             status = self.navigator.message
-            self.aligning = abs(error) > (.25 if self.aligning else 1.)
+            self.aligning = abs(error) > (0.25 if self.aligning else 1.0)
             remaining = math.hypot(waypoint[0] - position["x"], waypoint[1] - position["y"])
             if self.route_target != self.navigator.target or self.best_target_distance is None:
                 self.route_target = self.navigator.target
                 self.best_target_distance, self.approach_at = remaining, now
-            elif remaining < self.best_target_distance - .4:
+            elif remaining < self.best_target_distance - 0.4:
                 self.best_target_distance, self.approach_at = remaining, now
             elif not self.aligning and now - self.approach_at > 8:
                 self.navigator.avoid_target(now)
@@ -166,6 +221,12 @@ class Walking:
                 self.smooth_turn.reset()
         if turn:
             self.keys.turn(turn)
+        if mode == "free" and (self.manual_direction or not enabled):
+            if self.manual_direction:
+                self.keys.set({"walk", self.manual_direction})
+                return f"stepping {self.manual_direction}"
+            self.keys.release()
+            return "turning" if self.manual_turn else "stopped"
         if mode == "sidewalks" and self.aligning:
             self.keys.set({"walk"})
             self.origin, self.progress_at, self.approach_at = position, now, now
@@ -183,6 +244,217 @@ class Walking:
         return status
 
 
+class Controller:
+    def __init__(self, mem, args):
+        self.mem = mem
+        self.game = Game(mem)
+        self.state_dir = args.state_dir
+        self.control_path = self.state_dir / "control.json"
+        self.protection = RuntimeChanges(mem)
+        self.world = RuntimeChanges(mem)
+        self.peaceful = RuntimeChanges(mem)
+        self.bindings = RuntimeChanges(mem)
+        self.navigation_error = None
+        try:
+            graph = PedestrianGraph.load(mem.exe.parent)
+        except (OSError, ValueError) as error:
+            graph, self.navigation_error = None, str(error)
+        self.movement = Walking(graph, self.navigation_error, focused=mem.foreground)
+        self.autosave = Autosave(mem, self.state_dir)
+        self.camera = FirstPersonCamera(mem)
+        self.jump = HighJump(self.game, self.bindings)
+        self.hotkeys = Hotkeys(("f5", "f6", "f7", "f8", "f9", "f11", "f12"))
+        self.settings = dict(DEFAULTS, walking=args.walk)
+        previous = {}
+        read_controls(self.control_path, previous)
+        for key in ("mode", "first_person"):
+            if key in previous:
+                self.settings[key] = previous[key]
+        if getattr(args, "mode", None) in MODES:
+            self.settings["mode"] = args.mode
+        atomic_json(self.control_path, self.settings)
+        self.saved_at = self.world_at = self.peace_at = self.camera_at = 0.0
+        self.bindings_at = float("-inf")
+        self.barriers = self.interiors = self.neutral_npcs = 0
+        self.camera_error = self.camera_request = self.last_message = self.last_steering = None
+        self.report = {}
+        logger.info(
+            "Controller ready. Return to the game.\n"
+            "F11 first-person | F5 sidewalks/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
+            "Protection, peaceful mode, map and interior access enabled. Autosave every 60 seconds."
+        )
+        logger.info(
+            "Navigation: %s (%s pedestrian nodes)",
+            self.settings["mode"],
+            len(graph.nodes) if graph else 0,
+        )
+
+    def stop(self):
+        self.settings["walking"] = False
+        self.movement.stop()
+        self.jump.cancel()
+        self.jump.last_request = self.settings.get("jump", {}).get("id")
+        self.last_steering = self.settings.get("steering", {}).get("id")
+
+    def handle_steering(self, state):
+        request = self.settings.get("steering")
+        if not isinstance(request, dict) or request.get("id") == self.last_steering:
+            return
+        direction = request.get("direction")
+        if request_expired(request):
+            self.last_steering = request.get("id")
+        elif direction == "stop":
+            self.stop()
+        elif direction == "walk":
+            self.settings["walking"] = True
+            self.movement.stop()
+            self.last_steering = request.get("id")
+        elif direction in DIRECTIONS:
+            if self.movement.steer(
+                direction, self.settings["mode"], state, request.get("amount", 1)
+            ):
+                self.last_steering = request.get("id")
+
+    def handle_hotkeys(self, state):
+        for key in self.hotkeys.pressed():
+            if key == "f9":
+                self.stop()
+            elif key == "f12":
+                self.settings["quit"] = True
+            elif state.get("ready") and state["foreground"] and not state["paused"]:
+                if key == "f11":
+                    self.settings["first_person"] = not self.settings["first_person"]
+                elif key == "f5":
+                    self.settings["mode"] = (
+                        "free" if self.settings["mode"] == "sidewalks" else "sidewalks"
+                    )
+                elif key == "f6":
+                    self.settings["walking"] = not self.settings["walking"]
+                    self.movement.stop()
+                elif key in ("f7", "f8"):
+                    self.movement.steer(
+                        "left" if key == "f7" else "right", self.settings["mode"], state, 25
+                    )
+            atomic_json(self.control_path, self.settings)
+
+    def update_game(self, state, now, saving):
+        if saving:
+            return
+        if now - self.bindings_at > 0.75:
+            bind_walk_key(self.game, self.bindings)
+            self.bindings_at = now
+        requested_camera = (self.settings["first_person"], not self.movement.backing_up(now))
+        if (
+            state["foreground"]
+            and not state["paused"]
+            and (self.camera_request != requested_camera or now - self.camera_at > 0.75)
+        ):
+            self.camera.apply(requested_camera[0], rotate_player=requested_camera[1])
+            self.camera_at, self.camera_request = now, requested_camera
+            if (
+                self.settings["first_person"]
+                and self.camera.error
+                and self.camera.error != self.camera_error
+            ):
+                logger.warning("Camera: %s", self.camera.error)
+            self.camera_error = self.camera.error
+        if self.settings["peaceful"]:
+            if now - self.peace_at > 0.75:
+                self.neutral_npcs = apply_peaceful_mode(self.game, self.peaceful)
+                self.peace_at = now
+        elif self.peaceful.entries:
+            self.peaceful.restore()
+            self.neutral_npcs = 0
+        if self.settings["protection"] and state["health"] > 0 and state["player_state"] == 0:
+            apply_protection(self.game, self.protection, state)
+        elif self.protection.entries:
+            self.protection.restore()
+        if self.settings["unlock_map"]:
+            if now - self.world_at > 0.75:
+                self.barriers = unlock_regions(self.game, self.world)
+                self.interiors = unlock_interiors(self.game, self.world)
+                self.world_at = now
+        elif self.world.entries:
+            self.world.restore()
+            self.barriers = self.interiors = 0
+
+    def write_report(self, status):
+        movement = self.movement
+        self.report = self.game.snapshot()
+        self.report.update(
+            controller="running",
+            walking=status,
+            settings=self.settings,
+            barrier_entities=self.barriers,
+            interior_portals=self.interiors,
+            neutral_npcs=self.neutral_npcs,
+            obstacle_recoveries=movement.recoveries,
+            updated=time.time(),
+            autosave=self.autosave.report(),
+            camera=self.camera.report(),
+        )
+        navigation = (
+            movement.navigator.report() if movement.navigator else {"error": self.navigation_error}
+        )
+        navigation.update(
+            aligning=movement.aligning, best_target_distance=movement.best_target_distance
+        )
+        self.report["navigation"] = navigation
+        atomic_json(self.state_dir / "state.json", self.report)
+
+    def tick(self, now):
+        read_controls(self.control_path, self.settings)
+        if self.settings["quit"]:
+            return False
+        state = self.game.snapshot()
+        # Set the mode before consuming the next junction preference.
+        self.movement.set_mode(self.settings["mode"])
+        self.handle_steering(state)
+        self.handle_hotkeys(state)
+        if self.settings["quit"]:
+            return False
+        saving = self.autosave.tick(state, now, self.settings["autosave"])
+        self.jump.tick(self.settings.get("jump"), state, now, saving=saving)
+        if state.get("ready"):
+            self.update_game(state, now, saving)
+            status = self.movement.tick(state, self.settings["walking"], self.settings["mode"])
+        else:
+            self.movement.stop()
+            status = state["reason"]
+        if status != self.last_message:
+            logger.info(status)
+            self.last_message = status
+        if now - self.saved_at > 0.75:
+            self.write_report(status)
+            self.saved_at = now
+        return True
+
+    def close(self):
+        try:
+            try:
+                self.jump.cancel()
+            finally:
+                self.movement.stop()
+        finally:
+            failures = []
+            self.autosave.close()
+            if self.mem.alive():
+                try:
+                    self.camera.close()
+                except OSError as error:
+                    failures.append(str(error))
+                for changes in (self.bindings, self.protection, self.world, self.peaceful):
+                    failures.extend(changes.restore())
+            self.report.update(
+                controller="stopped",
+                updated=time.time(),
+                restore_errors=failures,
+                autosave=self.autosave.report(),
+            )
+            atomic_json(self.state_dir / "state.json", self.report)
+            logger.info("Controller stopped; held keys released and temporary settings restored.")
+
+
 def run(args):
     try:
         mem = Memory(writable=True)
@@ -196,178 +468,61 @@ def run(args):
         if mutex:
             k32.CloseHandle(mutex)
         raise RuntimeError("A walker controller is already attached to this game.")
-    game = Game(mem)
-    protection, world, peaceful = RuntimeChanges(mem), RuntimeChanges(mem), RuntimeChanges(mem)
-    bindings = RuntimeChanges(mem)
     try:
-        graph, navigation_error = PedestrianGraph.load(mem.exe.parent), None
-    except (OSError, ValueError) as error:
-        graph, navigation_error = None, str(error)
-    movement = Walking(graph, navigation_error, focused=mem.foreground)
-    autosave = Autosave(mem, args.state_dir)
-    camera = FirstPersonCamera(mem)
-    settings = dict(DEFAULTS, walking=args.walk)
-    try:
-        previous = json.loads((args.state_dir / "control.json").read_text())
-        if previous.get("mode") in MODES:
-            settings["mode"] = previous["mode"]
-        if isinstance(previous.get("first_person"), bool):
-            settings["first_person"] = previous["first_person"]
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    if getattr(args, "mode", None) in MODES:
-        settings["mode"] = args.mode
-    atomic_json(args.state_dir / "control.json", settings)
-    hotkeys = Hotkeys(("f5", "f6", "f7", "f8", "f9", "f11", "f12"))
-    started = time.monotonic()
-    saved_at, barriers_at = 0., 0.
-    barriers, interiors = 0, 0
-    peace_at, neutral_npcs = 0., 0
-    bindings_at = float("-inf")
-    camera_at, camera_error, camera_request = 0., None, None
-    print("Controller ready. Return to the game.\n"
-          "F11 first-person | F5 sidewalks/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
-          "Protection, peaceful mode, map and interior access enabled. Autosave every 60 seconds.", flush=True)
-    print(f"Navigation: {settings['mode']} ({len(graph.nodes) if graph else 0} pedestrian nodes)", flush=True)
-    last_message = None
-    last_steering = None
-    report = {}
-    try:
-        while mem.alive():
-            now = time.monotonic()
-            if args.seconds and now - started >= args.seconds:
-                break
-            try:
-                requested = json.loads((args.state_dir / "control.json").read_text())
-                settings.update({key: value for key,value in requested.items()
-                                 if key in DEFAULTS and isinstance(DEFAULTS[key], bool) and isinstance(value, bool)})
-                if requested.get("mode") in MODES:
-                    settings["mode"] = requested["mode"]
-                steering = requested.get("steering")
-                if isinstance(steering, dict):
-                    settings["steering"] = steering
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
-            if settings["quit"]:
-                break
-            state = game.snapshot()
-            # Apply mode changes before processing a queued junction preference.
-            movement.set_mode(settings["mode"])
-            steering = settings.get("steering")
-            if isinstance(steering, dict) and steering.get("id") != last_steering:
-                last_steering = steering.get("id")
-                direction, issued = steering.get("direction"), steering.get("issued")
-                if isinstance(issued, (int, float)) and 0 <= time.time() - issued <= 10:
-                    if direction == "stop":
-                        settings["walking"] = False
-                        movement.stop()
-                    elif direction in ("left", "right", "forward"):
-                        if direction == "forward":
-                            settings["walking"] = True
-                        movement.steer(direction, settings["mode"], state)
-            for key in hotkeys.pressed():
-                if key == "f9":
-                    settings["walking"] = False
-                elif key == "f12":
-                    settings["quit"] = True
-                elif state.get("ready") and state["foreground"] and not state["paused"]:
-                    if key == "f11":
-                        settings["first_person"] = not settings["first_person"]
-                    elif key == "f5":
-                        settings["mode"] = "free" if settings["mode"] == "sidewalks" else "sidewalks"
-                    elif key == "f6":
-                        settings["walking"] = not settings["walking"]
-                    elif key in ("f7", "f8") and not state["controls_disabled"] and not state["in_vehicle"]:
-                        movement.steer("left" if key == "f7" else "right", settings["mode"], state)
-                atomic_json(args.state_dir / "control.json", settings)
-            if settings["quit"]:
-                break
-            saving = autosave.tick(state, now, settings["autosave"])
-            if state.get("ready"):
-                if not saving and now - bindings_at > .75:
-                    bind_walk_key(game, bindings)
-                    bindings_at = now
-                if (not saving and state["foreground"] and not state["paused"]
-                        and (camera_request != settings["first_person"] or now - camera_at > .75)):
-                    camera.apply(settings["first_person"])
-                    camera_at = now
-                    camera_request = settings["first_person"]
-                    if settings["first_person"] and camera.error and camera.error != camera_error:
-                        print(camera.error, flush=True)
-                    camera_error = camera.error
-                if settings["peaceful"] and not saving:
-                    if now - peace_at > .75:
-                        neutral_npcs = apply_peaceful_mode(game, peaceful)
-                        peace_at = now
-                elif not settings["peaceful"] and peaceful.entries and not saving:
-                    peaceful.restore()
-                    neutral_npcs = 0
-                if settings["protection"] and state["health"] > 0 and state["player_state"] == 0 and not saving:
-                    apply_protection(game, protection, state)
-                elif protection.entries and not saving:
-                    protection.restore()
-                if settings["unlock_map"] and not saving:
-                    if now - barriers_at > 0.75:
-                        barriers = unlock_regions(game, world)
-                        interiors = unlock_interiors(game, world)
-                        barriers_at = now
-                elif not settings["unlock_map"] and world.entries and not saving:
-                    world.restore()
-                    barriers = 0
-                    interiors = 0
-                status = movement.tick(state, settings["walking"], settings["mode"])
-            else:
-                movement.stop()
-                status = state["reason"]
-            if status != last_message:
-                print(status, flush=True)
-                last_message = status
-            if now - saved_at > 0.75:
-                # Read again so the status report includes the applied settings.
-                report = game.snapshot()
-                report.update(controller="running", walking=status, settings=settings,
-                              barrier_entities=barriers, interior_portals=interiors,
-                              neutral_npcs=neutral_npcs,
-                              obstacle_recoveries=movement.recoveries, updated=time.time())
-                report["navigation"] = movement.navigator.report() if movement.navigator else {"error": navigation_error}
-                report["navigation"].update(aligning=movement.aligning,
-                                            best_target_distance=movement.best_target_distance)
-                report["autosave"] = autosave.report()
-                report["camera"] = camera.report()
-                atomic_json(args.state_dir / "state.json", report)
-                saved_at = now
-            time.sleep(1 / 120)
-    finally:
+        controller = Controller(mem, args)
+        started = time.monotonic()
         try:
-            movement.stop()
+            while mem.alive():
+                now = time.monotonic()
+                if args.seconds and now - started >= args.seconds:
+                    break
+                if not controller.tick(now):
+                    break
+                time.sleep(1 / 120)
         finally:
-            failures = []
-            autosave.close()
-            if mem.alive():
-                try:
-                    camera.close()
-                except OSError as error:
-                    failures.append(str(error))
-                failures += bindings.restore() + protection.restore() + world.restore() + peaceful.restore()
-            report.update(controller="stopped", updated=time.time(), restore_errors=failures,
-                          autosave=autosave.report())
-            atomic_json(args.state_dir / "state.json", report)
-            k32.CloseHandle(mutex)
-            mem.close()
-            print("Controller stopped; held keys released and temporary settings restored.", flush=True)
+            controller.close()
+    finally:
+        k32.CloseHandle(mutex)
+        mem.close()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("status", "run", "walk", "protect", "unlock", "peace", "autosave", "camera", "stop", "mode", "steer"), nargs="?", default="status")
+    parser.add_argument(
+        "command",
+        choices=(
+            "status",
+            "run",
+            "walk",
+            "protect",
+            "unlock",
+            "peace",
+            "autosave",
+            "camera",
+            "stop",
+            "mode",
+            "steer",
+        ),
+        nargs="?",
+        default="status",
+    )
     parser.add_argument("value", nargs="?")
+    parser.add_argument(
+        "--amount",
+        type=int,
+        choices=range(1, 101),
+        default=1,
+        metavar="1-100",
+        help="Amount for steer commands",
+    )
     parser.add_argument("--mode", choices=MODES)
     parser.add_argument("--walk", action="store_true")
     parser.add_argument("--seconds", type=float)
-    parser.add_argument("--state-dir", type=Path, default=Path(__file__).resolve().parent / "runtime")
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.state_dir = args.state_dir.resolve()
+    configure_logging(args.state_dir)
     if args.command == "status":
         mem = Memory()
         try:
@@ -393,18 +548,24 @@ def main():
                 parser.error("Specify first or third.")
             settings["first_person"] = args.value == "first"
         elif args.command == "steer":
-            if args.value not in ("left", "right", "forward", "stop"):
-                parser.error("Specify left, right, forward or stop.")
-            settings["steering"] = {"id": uuid.uuid4().hex, "direction": args.value, "issued": time.time()}
-            if args.value in ("stop", "forward"):
-                settings["walking"] = args.value == "forward"
+            if args.value not in ("left", "right", "forward", "back", "stop"):
+                parser.error("Specify left, right, forward, back or stop.")
+            settings["steering"] = control_request(args.value, args.amount)
+            if args.value == "stop":
+                settings["walking"] = False
         else:
             if args.value not in ("on", "off"):
                 parser.error("Specify on or off.")
-            key = {"walk": "walking", "protect": "protection", "unlock": "unlock_map", "peace": "peaceful", "autosave": "autosave"}[args.command]
+            key = {
+                "walk": "walking",
+                "protect": "protection",
+                "unlock": "unlock_map",
+                "peace": "peaceful",
+                "autosave": "autosave",
+            }[args.command]
             settings[key] = args.value == "on"
         atomic_json(path, settings)
-        print("Requested:", settings)
+        logger.info("Requested: %s", settings)
 
 
 if __name__ == "__main__":
@@ -413,5 +574,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as error:
-        print("Controller stopped:", error, file=sys.stderr)
+        logger.exception("Controller stopped: %s", error)
         sys.exit(1)

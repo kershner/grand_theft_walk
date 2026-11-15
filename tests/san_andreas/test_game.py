@@ -1,11 +1,33 @@
 """Tests for interior access, faction neutrality, and runtime-state restoration."""
-import struct
-import unittest
 
-from game import (ENTRY_EXIT_POOL, ENTRY_EXIT_SIZE, PED_POOL, PED_SIZE, RELATIONSHIP_TABLE,
-                  GANG_WARS_ACTIVE, Game, RuntimeChanges, unlock_interiors, apply_peaceful_mode)
-from game import CONTROL_ACTIONS, WALK_ACTION, WALK_KEY, bind_walk_key
-from tests.helpers import MemoryFixture
+import hashlib
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from game import (
+    CONTROL_ACTIONS,
+    ENTRY_EXIT_POOL,
+    ENTRY_EXIT_SIZE,
+    FIRST_PERSON,
+    GANG_WARS_ACTIVE,
+    PED_POOL,
+    PED_SIZE,
+    RELATIONSHIP_TABLE,
+    ROTATE_PLAYER,
+    WALK_ACTION,
+    WALK_KEY,
+    FirstPersonCamera,
+    Game,
+    RuntimeChanges,
+    apply_peaceful_mode,
+    bind_walk_key,
+    unlock_interiors,
+)
+
+from .helpers import MemoryFixture
 
 
 class WalkBindingTests(unittest.TestCase):
@@ -61,7 +83,9 @@ class InteriorTests(unittest.TestCase):
         self.assertEqual(self.mem.unpack(self.objects + 0x30, "H")[0], 0x5100)
         self.assertEqual(self.mem.read(self.objects + 0x34, 2), bytes((0, 24)))
         self.assertEqual(self.mem.read(self.objects, 0x30), before[:0x30])
-        self.assertEqual(self.mem.read(self.objects + 0x36, ENTRY_EXIT_SIZE * 3 - 0x36), before[0x36:])
+        self.assertEqual(
+            self.mem.read(self.objects + 0x36, ENTRY_EXIT_SIZE * 3 - 0x36), before[0x36:]
+        )
 
     def test_restore_retains_game_transition_flags(self):
         unlock_interiors(self.game, self.changes)
@@ -103,12 +127,16 @@ class PeacefulTests(unittest.TestCase):
         self.mem.write(self.pointer, struct.pack("<IIi", self.objects, self.bitmap, 3))
         self.mem.write(self.bitmap, bytes((1, 1, 0x80)))
         for kind in range(32):
-            self.mem.write(self.table + kind * 20, struct.pack("<5I", 1, 2, 4, 0x123FFFFF, 0x432FFFFF))
+            self.mem.write(
+                self.table + kind * 20, struct.pack("<5I", 1, 2, 4, 0x123FFFFF, 0x432FFFFF)
+            )
         self.mem.write(GANG_WARS_ACTIVE, b"\x01")
         for i, kind in enumerate((7, 0, 8)):
             self.mem.write(self.objects + i * PED_SIZE + 0x598, struct.pack("<I", kind))
-            self.mem.write(self.objects + i * PED_SIZE + 0x4E0,
-                           struct.pack("<5I", 1, 2, 4, 0x123FFFFF, 0x432FFFFF))
+            self.mem.write(
+                self.objects + i * PED_SIZE + 0x4E0,
+                struct.pack("<5I", 1, 2, 4, 0x123FFFFF, 0x432FFFFF),
+            )
         self.game, self.changes = Game(self.mem), RuntimeChanges(self.mem)
 
     def test_removes_only_player_hostility_from_templates_and_live_npcs(self):
@@ -146,3 +174,74 @@ class PeacefulTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CameraTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        path = Path(self.temp.name) / "ZMenuSA.asi"
+        data = b"verified camera fixture"
+        path.write_bytes(data)
+        self.hash_patch = patch("game.CAMERA_MODULE_SHA256", hashlib.sha256(data).hexdigest())
+        self.hash_patch.start()
+        self.addCleanup(self.hash_patch.stop)
+        self.module = {"base": 0x10000000, "size": 0x600000, "path": path}
+        self.mem = MemoryFixture()
+        self.mem.module = Mock(return_value=self.module)
+        self.camera = FirstPersonCamera(self.mem)
+
+    def flag(self, offset):
+        return self.mem.byte(self.module["base"] + offset)
+
+    def test_toggle_and_shutdown_restore_original_camera_flags(self):
+        self.assertTrue(self.camera.apply(True))
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (1, 1))
+        self.assertTrue(self.camera.apply(False))
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (0, 0))
+        self.camera.apply(True)
+        self.camera.close()
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (0, 0))
+
+    def test_unknown_version_cannot_write_camera_memory(self):
+        self.module["path"].write_bytes(b"unsupported version")
+        self.assertFalse(self.camera.apply(True))
+        self.assertIn("Unsupported", self.camera.error)
+        self.assertFalse(self.mem.data)
+
+    def test_backward_movement_keeps_first_person_without_forcing_player_rotation(self):
+        self.camera.apply(True)
+        self.assertTrue(self.camera.apply(True, rotate_player=False))
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (1, 0))
+        self.assertTrue(self.camera.apply(True))
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (1, 1))
+
+    def test_third_person_and_shutdown_restore_original_rotation_after_backing_up(self):
+        self.mem.write(self.module["base"] + ROTATE_PLAYER, b"\x01")
+        self.camera.apply(True, rotate_player=False)
+        self.camera.apply(False, rotate_player=False)
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (0, 1))
+        self.camera.apply(True, rotate_player=False)
+        self.camera.close()
+        self.assertEqual((self.flag(FIRST_PERSON), self.flag(ROTATE_PLAYER)), (0, 1))
+
+    def test_missing_mod_reports_unavailable(self):
+        self.mem.module.return_value = None
+        self.assertFalse(self.camera.apply(True))
+        self.assertFalse(self.camera.report()["available"])
+        self.assertFalse(self.mem.data)
+
+    def test_invalid_or_out_of_bounds_flags_are_rejected(self):
+        self.mem.write(self.module["base"] + FIRST_PERSON, b"\x02")
+        self.assertFalse(self.camera.apply(True))
+        self.assertEqual(self.flag(FIRST_PERSON), 2)
+        self.module["size"] = 100
+        self.assertFalse(self.camera.apply(True))
+        self.assertEqual(self.flag(ROTATE_PLAYER), 0)
+
+    def test_unloaded_module_is_not_restored(self):
+        self.camera.apply(True)
+        before = dict(self.mem.data)
+        self.mem.module.return_value = None
+        self.camera.close()
+        self.assertEqual(self.mem.data, before)

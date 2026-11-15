@@ -1,19 +1,24 @@
 """Launch San Andreas, prepare its save, and start the walking controller."""
+
 import argparse
 import ctypes
 import hashlib
 import json
-from pathlib import Path
+import logging
 import struct
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-from game import Game
-from saves import MENU, SAVE_PREFIX, atomic_json, valid_save
-from winmemory import Memory, EXPECTED_EXE, game_pids, k32, w
 from controls import Keys, key_down
+from game import Game
+from runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging
+from saves import MENU, SAVE_PREFIX, valid_save
 from walker import run
+from winmemory import EXPECTED_EXE, Memory, elevate, game_pids, k32
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent
 MAIN_MENU, NEW_GAME, LOAD, SAVE_LIST, SAVING, SAVED = 34, 6, 13, 16, 18, 19
@@ -21,6 +26,7 @@ SCRIPT_SPACE = 0xA49960
 INTRO_SCRIPT = SCRIPT_SPACE + 200000
 INTRO_SIZE = 10682
 INTRO_SHA256 = "5715d5cd355df00beae42775b1a9531f97d23c5687ab48df95779422bfc1ae6c"
+
 
 def choose_save(prefix, record=None):
     paths = [Path(f"{prefix}{slot + 1}.b") for slot in range(8)]
@@ -56,7 +62,7 @@ class Startup:
         self.intro_finished = False
 
     def wait(self, description, predicate):
-        print(description, flush=True)
+        logger.info(description)
         background_at = None
         while time.monotonic() < self.deadline:
             if not self.mem.alive():
@@ -66,7 +72,7 @@ class Startup:
             now = time.monotonic()
             if not self.mem.foreground():
                 if background_at is None:
-                    print("Startup paused while the game is in the background.", flush=True)
+                    logger.info("Startup paused while the game is in the background.")
                 else:
                     self.deadline += now - background_at
                 background_at = now
@@ -75,7 +81,7 @@ class Startup:
             if background_at is not None:
                 self.deadline += now - background_at
                 background_at = None
-                print("Resuming startup.", flush=True)
+                logger.info("Resuming startup.")
             result = predicate()
             if result:
                 return result
@@ -113,23 +119,31 @@ class Startup:
         if mission_offset >= 200000:
             raise RuntimeError("Invalid mission flag offset.")
         on_mission = mission_offset and self.mem.u32(SCRIPT_SPACE + mission_offset) == 1
-        if (on_mission and self.bootstrap_intro and not state["paused"]
-                and not state["controls_disabled"] and not state["in_vehicle"]
-                and state["health"] > 0 and state["player_state"] == 0
-                and state["interior"] == 0):
+        if (
+            on_mission
+            and self.bootstrap_intro
+            and not state["paused"]
+            and not state["controls_disabled"]
+            and not state["in_vehicle"]
+            and state["health"] > 0
+            and state["player_state"] == 0
+            and state["interior"] == 0
+        ):
             self.finish_intro()
-        return (state if not on_mission and not state["paused"]
-                and not state["controls_disabled"] and state["player_state"] == 0
-                and state["health"] > 0 and not state["in_vehicle"]
-                and state["interior"] == 0 else False)
+        return (
+            state
+            if not on_mission
+            and not state["paused"]
+            and not state["controls_disabled"]
+            and state["player_state"] == 0
+            and state["health"] > 0
+            and not state["in_vehicle"]
+            and state["interior"] == 0
+            else False
+        )
 
     def finish_intro(self):
-        """Let the verified INTRO script execute its own cleanup and terminate.
-
-        Only the first-launch alley objective is bypassed. Its normal cleanup
-        starts follow-up world scripts, removes the bike marker, clears the
-        mission flag and calls MISSION_HAS_FINISHED before terminating.
-        """
+        """Skip the opening objective through the verified script's own cleanup."""
         if self.intro_finished or not self.mem.foreground():
             return False
         script = self.mem.u32(0xA8B42C)
@@ -139,17 +153,17 @@ class Startup:
             data = self.mem.read(script, 0xE0)
             ip = struct.unpack_from("<I", data, 0x14)[0]
             if data[8:16].rstrip(b"\0").lower() == b"intro":
-                if not (data[0xC4] and data[0xDC]
-                        and INTRO_SCRIPT + 9700 <= ip < INTRO_SCRIPT + 9994):
+                if not (
+                    data[0xC4] and data[0xDC] and INTRO_SCRIPT + 9700 <= ip < INTRO_SCRIPT + 9994
+                ):
                     return False
                 bytecode = self.mem.read(INTRO_SCRIPT, INTRO_SIZE)
                 if hashlib.sha256(bytecode).hexdigest() != INTRO_SHA256:
                     raise RuntimeError("Unsupported opening script; refusing to skip its mission.")
                 if self.mem.read(script + 8, 8) != data[8:16] or not self.mem.foreground():
                     return False
-                print("Finishing the opening mission for the walker...", flush=True)
-                # Existing top-level GOSUB cleanup; RETURN leads to TERMINATE.
-                # Do not just clear the mission flag or save an active mission.
+                logger.info("Finishing the opening mission for the walker...")
+                # Run the script's cleanup; clearing its mission flag alone breaks saves.
                 self.mem.write(script + 0x14, struct.pack("<I", INTRO_SCRIPT + 38))
                 self.intro_finished = True
                 return True
@@ -160,8 +174,7 @@ class Startup:
         def title_ready():
             if self.menu() == MAIN_MENU:
                 return True
-            # Startup movies precede CCutsceneMgr and need their own skip input.
-            # Stop issuing it as soon as the title menu appears.
+            # Startup movies need Enter; CCutsceneMgr is not active yet.
             if time.monotonic() - self.last_skip >= 1.5:
                 if self.keys.tap("enter"):
                     self.last_skip = time.monotonic()
@@ -174,9 +187,10 @@ class Startup:
         record_path = state_dir / "launch.json"
         record = json.loads(record_path.read_text()) if record_path.exists() else None
         slot, path, create = choose_save(prefix, record)
-        print(f"Normal save slot {slot + 1}: {path}", flush=True)
+        logger.info("Normal save slot %s: %s", slot + 1, path)
         if create:
             self.bootstrap_intro = True
+
             def start_new_game():
                 page = self.menu()
                 if page is None:
@@ -207,12 +221,16 @@ class Startup:
             self.wait("Preparing the first normal save...", stable)
             self.bootstrap_intro = False
             if path.exists():
-                raise RuntimeError("The selected save slot became occupied; no save was overwritten.")
+                raise RuntimeError(
+                    "The selected save slot became occupied; no save was overwritten."
+                )
             # Request the game's normal save UI initialization (no manual input).
             self.mem.write(MENU + 0x5F, b"\x01")
             self.wait("Creating the normal save...", lambda: self.menu() == SAVE_LIST)
             if path.exists():
-                raise RuntimeError("The selected save slot became occupied; no save was overwritten.")
+                raise RuntimeError(
+                    "The selected save slot became occupied; no save was overwritten."
+                )
             self.page(SAVING, slot=slot)
 
             def saved():
@@ -229,22 +247,34 @@ class Startup:
             self.wait("Verifying the new save can be loaded...", lambda: self.menu() is not None)
         self.page(LOAD, slot=slot)
         self.wait("Loading the normal walker save...", self.free_roam)
-        atomic_json(record_path, {"slot": slot, "path": str(path),
-                                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        atomic_json(
+            record_path,
+            {
+                "slot": slot,
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            },
+        )
         return path
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--game", type=Path, default=Path(
-        "C:/Program Files/Rockstar Games/Grand Theft Auto San Andreas/gta_sa.exe"))
-    parser.add_argument("--state-dir", type=Path, default=ROOT / "runtime")
+    parser.add_argument(
+        "--game",
+        type=Path,
+        default=Path("C:/Program Files/Rockstar Games/Grand Theft Auto San Andreas/gta_sa.exe"),
+    )
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--timeout", type=float, default=600)
-    parser.add_argument("--mode", choices=("sidewalks", "free"), help="Override the remembered navigation mode")
-    parser.add_argument("--prepare-only", action="store_true", help="Create/load the save without walking")
+    parser.add_argument("--mode", choices=MODES, help="Override the remembered navigation mode")
+    parser.add_argument(
+        "--prepare-only", action="store_true", help="Create/load the save without walking"
+    )
     parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.state_dir = args.state_dir.resolve()
+    configure_logging(args.state_dir)
     mutex = k32.CreateMutexW(None, False, "Local\\GrandTheftWalkLauncher")
     if not mutex or ctypes.get_last_error() == 183:
         if mutex:
@@ -252,24 +282,22 @@ def main():
         raise RuntimeError("Grand Theft Walk is already launching or running.")
     try:
         if list(game_pids()):
-            raise RuntimeError("Close the existing San Andreas instance before using the full launcher.")
+            raise RuntimeError(
+                "Close the existing San Andreas instance before using the full launcher."
+            )
         exe = args.game.resolve()
         if hashlib.sha256(exe.read_bytes()).hexdigest() != EXPECTED_EXE:
-            raise RuntimeError("Unsupported game executable. Install the verified PS2-style setup first.")
-        print("Launching Grand Theft Walk... F12 cancels startup.", flush=True)
+            raise RuntimeError(
+                "Unsupported game executable. Install the verified PS2-style setup first."
+            )
+        logger.info("Launching Grand Theft Walk... F12 cancels startup.")
         try:
             process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
         except PermissionError:
             if args.elevated:
                 raise
             parameters = [str(Path(__file__).resolve()), *sys.argv[1:], "--elevated"]
-            shell_execute = ctypes.windll.shell32.ShellExecuteW
-            shell_execute.argtypes = [w.HWND, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, ctypes.c_int]
-            shell_execute.restype = ctypes.c_void_p
-            result = shell_execute(None, "runas", sys.executable,
-                                   subprocess.list2cmdline(parameters), str(ROOT), 1)
-            if not result or result <= 32:
-                raise RuntimeError("Windows administrator approval was cancelled.")
+            elevate(parameters, ROOT)
             return
         deadline = time.monotonic() + 30
         while process.poll() is None and time.monotonic() < deadline:
@@ -283,7 +311,7 @@ def main():
             path = Startup(memory, args.timeout).prepare(args.state_dir)
         finally:
             memory.close()
-        print(f"Loaded and ready: {path}", flush=True)
+        logger.info("Loaded and ready: %s", path)
         if not args.prepare_only:
             args.walk = True
             args.seconds = None
@@ -298,5 +326,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as error:
-        print(f"Grand Theft Walk stopped: {error}", file=sys.stderr, flush=True)
+        logger.exception("Grand Theft Walk stopped: %s", error)
         sys.exit(1)

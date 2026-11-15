@@ -1,20 +1,18 @@
 import hashlib
 import json
-from pathlib import Path
+import logging
 import shutil
 import struct
 import subprocess
 import time
+from pathlib import Path
+
+from runtime import atomic_json
+
+logger = logging.getLogger(__name__)
 
 MENU = 0xBA6748
 SAVE_PREFIX = 0xC16F18
-
-
-def atomic_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    temporary.replace(path)
 
 
 def valid_save(path):
@@ -22,8 +20,11 @@ def valid_save(path):
         data = path.read_bytes()
     except FileNotFoundError:
         return False
-    return (200000 <= len(data) <= 4 * 1024 * 1024 and data.startswith(b"BLOCK")
-            and (sum(data[:-4]) & 0xFFFFFFFF) == struct.unpack("<I", data[-4:])[0])
+    return (
+        200000 <= len(data) <= 4 * 1024 * 1024
+        and data.startswith(b"BLOCK")
+        and (sum(data[:-4]) & 0xFFFFFFFF) == struct.unpack("<I", data[-4:])[0]
+    )
 
 
 class NativeSaveRequest:
@@ -43,12 +44,18 @@ class NativeSaveRequest:
         if manifest.get("format") != 1:
             raise ValueError("Invalid native save bridge manifest")
         for name in ("save_request.exe", "save_bridge.dll"):
-            if hashlib.sha256((self.folder / name).read_bytes()).hexdigest() != manifest["files"][name]:
+            if (
+                hashlib.sha256((self.folder / name).read_bytes()).hexdigest()
+                != manifest["files"][name]
+            ):
                 raise ValueError("Native save bridge failed validation")
         self.process = subprocess.Popen(
             [str(self.folder / "save_request.exe"), str(self.memory.pid), str(slot)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW)
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
 
     def poll(self):
         if self.busy:
@@ -96,12 +103,22 @@ class Autosave:
 
     def safe(self, state):
         pause_menu = self.menu() == 41 and state.get("paused")
-        if not (state.get("ready") and (not state["paused"] or pause_menu)
-                and (not state["controls_disabled"] or pause_menu) and state["player_state"] == 0
-                and state["health"] > 0 and not state["in_vehicle"]
-                and state["interior"] == 0 and state["ped_state"] in (0, 1)):
+        if not (
+            state.get("ready")
+            and (not state["paused"] or pause_menu)
+            and (not state["controls_disabled"] or pause_menu)
+            and state["player_state"] == 0
+            and state["health"] > 0
+            and not state["in_vehicle"]
+            and state["interior"] == 0
+            and state["ped_state"] in (0, 1)
+        ):
             return False
-        if (self.menu() is not None and not pause_menu) or self.mem.byte(0xB5F851) or self.mem.u32(0x96A7CC):
+        if (
+            (self.menu() is not None and not pause_menu)
+            or self.mem.byte(0xB5F851)
+            or self.mem.u32(0x96A7CC)
+        ):
             return False
         mission = self.mem.u32(0xA476AC)
         return mission < 200000 and not (mission and self.mem.u32(0xA49960 + mission) == 1)
@@ -131,7 +148,7 @@ class Autosave:
                     recovery.replace(self.path)
             except OSError as recovery_error:
                 self.error += f"; restore failed: {recovery_error}"
-        print(f"Autosave failed: {error}. Previous checkpoint backup: {self.backup}", flush=True)
+        logger.warning("Autosave failed: %s. Previous checkpoint backup: %s", error, self.backup)
         self.phase = "idle"
         self.next_at = now + self.interval
 
@@ -165,14 +182,17 @@ class Autosave:
                 else:
                     if not valid_save(self.path):
                         raise ValueError("The game's new save failed checksum validation")
-                    record = {"slot": self.slot, "path": str(self.path),
-                              "sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
-                              "last_autosave": time.time()}
+                    record = {
+                        "slot": self.slot,
+                        "path": str(self.path),
+                        "sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
+                        "last_autosave": time.time(),
+                    }
                     atomic_json(self.state_dir / "launch.json", record)
                     self.last_saved = record["last_autosave"]
                     self.count += 1
                     self.duration_ms = result.get("duration_ms")
-                    print("Autosaved walker checkpoint.", flush=True)
+                    logger.info("Autosaved walker checkpoint.")
                     self.phase, self.next_at = "idle", now + self.interval
         except (OSError, ValueError, TypeError, RuntimeError) as error:
             self.fail(error, now)
@@ -182,6 +202,11 @@ class Autosave:
         self.bridge.close()
 
     def report(self):
-        return {"phase": self.phase, "interval_seconds": self.interval,
-                "last_saved": self.last_saved, "count": self.count, "error": self.error,
-                "duration_ms": self.duration_ms}
+        return {
+            "phase": self.phase,
+            "interval_seconds": self.interval,
+            "last_saved": self.last_saved,
+            "count": self.count,
+            "error": self.error,
+            "duration_ms": self.duration_ms,
+        }

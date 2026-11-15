@@ -1,14 +1,38 @@
 """Focus-aware keyboard input, held-key tracking, and relative mouse movement."""
+
 import ctypes as c
-from ctypes import wintypes as w
+import logging
 import time
+from ctypes import wintypes as w
 
 import keyboard
+from game import bind_jump_key
+from runtime import request_expired
+
+logger = logging.getLogger(__name__)
+
+
+def can_control(state):
+    return (
+        state.get("ready")
+        and state["foreground"]
+        and not state["paused"]
+        and not state["controls_disabled"]
+        and not state["in_vehicle"]
+        and state["health"] > 0
+        and state["player_state"] == 0
+    )
 
 
 class MouseInput(c.Structure):
-    _fields_ = [("dx", w.LONG), ("dy", w.LONG), ("mouseData", w.DWORD), ("dwFlags", w.DWORD),
-                ("time", w.DWORD), ("dwExtraInfo", c.c_size_t)]
+    _fields_ = [
+        ("dx", w.LONG),
+        ("dy", w.LONG),
+        ("mouseData", w.DWORD),
+        ("dwFlags", w.DWORD),
+        ("time", w.DWORD),
+        ("dwExtraInfo", c.c_size_t),
+    ]
 
 
 class InputData(c.Union):
@@ -61,7 +85,7 @@ class Keys:
             keyboard.press(self.bindings[action])
             self.held.add(action)
 
-    def tap(self, key, duration=.08):
+    def tap(self, key, duration=0.08):
         if not self.focused():
             return False
         keyboard.press(key)
@@ -89,3 +113,52 @@ class Keys:
                 failure = failure or error
         if failure is not None:
             raise failure
+
+
+class HighJump:
+    def __init__(self, game, bindings):
+        self.game = game
+        self.bindings = bindings
+        self.keys = Keys({"jump": "space"}, focused=game.mem.foreground)
+        self.last_request = None
+        self.player = None
+        self.release_at = 0.0
+        self.deadline = 0.0
+
+    def cancel(self):
+        self.keys.release()
+        self.player = None
+
+    def tick(self, request, state, now, saving=False):
+        usable = can_control(state) and not saving
+        if self.player is not None:
+            if not usable or self.player != (state["ped"], state["identity"]):
+                self.cancel()
+            else:
+                if now >= self.release_at:
+                    self.keys.release()
+                if state["in_air"] and not state["standing"] and state["vertical_speed"] > 0:
+                    if self.game.boost_jump(state):
+                        logger.info("High jump boosted")
+                    self.cancel()
+                elif now >= self.deadline:
+                    logger.warning("Jump did not take off; boost cancelled")
+                    self.cancel()
+
+        if not isinstance(request, dict) or request.get("id") == self.last_request:
+            return
+        if request_expired(request):
+            self.last_request = request.get("id")
+            return
+        if not usable:
+            return  # Allow time to return focus to the game.
+        self.last_request = request.get("id")
+        if self.player is not None or not state["standing"] or state["in_air"]:
+            logger.debug("Jump ignored: already jumping or airborne")
+            return
+        bind_jump_key(self.game, self.bindings)
+        self.keys.set({"jump"})
+        self.player = (state["ped"], state["identity"])
+        self.release_at = now + 0.12
+        self.deadline = now + 2.0
+        logger.debug("Jump requested; waiting for native takeoff")

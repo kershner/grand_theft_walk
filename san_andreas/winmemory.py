@@ -1,9 +1,12 @@
 """Windows process discovery, module enumeration, and process-memory access."""
+
 import ctypes as c
-from ctypes import wintypes as w
 import hashlib
-from pathlib import Path
 import struct
+import subprocess
+import sys
+from ctypes import wintypes as w
+from pathlib import Path
 
 EXPECTED_EXE = "a559aa772fd136379155efa71f00c47aad34bbfeae6196b0fe1047d0645cbd26"
 k32 = c.WinDLL("kernel32", use_last_error=True)
@@ -11,23 +14,53 @@ u32 = c.WinDLL("user32", use_last_error=True)
 
 
 class ProcessEntry(c.Structure):
-    _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD), ("th32ProcessID", w.DWORD),
-                ("th32DefaultHeapID", c.c_size_t), ("th32ModuleID", w.DWORD),
-                ("cntThreads", w.DWORD), ("th32ParentProcessID", w.DWORD),
-                ("pcPriClassBase", w.LONG), ("dwFlags", w.DWORD), ("szExeFile", w.WCHAR * 260)]
+    _fields_ = [
+        ("dwSize", w.DWORD),
+        ("cntUsage", w.DWORD),
+        ("th32ProcessID", w.DWORD),
+        ("th32DefaultHeapID", c.c_size_t),
+        ("th32ModuleID", w.DWORD),
+        ("cntThreads", w.DWORD),
+        ("th32ParentProcessID", w.DWORD),
+        ("pcPriClassBase", w.LONG),
+        ("dwFlags", w.DWORD),
+        ("szExeFile", w.WCHAR * 260),
+    ]
 
 
 class ModuleEntry(c.Structure):
-    _fields_ = [("dwSize", w.DWORD), ("th32ModuleID", w.DWORD), ("th32ProcessID", w.DWORD),
-                ("GlblcntUsage", w.DWORD), ("ProccntUsage", w.DWORD),
-                ("modBaseAddr", c.c_void_p), ("modBaseSize", w.DWORD), ("hModule", w.HMODULE),
-                ("szModule", w.WCHAR * 256), ("szExePath", w.WCHAR * 260)]
+    _fields_ = [
+        ("dwSize", w.DWORD),
+        ("th32ModuleID", w.DWORD),
+        ("th32ProcessID", w.DWORD),
+        ("GlblcntUsage", w.DWORD),
+        ("ProccntUsage", w.DWORD),
+        ("modBaseAddr", c.c_void_p),
+        ("modBaseSize", w.DWORD),
+        ("hModule", w.HMODULE),
+        ("szModule", w.WCHAR * 256),
+        ("szExePath", w.WCHAR * 260),
+    ]
 
 
 def api(dll, name, args, result):
     function = getattr(dll, name)
     function.argtypes, function.restype = args, result
     return function
+
+
+def elevate(arguments, directory):
+    launch = api(
+        c.windll.shell32,
+        "ShellExecuteW",
+        [w.HWND, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, c.c_int],
+        c.c_void_p,
+    )
+    result = launch(
+        None, "runas", sys.executable, subprocess.list2cmdline(arguments), str(directory), 1
+    )
+    if not result or result <= 32:
+        raise RuntimeError("Windows administrator approval was cancelled.")
 
 
 api(k32, "CreateToolhelp32Snapshot", [w.DWORD, w.DWORD], w.HANDLE)
@@ -38,8 +71,18 @@ api(k32, "Module32NextW", [w.HANDLE, c.POINTER(ModuleEntry)], w.BOOL)
 api(k32, "OpenProcess", [w.DWORD, w.BOOL, w.DWORD], w.HANDLE)
 api(k32, "CloseHandle", [w.HANDLE], w.BOOL)
 api(k32, "QueryFullProcessImageNameW", [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)], w.BOOL)
-api(k32, "ReadProcessMemory", [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)], w.BOOL)
-api(k32, "WriteProcessMemory", [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)], w.BOOL)
+api(
+    k32,
+    "ReadProcessMemory",
+    [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)],
+    w.BOOL,
+)
+api(
+    k32,
+    "WriteProcessMemory",
+    [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)],
+    w.BOOL,
+)
 api(k32, "GetExitCodeProcess", [w.HANDLE, c.POINTER(w.DWORD)], w.BOOL)
 api(u32, "GetForegroundWindow", [], w.HWND)
 api(u32, "GetWindowThreadProcessId", [w.HWND, c.POINTER(w.DWORD)], w.DWORD)
@@ -77,7 +120,9 @@ class Memory:
                 raise c.WinError(c.get_last_error())
             self.exe = Path(name.value)
             if hashlib.sha256(self.exe.read_bytes()).hexdigest() != EXPECTED_EXE:
-                raise RuntimeError("Unsupported executable: this profile requires the verified modded 1.0 build.")
+                raise RuntimeError(
+                    "Unsupported executable: this profile requires the verified modded 1.0 build."
+                )
         except Exception:
             self.close()
             raise
@@ -96,8 +141,11 @@ class Memory:
             ok = k32.Module32FirstW(snapshot, c.byref(entry))
             while ok:
                 if entry.szModule.casefold() == name.casefold():
-                    return {"base": entry.modBaseAddr, "size": entry.modBaseSize,
-                            "path": Path(entry.szExePath)}
+                    return {
+                        "base": entry.modBaseAddr,
+                        "size": entry.modBaseSize,
+                        "path": Path(entry.szExePath),
+                    }
                 ok = k32.Module32NextW(snapshot, c.byref(entry))
             return None
         finally:
@@ -112,7 +160,10 @@ class Memory:
         if not 0x10000 <= address < 0x80000000 or not 0 < length <= 16 * 1024 * 1024:
             raise ValueError(f"Invalid 32-bit memory read: {address:#x}, {length}")
         data, transferred = c.create_string_buffer(length), c.c_size_t()
-        if not k32.ReadProcessMemory(self.handle, address, data, length, c.byref(transferred)) or transferred.value != length:
+        if (
+            not k32.ReadProcessMemory(self.handle, address, data, length, c.byref(transferred))
+            or transferred.value != length
+        ):
             raise c.WinError(c.get_last_error())
         return data.raw
 
@@ -122,7 +173,9 @@ class Memory:
         if not 0x10000 <= address < 0x80000000 or not 0 < len(data) <= 4096:
             raise ValueError("Invalid 32-bit memory write.")
         buffer, transferred = c.create_string_buffer(data), c.c_size_t()
-        if not k32.WriteProcessMemory(self.handle, address, buffer, len(data), c.byref(transferred)) or transferred.value != len(data):
+        if not k32.WriteProcessMemory(
+            self.handle, address, buffer, len(data), c.byref(transferred)
+        ) or transferred.value != len(data):
             raise c.WinError(c.get_last_error())
 
     def unpack(self, address, fmt):
@@ -138,5 +191,3 @@ class Memory:
         pid = w.DWORD()
         u32.GetWindowThreadProcessId(u32.GetForegroundWindow(), c.byref(pid))
         return pid.value == self.pid
-
-
