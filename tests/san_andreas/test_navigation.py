@@ -382,6 +382,8 @@ class ControllerTests(unittest.TestCase):
         self.controller.autosave = Mock()
         self.controller.autosave.report.return_value = {}
         self.controller.camera = Mock()
+        self.controller.pace = Mock()
+        self.controller.game = Mock()
         self.controller.report = {}
         for name in ("bindings", "protection", "world", "peaceful"):
             changes = Mock()

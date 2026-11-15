@@ -389,6 +389,73 @@ class Game:
         return True
 
 
+class WalkingPace:
+    def __init__(self, memory, multiplier):
+        if not math.isfinite(multiplier) or not 0.1 <= multiplier <= 1.0:
+            raise ValueError("Walking speed multiplier must be between 0.1 and 1.0")
+        self.mem = memory
+        self.multiplier = multiplier
+        self.owned = {}
+
+    def associations(self, state):
+        """Yield the current player's live walk associations."""
+        if not state.get("ready"):
+            return
+        mem, ped = self.mem, state["ped"]
+        if (
+            mem.u32(state["player_info"]) != ped
+            or mem.read(ped + 0x20, 4).hex() != state["identity"]
+        ):
+            return
+        clump = mem.u32(ped + 0x18)
+        offset = mem.u32(0xB5F878)
+        if not clump or not 0 < offset < 0x1000:
+            return
+        data = mem.u32(clump + offset)
+        if not data:
+            return
+        link = mem.u32(data)
+        seen = set()
+        while link and link != data and link not in seen:
+            if len(seen) >= 64:
+                raise RuntimeError("Invalid player animation list")
+            seen.add(link)
+            address = link - 4  # The intrusive list link follows the vtable.
+            block = mem.read(address, 0x30)
+            link = struct.unpack_from("<I", block, 4)[0]
+            anim_id, flags = struct.unpack_from("<hH", block, 0x2C)
+            if anim_id != 0 or not flags & 0x20 or flags & 0x10:
+                continue  # WALK only; exclude partial, idle, run, jump, and combat anims.
+            speed = block[0x24:0x28]
+            value = struct.unpack("<f", speed)[0]
+            if not 0 < value <= 10:
+                continue
+            identity = (
+                state["player_info"], ped, state["identity"], clump, data, address,
+                block[0xC:0x18],  # Node count, group, nodes, and hierarchy identify this anim.
+            )
+            yield identity, address + 0x24, speed
+
+    def tick(self, state, moving):
+        moving = moving and self.multiplier != 1.0
+        if not moving and not self.owned:
+            return
+        owned = {}
+        for identity, address, current in self.associations(state):
+            previous = self.owned.get(identity)
+            if moving:
+                # Use the original speed, not our last write: never compound the slowdown.
+                original = previous[0] if previous and current == previous[1] else current
+                scaled = struct.pack("<f", struct.unpack("<f", original)[0] * self.multiplier)
+                if current != scaled:
+                    self.mem.write(address, scaled)
+                owned[identity] = (original, scaled)
+            elif previous and current == previous[1]:
+                self.mem.write(address, previous[0])
+        # Deleted/replaced associations are discarded without writing to stale memory.
+        self.owned = owned
+
+
 class RuntimeChanges:
     """Restore only the owned bits, and only while entity identities still match."""
 

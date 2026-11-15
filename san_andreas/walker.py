@@ -15,6 +15,7 @@ from game import (
     FirstPersonCamera,
     Game,
     RuntimeChanges,
+    WalkingPace,
     apply_peaceful_mode,
     apply_protection,
     bind_walk_key,
@@ -47,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 SECONDS_PER_STEP = 1.0
 TURN_PER_STEP = 10
+# Player walk animation speed relative to native pace; valid range: 0.1..1.0.
+WALK_SPEED_MULTIPLIER = 0.75
 api(k32, "CreateMutexW", [ctypes.c_void_p, w.BOOL, w.LPCWSTR], w.HANDLE)
 
 
@@ -261,6 +264,7 @@ class Controller:
         except (OSError, ValueError) as error:
             graph, self.navigation_error = None, str(error)
         self.movement = Walking(graph, self.navigation_error, focused=mem.foreground)
+        self.pace = WalkingPace(mem, WALK_SPEED_MULTIPLIER)
         self.autosave = Autosave(mem, self.state_dir)
         self.camera = FirstPersonCamera(mem)
         self.jump = HighJump(self.game, self.bindings)
@@ -435,6 +439,14 @@ class Controller:
         else:
             self.movement.stop()
             status = state["reason"]
+        self.pace.tick(
+            state,
+            not saving
+            and can_control(state)
+            and state["standing"]
+            and not state["in_air"]
+            and bool(self.movement.keys.held & {"forward", "back"}),
+        )
         if status != self.last_message:
             logger.info(status)
             self.last_message = status
@@ -453,6 +465,10 @@ class Controller:
             failures = []
             self.autosave.close()
             if self.mem.alive():
+                try:
+                    self.pace.tick(self.game.snapshot(), False)
+                except OSError as error:
+                    failures.append(str(error))
                 try:
                     self.camera.close()
                 except OSError as error:

@@ -25,6 +25,7 @@ from game import (
     FirstPersonCamera,
     Game,
     RuntimeChanges,
+    WalkingPace,
     apply_peaceful_mode,
     bind_walk_key,
     read_game_text,
@@ -32,6 +33,77 @@ from game import (
 )
 
 from .helpers import MemoryFixture
+
+
+class WalkingPaceTests(unittest.TestCase):
+    def setUp(self):
+        self.mem = MemoryFixture()
+        self.pace = WalkingPace(self.mem, 0.75)
+        self.state = {
+            "ready": True, "player_info": 0x10000, "ped": 0x20000,
+            "identity": "01020304",
+        }
+        self.mem.write(0x10000, struct.pack("<I", 0x20000))
+        self.mem.write(0x20020, bytes.fromhex(self.state["identity"]))
+        self.mem.write(0x20018, struct.pack("<I", 0x30000))
+        self.mem.write(0xB5F878, struct.pack("<I", 0x40))
+        self.mem.write(0x30040, struct.pack("<I", 0x40000))
+        self.mem.write(0x40000, struct.pack("<I", 0x50004))
+        self.mem.write(0x5000C, struct.pack("<HHII", 32, 0, 0x60000, 0x70000))
+        self.mem.write(0x50024, struct.pack("<f", 1.2))
+        self.mem.write(0x5002C, struct.pack("<hH", 0, 0x23))
+
+    def speed(self):
+        return self.mem.unpack(0x50024, "f")[0]
+
+    def test_slowdown_does_not_compound_and_stopping_restores_original(self):
+        for _ in range(10):
+            self.pace.tick(self.state, True)
+            self.assertAlmostEqual(self.speed(), 0.9)
+        self.pace.tick(self.state, False)
+        self.assertAlmostEqual(self.speed(), 1.2)
+        self.assertFalse(self.pace.owned)
+
+    def test_game_speed_updates_become_the_new_baseline(self):
+        self.pace.tick(self.state, True)
+        self.mem.write(0x50024, struct.pack("<f", 1.0))
+        self.pace.tick(self.state, True)
+        self.assertAlmostEqual(self.speed(), 0.75)
+        self.pace.tick(self.state, False)
+        self.assertAlmostEqual(self.speed(), 1.0)
+
+    def test_deleted_or_recycled_associations_are_not_restored(self):
+        for address in (0x40000, 0x50014, 0x20020):
+            with self.subTest(address=address):
+                self.setUp()
+                self.pace.tick(self.state, True)
+                self.mem.write(address, b"\0" * 4)
+                before = dict(self.mem.data)
+                self.pace.tick(self.state, False)
+                self.assertEqual(self.mem.data, before)
+
+    def test_other_animations_and_native_speed_are_untouched(self):
+        for anim, flags in ((1, 0x23), (2, 0x23), (3, 0x3), (0, 0x33)):
+            with self.subTest(anim=anim, flags=flags):
+                self.mem.write(0x5002C, struct.pack("<hH", anim, flags))
+                before = dict(self.mem.data)
+                self.pace.tick(self.state, True)
+                self.assertEqual(self.mem.data, before)
+        self.mem.write(0x5002C, struct.pack("<hH", 0, 0x23))
+        WalkingPace(self.mem, 1.0).tick(self.state, True)
+        self.assertAlmostEqual(self.speed(), 1.2)
+
+    def test_unloaded_player_and_external_speed_changes_are_untouched(self):
+        self.pace.tick(self.state, True)
+        self.mem.write(0x50024, struct.pack("<f", 1.1))
+        self.pace.tick(self.state, False)
+        self.assertAlmostEqual(self.speed(), 1.1)
+        self.pace.tick({"ready": False}, False)
+
+    def test_invalid_multiplier_is_rejected(self):
+        for value in (0, -1, 1.1, float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                WalkingPace(self.mem, value)
 
 
 class LocationTests(unittest.TestCase):

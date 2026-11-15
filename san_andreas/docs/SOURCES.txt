@@ -2,6 +2,18 @@ Runtime profile: the verified San Andreas 1.0 executable used by this setup.
 SHA256: a559aa772fd136379155efa71f00c47aad34bbfeae6196b0fe1047d0645cbd26
 
 Offsets and layouts checked against the community source projects below.
+Developer walking pace: WALK_SPEED_MULTIPLIER in walker.py (0.1..1.0, default 0.75).
+Restart the controller after editing; 1.0 leaves native walking speed untouched.
+https://github.com/gta-reversed/gta-reversed/blob/master/source/game_sa/Plugins/RpAnimBlendPlugin/RpAnimBlend.cpp
+RpAnimBlend ClumpOffset=0xB5F878; CEntity clump=+0x18. The clump plugin points
+to CAnimBlendClumpData, whose first field heads a null-terminated association list.
+https://github.com/DK22Pac/plugin-sdk/blob/master/plugin_sa/game_sa/CAnimBlendAssociation.h
+Association link=+4, identity fields=+0xC..0x17, speed=+0x24, anim ID=+0x2C,
+flags=+0x2E. Tune only full-body movement WALK (ID 0) on the current player,
+while grounded and controller movement keys are held. Scaling animation playback
+also scales its root movement; no world time or NPC speed changes are requested.
+Restore original speeds on live matching associations when walking stops/exit;
+discard deleted/replaced associations without writing to cached pointers.
 The controller is Python using the Windows APIs; it does not call these native
 functions on a remote thread or overwrite executable instructions.
 
