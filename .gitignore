@@ -1,6 +1,6 @@
 # Local game setup and generated state
-/installer/
-/runtime/
+/san_andreas/installer/
+/san_andreas/runtime/
 
 # Python environments, caches, and test output
 .venv/
@@ -26,15 +26,15 @@ htmlcov/
 !.env.template
 
 # Native build intermediates
-/native/*.def
-/native/*.o
-/native/*.obj
-/native/*.pdb
-/native/*.ilk
-/native/*.exp
-/native/*.lib
-!/native/save_bridge.dll
-!/native/save_request.exe
+/san_andreas/native/*.def
+/san_andreas/native/*.o
+/san_andreas/native/*.obj
+/san_andreas/native/*.pdb
+/san_andreas/native/*.ilk
+/san_andreas/native/*.exp
+/san_andreas/native/*.lib
+!/san_andreas/native/save_bridge.dll
+!/san_andreas/native/save_request.exe
 
 # Logs, temporary files, and editor/OS clutter
 *.log

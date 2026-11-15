@@ -61,6 +61,10 @@ class Walking:
         self.smooth_turn = SmoothTurn()
         self.manual_turn = 0
         self.turn_direction = 0
+        self.aligning = False
+        self.route_target = None
+        self.best_target_distance = None
+        self.approach_at = 0.
 
     def steer(self, direction, mode, state):
         usable = (state.get("ready") and state["foreground"] and not state["paused"]
@@ -83,6 +87,9 @@ class Walking:
         self.smooth_turn.reset()
         self.manual_turn = 0
         self.turn_direction = 0
+        self.aligning = False
+        self.route_target = None
+        self.best_target_distance = None
 
     def tick(self, state, enabled, mode="free"):
         if mode != self.mode:
@@ -132,6 +139,17 @@ class Walking:
                 self.turn_direction = 0
             desired_turn = -error * 140 if abs(error) > .04 else 0.
             status = self.navigator.message
+            self.aligning = abs(error) > (.25 if self.aligning else 1.)
+            remaining = math.hypot(waypoint[0] - position["x"], waypoint[1] - position["y"])
+            if self.route_target != self.navigator.target or self.best_target_distance is None:
+                self.route_target = self.navigator.target
+                self.best_target_distance, self.approach_at = remaining, now
+            elif remaining < self.best_target_distance - .4:
+                self.best_target_distance, self.approach_at = remaining, now
+            elif not self.aligning and now - self.approach_at > 8:
+                self.navigator.avoid_target(now)
+                self.stop()
+                return "rejoining pedestrian path after no route progress"
         turn = self.smooth_turn.step(desired_turn, now)
         if mode == "free":
             # Consume the queued nudge without overshooting its requested amount.
@@ -143,6 +161,10 @@ class Walking:
                 self.smooth_turn.reset()
         if turn:
             self.keys.turn(turn)
+        if mode == "sidewalks" and self.aligning:
+            self.keys.set({"walk"})
+            self.origin, self.progress_at, self.approach_at = position, now, now
+            return "aligning with pedestrian path"
         self.keys.set({"walk", "forward"})
         if self.origin is None or distance(position, self.origin) >= 0.8:
             self.origin, self.progress_at = position, now
@@ -198,6 +220,7 @@ def run(args):
     print(f"Navigation: {settings['mode']} ({len(graph.nodes) if graph else 0} pedestrian nodes)", flush=True)
     last_message = None
     last_steering = None
+    report = {}
     try:
         while mem.alive():
             now = time.monotonic()
@@ -290,6 +313,8 @@ def run(args):
                               neutral_npcs=neutral_npcs,
                               obstacle_recoveries=movement.recoveries, updated=time.time())
                 report["navigation"] = movement.navigator.report() if movement.navigator else {"error": navigation_error}
+                report["navigation"].update(aligning=movement.aligning,
+                                            best_target_distance=movement.best_target_distance)
                 report["autosave"] = autosave.report()
                 atomic_json(args.state_dir / "state.json", report)
                 saved_at = now
@@ -302,9 +327,9 @@ def run(args):
             autosave.close()
             if mem.alive():
                 failures = protection.restore() + world.restore() + peaceful.restore()
-            atomic_json(args.state_dir / "state.json", {"controller": "stopped", "updated": time.time(),
-                                                        "restore_errors": failures,
-                                                        "autosave": autosave.report()})
+            report.update(controller="stopped", updated=time.time(), restore_errors=failures,
+                          autosave=autosave.report())
+            atomic_json(args.state_dir / "state.json", report)
             k32.CloseHandle(mutex)
             mem.close()
             print("Controller stopped; held keys released and temporary settings restored.", flush=True)

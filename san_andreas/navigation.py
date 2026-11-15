@@ -159,7 +159,18 @@ class SidewalkNavigator:
             self.target = node.key
             self.message = "joining pedestrian path"
         node = self.graph.nodes[self.target]
-        if distance(position, node.position) <= 1.5:
+        remaining = distance(position, node.position)
+        passed = False
+        if self.previous is not None:
+            start = self.graph.nodes[self.previous].position
+            dx, dy = node.position[0] - start[0], node.position[1] - start[1]
+            length = math.hypot(dx, dy)
+            if length > .1:
+                beyond = ((position[0] - node.position[0]) * dx
+                          + (position[1] - node.position[1]) * dy) >= 0
+                lateral = abs((position[0] - start[0]) * dy - (position[1] - start[1]) * dx) / length
+                passed = beyond and lateral <= 3 and remaining <= 6
+        if remaining <= 2 or (self.previous is None and remaining <= 4) or passed:
             options = [(self.graph.nodes[key], crossing) for key, crossing in node.links
                        if key in self.graph.nodes and (node.key, key) not in self.blocked
                        and key not in self.avoided]

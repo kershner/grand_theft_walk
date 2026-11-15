@@ -89,6 +89,16 @@ class SmoothTurnTests(unittest.TestCase):
 
 
 class NavigatorTests(unittest.TestCase):
+    def test_restart_near_a_node_joins_forward_link_instead_of_chasing_backwards(self):
+        self.navigator.reset()
+        self.assertEqual(self.navigator.waypoint((0, 2.5, 0), 0, 0, 0), (0, 6, 0))
+
+    def test_missed_waypoint_is_advanced_after_passing_its_segment(self):
+        self.assertEqual(self.navigator.waypoint((1.8, 1.6, 0), 0, 0, 0), (0, 6, 0))
+        self.assertEqual(self.navigator.previous, (0, 0))
+
+    def test_far_lateral_position_does_not_skip_a_waypoint(self):
+        self.assertEqual(self.navigator.waypoint((5, 1, 0), 0, 0, 0), (0, 0, 0))
     def setUp(self):
         self.navigator = SidewalkNavigator(graph_fixture())
         self.navigator.target, self.navigator.previous = (0, 0), (0, 1)
@@ -126,6 +136,30 @@ class NavigatorTests(unittest.TestCase):
 
 
 class MovementTests(unittest.TestCase):
+    def test_large_turn_aligns_without_walking_in_a_circle(self):
+        self.movement.mode = "sidewalks"
+        with patch.object(self.movement.navigator, "waypoint", return_value=(0, -3, 0)):
+            self.state["camera_heading"] = 0
+            for now in (0, 1, 3, 5):
+                with patch("walker.time.monotonic", return_value=now):
+                    self.assertIn("aligning", self.movement.tick(self.state, True, "sidewalks"))
+                self.keys.set.assert_called_with({"walk"})
+            self.assertEqual(self.movement.recoveries, 0)
+            self.state["camera_heading"] = math.pi - .1
+            with patch("walker.time.monotonic", return_value=6):
+                self.movement.tick(self.state, True, "sidewalks")
+            self.keys.set.assert_called_with({"walk", "forward"})
+
+    def test_circular_motion_without_goal_progress_reselects_route(self):
+        self.movement.mode = "sidewalks"
+        with patch.object(self.movement.navigator, "waypoint", return_value=(0, 10, 0)):
+            for now, x in ((0, 0), (3, 1), (6, -1), (9, 0)):
+                self.state["position"] = dict(x=x, y=0, z=0)
+                self.state["camera_heading"] = heading_to((x, 0), (0, 10))
+                with patch("walker.time.monotonic", return_value=now):
+                    status = self.movement.tick(self.state, True, "sidewalks")
+        self.assertIn("no route progress", status)
+        self.assertIsNone(self.movement.navigator.target)
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
         self.state["camera_heading"] = 0.
         self.state["heading"] = -math.pi / 2
