@@ -108,6 +108,7 @@ class MissionTests(unittest.TestCase):
         restored = MissionSystem(self.root, self.graph, self.destinations)
         self.assertEqual(restored.data["active"], self.system.data["active"])
         self.assertEqual(restored.standing_seconds, 0)
+        self.assertEqual(restored.data["events"], [])
 
     def activate(self):
         self.system.data["active"] = self.destinations[0]

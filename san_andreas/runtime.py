@@ -29,6 +29,10 @@ DEFAULTS = {
 }
 
 
+def chat_ready(state):
+    return bool(state.get("ready") and state.get("startup_ready", True))
+
+
 def mission_distance(state, mission):
     position = state.get("position")
     target = mission.get("position")
@@ -139,7 +143,7 @@ class WalkerControl:
 
     def request(self, name, args):
         with self.lock:
-            if not self.snapshot().get("ready"):
+            if not chat_ready(self.snapshot()):
                 raise RuntimeError("Game loading; please wait.")
             path = self.state_dir / "control.json"
             settings = read_json(path)
@@ -166,6 +170,8 @@ class WalkerControl:
         if not isinstance(viewer, str) or not viewer.strip():
             raise ValueError("Could not identify your viewer account.")
         state = self.snapshot()
+        if not chat_ready(state):
+            raise RuntimeError("Game loading; please wait.")
         poll = state.get("missions", {}).get("poll")
         if not poll or time.time() >= poll["closes"]:
             return "No mission vote is open. Use !info to see the current mission."

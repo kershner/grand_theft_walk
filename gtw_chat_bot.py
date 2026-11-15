@@ -1,12 +1,15 @@
 """Chat command parsing, voting and walker status replies."""
 
 import logging
+import threading
+import time
 
 from san_andreas.runtime import (
     DIRECTIONS,
     MOVEMENT_COMMANDS,
     NavigationModeError,
     WalkerControl,
+    chat_ready,
     mission_distance,
 )
 from san_andreas.voting import CommandVoting
@@ -43,12 +46,80 @@ ALIASES = {
     "j": "jump",
 }
 logger = logging.getLogger(__name__)
+ANNOUNCEMENT_INTERVAL = 20 * 60
 
 
 class GTWBot:
     def __init__(self, control=None):
         self.control = control if control is not None else WalkerControl()
         self.command_voting = CommandVoting(self._execute)
+        self.session = None
+        self.announced_session = None
+        self.next_announcement_at = None
+        self.announcement_index = 0
+        self.runtime_lock = threading.Lock()
+        self.runtime_stop = threading.Event()
+        self.runtime_thread = None
+
+    def ready_state(self):
+        try:
+            state = self.control.snapshot()
+        except RuntimeError:
+            return None
+        return state if chat_ready(state) else None
+
+    def poll_announcements(self, now=None):
+        now = time.monotonic() if now is None else now
+        with self.runtime_lock:
+            state = self.ready_state()
+            if state is None:
+                return []
+            session = state.get("session", state.get("pid", "controller"))
+            if self.session != session:
+                self.session = session
+                self.announcement_index = 0
+                self.next_announcement_at = now + ANNOUNCEMENT_INTERVAL
+                return [
+                    "Grand Theft Walk is online!",
+                    self._reply("help", []),
+                    self._info_reply(state),
+                ]
+            if now < self.next_announcement_at:
+                return []
+            reply = (
+                self._reply("help", [])
+                if self.announcement_index == 0
+                else self._info_reply(state)
+            )
+            self.announcement_index = (self.announcement_index + 1) % 2
+            missed = int((now - self.next_announcement_at) // ANNOUNCEMENT_INTERVAL) + 1
+            self.next_announcement_at += missed * ANNOUNCEMENT_INTERVAL
+            return [reply]
+
+    def start_runtime(self, send):
+        if self.runtime_thread is not None:
+            return
+
+        def run():
+            while not self.runtime_stop.is_set():
+                try:
+                    for message in self.poll_announcements():
+                        send(message)
+                    self.announced_session = self.session
+                except (OSError, ValueError, RuntimeError):
+                    logger.exception("Scheduled chat announcement failed")
+                self.runtime_stop.wait(0.5)
+
+        self.runtime_thread = threading.Thread(
+            target=run, name="chat-announcements", daemon=True
+        )
+        self.runtime_thread.start()
+
+    def close(self):
+        self.runtime_stop.set()
+        if self.runtime_thread is not None:
+            self.runtime_thread.join(timeout=2)
+        self.command_voting.close()
 
     async def process_chat_message(self, ctx, content):
         content = (content or "").strip()
@@ -61,6 +132,9 @@ class GTWBot:
         name = ALIASES.get(name, name)
         args = [arg.lower() for arg in parts[1:]]
         logger.debug("Chat command: !%s %s", name[:100], " ".join(args)[:200])
+        if self.ready_state() is None:
+            await ctx.send("Game loading; please wait.")
+            return
         try:
             author = getattr(ctx, "author", None)
             viewer = getattr(author, "name", None) or getattr(author, "id", None)
@@ -145,9 +219,9 @@ class GTWBot:
             perspective = "first" if settings["first_person"] else "third"
             return f"Camera: {perspective} person."
 
-    def _info_reply(self):
-        state = self.control.snapshot()
-        if not state.get("ready"):
+    def _info_reply(self, state=None):
+        state = self.control.snapshot() if state is None else state
+        if not chat_ready(state):
             return "Game loading; please wait."
         location = state.get("location") or {}
         parts = [", ".join(location.get("places") or ["San Andreas"])]

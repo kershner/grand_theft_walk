@@ -12,18 +12,33 @@ from types import SimpleNamespace
 from flask import Flask, g, jsonify, request, send_from_directory
 
 from gtw_chat_bot import GTWBot
-from san_andreas.runtime import DEFAULT_STATE_DIR, WalkerControl, configure_logging
+from san_andreas.runtime import (
+    DEFAULT_STATE_DIR,
+    WalkerControl,
+    configure_logging,
+    read_json,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(state_dir=DEFAULT_STATE_DIR):
+def create_app(state_dir=DEFAULT_STATE_DIR, start_runtime=True):
     app = Flask(__name__)
     messages = []
     messages_lock = threading.Lock()
     bot = GTWBot(control=WalkerControl(state_dir))
     app.extensions["gtw_bot"] = bot
-    seen_events = set()
+    try:
+        previous = read_json(Path(state_dir) / "state.json")
+    except (OSError, ValueError):
+        previous = {}
+    seen_events = {
+        event["id"] for event in previous.get("missions", {}).get("events", [])
+    }
+
+    def append_message(text):
+        with messages_lock:
+            messages.append(text)
 
     @app.before_request
     def identify_viewer():
@@ -41,8 +56,7 @@ def create_app(state_dir=DEFAULT_STATE_DIR):
             self.author = SimpleNamespace(id=viewer)
 
         async def send(self, text):
-            with messages_lock:
-                messages.append(text)
+            append_message(text)
 
     @app.route("/")
     def index():
@@ -67,7 +81,11 @@ def create_app(state_dir=DEFAULT_STATE_DIR):
     @app.route("/chat")
     def chat():
         try:
-            events = bot.control.snapshot().get("missions", {}).get("events", [])
+            state = bot.control.snapshot()
+            session = state.get("session", state.get("pid", "controller"))
+            events = state.get("missions", {}).get("events", [])
+            if start_runtime and bot.announced_session != session:
+                events = []
         except RuntimeError:
             events = []
         try:
@@ -82,6 +100,8 @@ def create_app(state_dir=DEFAULT_STATE_DIR):
                     seen_events.add(event["id"])
             return jsonify({"messages": messages[after:], "cursor": len(messages)})
 
+    if start_runtime:
+        bot.start_runtime(append_message)
     return app
 
 
@@ -100,7 +120,10 @@ def main():
         f"  Phone:   http://{ip}:{args.port}\n",
     )
     logger.info("Log: %s", log_path)
-    app.run(host=args.host, port=args.port, debug=False)
+    try:
+        app.run(host=args.host, port=args.port, debug=False)
+    finally:
+        app.extensions["gtw_bot"].close()
 
 
 if __name__ == "__main__":

@@ -2,12 +2,14 @@
 
 import json
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from dev_server import create_app
+from gtw_chat_bot import ANNOUNCEMENT_INTERVAL
 
 
 class ChatIntegrationTests(unittest.TestCase):
@@ -27,20 +29,22 @@ class ChatIntegrationTests(unittest.TestCase):
             "controller": "running",
             "updated": time.time(),
             "ready": True,
+            "startup_ready": True,
+            "session": "session-a",
             "walking": "stopped",
             "settings": self.settings,
             "position": {"x": 1, "y": 2, "z": 3},
             "interior": 0,
         }
         self.write("state.json", self.state)
-        self.app = create_app(self.root)
+        self.app = create_app(self.root, start_runtime=False)
         self.client = self.app.test_client()
         self.voting = self.app.extensions["gtw_bot"].command_voting
         self.timer = Mock()
         self.voting.timer_factory = self.timer
 
     def tearDown(self):
-        self.voting.close()
+        self.app.extensions["gtw_bot"].close()
         self.folder.cleanup()
 
     def finish_vote(self):
@@ -305,17 +309,150 @@ class ChatIntegrationTests(unittest.TestCase):
             {"controller": "stopped"},
             {"updated": time.time() - 30},
             {"ready": False},
+            {"startup_ready": False},
         ]
-        with self.assertLogs("gtw_chat_bot", level="WARNING") as logs:
-            for changes in unavailable_states:
-                with self.subTest(changes=changes):
-                    self.write("state.json", dict(self.state, **changes))
-                    self.command("walk")
-                    self.assertEqual(self.control(), self.settings)
-        self.assertEqual(self.client.get("/chat").json["messages"], [])
-        self.assertIn("offline", logs.output[0])
-        self.assertIn("offline", logs.output[1])
-        self.assertIn("loading", logs.output[2])
+        for changes in unavailable_states:
+            with self.subTest(changes=changes):
+                self.write("state.json", dict(self.state, **changes))
+                self.command("walk")
+                self.assertEqual(self.control(), self.settings)
+        self.assertEqual(
+            self.client.get("/chat").json["messages"],
+            ["Game loading; please wait."] * len(unavailable_states),
+        )
+
+    def test_startup_locks_help_info_votes_and_input_until_ready(self):
+        self.state["startup_ready"] = False
+        self.write("state.json", self.state)
+        bot = self.app.extensions["gtw_bot"]
+        for command in (
+            "help",
+            "more",
+            "info",
+            "camera",
+            "mode free",
+            "yes",
+            "no",
+            "vote 1",
+            "up",
+            "center",
+        ):
+            self.command(command)
+        self.assertEqual(self.control(), self.settings)
+        self.assertFalse(self.voting.vote.active)
+        self.assertFalse((self.root / "mission_votes").exists())
+        self.assertEqual(bot.poll_announcements(0), [])
+        self.assertEqual(
+            self.client.get("/chat").json["messages"],
+            ["Game loading; please wait."] * 10,
+        )
+        self.state["startup_ready"] = True
+        self.write("state.json", self.state)
+        startup = bot.poll_announcements(10)
+        self.assertEqual(
+            startup,
+            ["Grand Theft Walk is online!", bot._reply("help", []), bot._info_reply()],
+        )
+        self.assertEqual(bot.poll_announcements(11), [])
+        self.command("walk")
+        self.assertTrue(self.control()["walking"])
+
+    def test_announcements_rotate_from_startup_and_skip_missed_intervals(self):
+        bot = self.app.extensions["gtw_bot"]
+        self.assertEqual(len(bot.poll_announcements(100)), 3)
+        self.command("help")
+        self.command("info")
+        self.assertEqual(bot.poll_announcements(100 + ANNOUNCEMENT_INTERVAL - 1), [])
+        self.assertEqual(
+            bot.poll_announcements(100 + ANNOUNCEMENT_INTERVAL),
+            [bot._reply("help", [])],
+        )
+        self.state["location"] = {"places": ["Market", "Los Santos"]}
+        self.write("state.json", self.state)
+        self.assertEqual(
+            bot.poll_announcements(100 + ANNOUNCEMENT_INTERVAL * 2), [bot._info_reply()]
+        )
+        self.assertEqual(
+            len(bot.poll_announcements(100 + ANNOUNCEMENT_INTERVAL * 10)), 1
+        )
+        self.assertEqual(bot.poll_announcements(101 + ANNOUNCEMENT_INTERVAL * 10), [])
+
+    def test_announcements_restart_for_new_controller_but_not_temporary_loading(self):
+        bot = self.app.extensions["gtw_bot"]
+        bot.poll_announcements(0)
+        self.state["ready"] = False
+        self.write("state.json", self.state)
+        self.assertEqual(bot.poll_announcements(1), [])
+        self.state["ready"] = True
+        self.write("state.json", self.state)
+        self.assertEqual(bot.poll_announcements(2), [])
+        self.state["session"] = "session-b"
+        self.write("state.json", self.state)
+        self.assertEqual(len(bot.poll_announcements(3)), 3)
+        self.assertEqual(bot.next_announcement_at, 3 + ANNOUNCEMENT_INTERVAL)
+
+    def test_announcement_worker_posts_without_http_polling_and_stops_cleanly(self):
+        bot = self.app.extensions["gtw_bot"]
+        messages = []
+        announced = threading.Event()
+
+        def send(message):
+            messages.append(message)
+            if len(messages) == 3:
+                announced.set()
+
+        bot.start_runtime(send)
+        worker = bot.runtime_thread
+        bot.start_runtime(send)
+        self.assertIs(bot.runtime_thread, worker)
+        self.assertTrue(announced.wait(timeout=2))
+        bot.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            messages,
+            ["Grand Theft Walk is online!", bot._reply("help", []), bot._info_reply()],
+        )
+
+    def test_dev_server_ignores_existing_mission_events_but_delivers_new_ones_once(
+        self,
+    ):
+        old = {"id": "previous-event", "text": "Mission complete: old destination!"}
+        self.state["missions"] = {"events": [old]}
+        self.write("state.json", self.state)
+        app = create_app(self.root, start_runtime=False)
+        self.addCleanup(app.extensions["gtw_bot"].close)
+        client = app.test_client()
+        self.assertEqual(client.get("/chat").json["messages"], [])
+        self.state["missions"]["events"].append(
+            {"id": "new-event", "text": "Choose our next mission!"}
+        )
+        self.write("state.json", self.state)
+        self.assertEqual(
+            client.get("/chat").json["messages"], ["Choose our next mission!"]
+        )
+        self.assertEqual(
+            client.get("/chat").json["messages"], ["Choose our next mission!"]
+        )
+
+    def test_live_mission_events_wait_until_startup_messages_are_delivered(self):
+        with patch("dev_server.GTWBot.start_runtime") as start:
+            app = create_app(self.root)
+        bot = app.extensions["gtw_bot"]
+        self.addCleanup(bot.close)
+        client = app.test_client()
+        self.state["missions"] = {
+            "events": [{"id": "fresh-vote", "text": "Choose our next mission!"}]
+        }
+        self.write("state.json", self.state)
+        self.assertEqual(client.get("/chat").json["messages"], [])
+        startup = bot.poll_announcements(0)
+        send = start.call_args.args[0]
+        for message in startup:
+            send(message)
+        bot.announced_session = bot.session
+        messages = client.get("/chat").json["messages"]
+        self.assertEqual(messages, startup + ["Choose our next mission!"])
+        self.assertEqual(messages[0], "Grand Theft Walk is online!")
 
     def test_invalid_movement_is_silent_and_help_remains_available(self):
         with self.assertLogs("gtw_chat_bot", level="WARNING"):

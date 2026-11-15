@@ -8,6 +8,7 @@ import math
 import random
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from controls import (
@@ -270,6 +271,8 @@ class Controller:
         self.game = Game(mem)
         self.state_dir = args.state_dir
         self.control_path = self.state_dir / "control.json"
+        self.session = uuid.uuid4().hex
+        self.startup_ready = False
         self.protection = RuntimeChanges(mem)
         self.world = RuntimeChanges(mem)
         self.peaceful = RuntimeChanges(mem)
@@ -437,6 +440,8 @@ class Controller:
                     )
         self.report.update(
             controller="running",
+            session=self.session,
+            startup_ready=self.startup_ready,
             walking=status,
             settings=self.settings,
             barrier_entities=self.barriers,
@@ -465,6 +470,7 @@ class Controller:
         if self.settings["quit"]:
             return False
         state = self.game.snapshot()
+        self.startup_ready = self.startup_ready or bool(can_control(state))
         # Set the mode before consuming the next junction preference.
         self.movement.set_mode(self.settings["mode"])
         self.handle_steering(state)

@@ -83,6 +83,7 @@ class MissionSystem:
             self.data = read_json(self.state_dir / "mission.json")
         except FileNotFoundError:
             self.data = {"active": None, "poll": None, "completed": 0, "events": []}
+        self.data["events"] = []
         self.standing_seconds = 0.0
         self.last_tick_at = None
         self.standing_origin = None
