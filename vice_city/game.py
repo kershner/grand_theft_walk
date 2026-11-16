@@ -11,9 +11,10 @@ from gtw.winmemory import Memory as ProcessMemory
 
 CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
+WALK_SPEED_MULTIPLIER = 1.0
 JUMP_ACTION = 11
 JUMP_KEY = 32  # Space; avoid the game's hardcoded replay shortcuts.
-JUMP_SPEED = math.sqrt(0.96)
+JUMP_SPEED = 0.16  # Set takeoff speed even when the native jump is faster.
 
 PLAYER_INFO = 0x94AD28
 PED_POOL = 0x97F2AC
@@ -230,7 +231,7 @@ class Game:
         }
 
     def boost_jump(self, state):
-        """Boost native takeoff once, preserving horizontal motion and gravity."""
+        """Tune native takeoff once, preserving horizontal motion and gravity."""
         if not state.get("ready") or not state.get("in_air") or state.get("standing"):
             return False
         ped = state["ped"]
@@ -239,7 +240,7 @@ class Game:
         if self.mem.byte(ped + 0x14C) & 1 or not self.mem.byte(ped + 0x14D) & 8:
             return False
         speed = self.mem.unpack(ped + 0x78, "f")[0]
-        if not math.isfinite(speed) or not 0 < speed < JUMP_SPEED:
+        if not math.isfinite(speed) or speed <= 0:
             return False
         self.mem.write(ped + 0x78, struct.pack("<f", JUMP_SPEED))
         return True
@@ -306,36 +307,74 @@ def load_graph(memory):
     return read_graph(memory.read(PATHS, COUNTS + 12))
 
 
-def load_destinations(game_directory, graph, read_text):
-    names = read_text(Path(game_directory) / "TEXT/american.gxt")
-    # Zone centres can lie on isolated building/courtyard paths. Prefer each
-    # area's largest walking network before choosing its central meeting point.
-    neighbors = {key: set() for key in graph.nodes}
+def main_sidewalk_network(graph):
+    """Find the largest mutually reachable network, respecting one-way links."""
+    reverse = {key: [] for key in graph.nodes}
     for key, node in graph.nodes.items():
         for target, _ in node.links:
-            if target in neighbors:
-                neighbors[key].add(target)
-                neighbors[target].add(key)
-    sizes = {}
-    for key in graph.nodes:
-        if key in sizes:
-            continue
-        component, pending = {key}, [key]
+            if target in reverse:
+                reverse[target].append(key)
+    # Iterative Kosaraju avoids recursion limits on the several-thousand-node map.
+    visited, order = set(), []
+    for start in sorted(graph.nodes):
+        pending = [(start, False)]
         while pending:
-            for target in neighbors[pending.pop()]:
-                if target not in component:
-                    component.add(target)
-                    pending.append(target)
-        sizes.update((member, len(component)) for member in component)
-    destinations = []
-    for name, bounds in load_zones(game_directory, names):
-        nodes = [node for node in graph.nodes.values()
+            key, finished = pending.pop()
+            if finished:
+                order.append(key)
+            elif key not in visited:
+                visited.add(key)
+                pending.append((key, True))
+                pending.extend((target, False) for target, _ in graph.nodes[key].links
+                               if target in graph.nodes and target not in visited)
+    visited, largest = set(), set()
+    for start in reversed(order):
+        if start in visited:
+            continue
+        component, pending = set(), [start]
+        while pending:
+            key = pending.pop()
+            if key in visited:
+                continue
+            visited.add(key)
+            component.add(key)
+            pending.extend(reverse[key])
+        if len(component) > len(largest):
+            largest = component
+    return largest
+
+
+def load_destinations(game_directory, graph, read_text):
+    """Offer every distinct meeting point on the main sidewalk network."""
+    names = read_text(Path(game_directory) / "TEXT/american.gxt")
+    zones = load_zones(game_directory, names)
+    network = main_sidewalk_network(graph)
+    nodes = [graph.nodes[key] for key in sorted(network)]
+    destinations, used = [], set()
+    counts = {}
+
+    def add(name, node):
+        if node.position in used:
+            return
+        used.add(node.position)
+        counts[name] = counts.get(name, 0) + 1
+        label = name if counts[name] == 1 else f"{name}: meeting point {counts[name]}"
+        destinations.append({"name": label, "node": list(node.key), "position": list(node.position)})
+
+    # Keep the original named-area meeting points for existing sessions.
+    for name, bounds in zones:
+        candidates = [node for node in nodes
                  if all(bounds[i] <= node.position[i] <= bounds[i + 3] for i in range(3))]
-        if not nodes:
+        if not candidates:
             continue
         center = ((bounds[0] + bounds[3]) / 2, (bounds[1] + bounds[4]) / 2)
-        node = min(nodes, key=lambda candidate: (-sizes[candidate.key], math.dist(candidate.position[:2], center)))
-        destinations.append({"name": name, "node": list(node.key), "position": list(node.position)})
+        add(name, min(candidates, key=lambda candidate: math.dist(candidate.position[:2], center)))
+    # Prefer small subareas (e.g. Junk Yard) over their enclosing neighborhood.
+    zones = sorted(zones, key=lambda zone: ((zone[1][3] - zone[1][0]) * (zone[1][4] - zone[1][1]), zone[0]))
+    for node in nodes:
+        name = next((name for name, bounds in zones
+                     if all(bounds[i] <= node.position[i] <= bounds[i + 3] for i in range(3))), "Vice City")
+        add(name, node)
     return destinations
 
 

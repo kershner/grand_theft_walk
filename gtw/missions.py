@@ -236,6 +236,16 @@ class MissionSystem:
             f"Choose our next mission! {labels} • !vote 1/2/3 • {self.config['vote_seconds']:g} seconds"
         )
 
+    def _announce_halfway(self, state, poll, wall):
+        counts = tally(poll["votes"], BALLOT_CHOICES)
+        labels = " • ".join(
+            f"{index}: {option['name']} ({mission_distance(state, option)}; {count} {'vote' if count == 1 else 'votes'})"
+            for index, (option, count) in enumerate(zip(poll["options"], counts), 1)
+        )
+        remaining = math.ceil(poll["closes"] - wall)
+        self.event(f"Mission vote halfway! {labels} • !vote 1/2/3 • {remaining} seconds remaining")
+        poll["halfway_announced"] = True
+
     def tick(self, state, now, usable, saving=False, wall=None):
         wall = time.time() if wall is None else wall
         arrived = self.at_destination(state)
@@ -257,6 +267,9 @@ class MissionSystem:
                 poll = self.data["poll"]
                 if poll and wall >= poll["closes"]:
                     self._select_mission(poll)
+                elif (poll and not poll.get("halfway_announced")
+                      and wall >= (poll["opened"] + poll["closes"]) / 2):
+                    self._announce_halfway(state, poll, wall)
                 elif not poll and usable:
                     self._open_poll(state, wall)
             self.save()

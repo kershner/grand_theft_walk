@@ -47,7 +47,7 @@ class JumpTests(unittest.TestCase):
                 self.assertEqual(self.mem.data[address], value)
 
     def test_invalid_or_nonascending_takeoffs_are_rejected_without_writes(self):
-        for speed in (0, -0.1, JUMP_SPEED + 0.1, math.nan, math.inf):
+        for speed in (0, -0.1, math.nan, math.inf):
             with self.subTest(speed=speed):
                 self.mem.write(self.ped + 0x78, struct.pack("<f", speed))
                 before = dict(self.mem.data)
@@ -59,6 +59,11 @@ class JumpTests(unittest.TestCase):
             before = dict(self.mem.data)
             self.assertFalse(self.game.boost_jump(self.state))
             self.assertEqual(self.mem.data, before)
+
+    def test_fast_native_takeoff_is_reduced_to_the_configured_jump_speed(self):
+        self.mem.write(self.ped + 0x78, struct.pack("<f", 0.6))
+        self.assertTrue(self.game.boost_jump(self.state))
+        self.assertAlmostEqual(self.mem.unpack(self.ped + 0x78, "f")[0], JUMP_SPEED)
 
     def test_stale_snapshot_and_reused_player_slot_are_rejected(self):
         for update in ({"ready": False}, {"standing": True}, {"in_air": False}, {"identity": "old"}):

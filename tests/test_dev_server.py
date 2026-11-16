@@ -54,9 +54,6 @@ class ChatIntegrationTests(unittest.TestCase):
         self.app.extensions["gtw_bot"].close()
         self.folder.cleanup()
 
-    def finish_vote(self):
-        self.timer.call_args.args[1]()
-
     def set_mode(self, mode):
         settings = self.control()
         settings["mode"] = mode
@@ -96,16 +93,12 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def test_camera_and_mode_settings_validate_arguments(self):
         self.command("camera")
-        self.assertFalse(self.control()["first_person"])
-        self.finish_vote()
         self.assertTrue(self.control()["first_person"])
         self.command("camera third")
-        self.finish_vote()
         self.assertFalse(self.control()["first_person"])
         self.command("mode free")
-        self.assertEqual(self.control()["mode"], "sidewalk")
-        self.finish_vote()
         self.assertEqual(self.control()["mode"], "free")
+        self.timer.assert_not_called()
         expected = self.control()
         for command in ("mode fly", "camera upside-down"):
             self.command(command)
@@ -196,35 +189,31 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def test_mode_command_uses_singular_name(self):
         self.command("mode free")
-        self.finish_vote()
         self.command("mode sidewalk")
-        self.finish_vote()
         self.assertEqual(self.control()["mode"], "sidewalk")
         self.assertEqual(
             self.client.get("/chat").json["messages"][-1], "Navigation mode: sidewalk."
         )
 
-    def test_command_ballots_are_per_browser_and_can_change(self):
+    def test_camera_and_mode_apply_immediately_without_ballots(self):
         self.command("camera first")
+        self.assertTrue(self.control()["first_person"])
         other = self.app.test_client()
         other.get("/cmd/no")
         self.command("no")
         self.command("yes")
-        self.assertEqual(sorted(self.voting.vote.votes.values()), ["no", "yes"])
+        self.assertTrue(self.control()["first_person"])
         self.command("mode free")
-        self.assertIn(
-            "Vote already in progress.", self.client.get("/chat").json["messages"]
-        )
-        self.finish_vote()
+        self.assertEqual(self.control()["mode"], "free")
+        other.get("/cmd/camera third")
         self.assertFalse(self.control()["first_person"])
-        self.assertTrue(
-            any(
-                "Vote failed! (1-1)" in message
-                for message in self.client.get("/chat").json["messages"]
-            )
-        )
+        self.assertFalse(self.voting.vote.active)
+        self.timer.assert_not_called()
+        self.assertEqual(self.client.get("/chat").json["messages"], [
+            "Camera: first person.", "Navigation mode: free.", "Camera: third person.",
+        ])
 
-    def test_mission_ballots_and_announcements_are_independent_of_command_vote(self):
+    def test_mission_ballots_and_announcements_still_work_with_immediate_camera(self):
         self.state["missions"] = {
             "active": None,
             "events": [{"id": "e1", "text": "Choose our next mission!"}],
@@ -248,7 +237,8 @@ class ChatIntegrationTests(unittest.TestCase):
         ]
         self.assertEqual(len(ballots), 2)
         self.assertEqual(len({b["viewer"] for b in ballots}), 1)
-        self.assertTrue(self.voting.vote.active)
+        self.assertTrue(self.control()["first_person"])
+        self.assertFalse(self.voting.vote.active)
         messages = self.client.get("/chat").json["messages"]
         self.assertEqual(messages.count("Choose our next mission!"), 1)
         self.assertEqual(
@@ -486,7 +476,7 @@ class ChatIntegrationTests(unittest.TestCase):
         messages = self.client.get(f"/chat?after={cursor}").json["messages"]
         self.assertEqual(len(messages), 1)
         self.assertEqual(
-            messages[0], f"{get_game(self.game).title} • mode: sidewalk • camera: third person"
+            messages[0], f"Game: {get_game(self.game).title} • mode: sidewalk • camera: third person"
         )
         self.assertEqual(self.client.get("/chat?after=invalid").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=-1").json["cursor"], 2)
@@ -513,6 +503,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.command("loc")
         self.command("info")
         expected = (
+            f"Game: {get_game(self.game).title} • "
             "Las Colinas, Los Santos • Jul 14 4:32 PM (afternoon) • rain, strong wind • "
             "heading northwest • mode: sidewalk • camera: third person • "
             "Current mission: Travel to Market • 1.2 mi away"
@@ -541,16 +532,17 @@ class ChatIntegrationTests(unittest.TestCase):
             "Unknown command: !mission. Type !help for commands.",
         )
 
-    def test_vote_from_previous_session_cannot_change_new_session(self):
+    def test_camera_command_has_no_delayed_effect_in_replacement_session(self):
         self.command("camera first")
+        self.assertTrue(self.control()["first_person"])
         self.state["session"] = "replacement-session"
         self.write("state.json", self.state)
-        self.finish_vote()
+        self.command("camera third")
         self.assertFalse(self.control()["first_person"])
-        self.assertIn(
-            "Could not apply voted command: Game session changed; start a new vote.",
-            self.client.get("/chat").json["messages"],
-        )
+        self.timer.assert_not_called()
+        self.assertEqual(self.client.get("/chat").json["messages"], [
+            "Camera: first person.", "Camera: third person.",
+        ])
 
     def test_other_game_state_cannot_receive_commands_or_votes(self):
         self.state["game"] = "vice_city" if self.game == "san_andreas" else "san_andreas"
@@ -584,7 +576,7 @@ class ChatIntegrationTests(unittest.TestCase):
         for command in ("!camera", "!up", "!down", "!center"):
             self.assertNotIn(command, messages[1])
         self.assertNotIn("camera", messages[2])
-        self.assertIn("mode vote", messages[2])
+        self.assertEqual(messages[2], "Unknown command: !yes. Type !help for commands.")
         self.state["capabilities"]["view"] = True
         self.write("state.json", self.state)
         self.command("more")
@@ -613,14 +605,16 @@ class ChatIntegrationTests(unittest.TestCase):
                 control.request(command, [])
             self.assertEqual(self.control(), self.settings)
 
-    def test_camera_vote_rechecks_capability_when_applied(self):
+    def test_camera_command_rechecks_capability_on_each_request(self):
         self.command("camera first")
+        self.assertTrue(self.control()["first_person"])
+        expected = self.control()
         self.state["capabilities"]["first_person"] = False
         self.write("state.json", self.state)
-        self.finish_vote()
-        self.assertFalse(self.control()["first_person"])
+        self.command("camera third")
+        self.assertEqual(self.control(), expected)
         messages = self.client.get("/chat").json["messages"]
-        self.assertTrue(any("Could not apply voted command: !camera is not available" in message
+        self.assertTrue(any("!camera is not available" in message
                             for message in messages))
 
     def test_missing_capabilities_keep_only_original_san_andreas_compatibility(self):

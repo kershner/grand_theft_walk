@@ -239,7 +239,9 @@ class Controller:
             except (OSError, ValueError) as error:
                 logger.warning("Mission locations unavailable: %s", error)
         self.missions = MissionSystem(self.state_dir, graph, destinations)
-        self.pace = backend.WalkingPace(mem, WALK_SPEED_MULTIPLIER) if self.capabilities.walking_pace else None
+        self.pace = backend.WalkingPace(
+            mem, getattr(backend, "WALK_SPEED_MULTIPLIER", WALK_SPEED_MULTIPLIER)
+        ) if self.capabilities.walking_pace else None
         self.autosave = autosave_factory(mem, self.state_dir) if self.capabilities.autosave else None
         self.camera = backend.FirstPersonCamera(mem) if self.capabilities.first_person else None
         self.jump = HighJump(self.game, self.bindings, binder=backend.bind_jump_key) if self.capabilities.jump else None

@@ -29,10 +29,8 @@ HELP = {
     "forward": "!forward [1-100] — Move forward that many one-second steps in free mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] — Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
     "jump": "!jump — High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
-    "mode": "!mode <sidewalk|free> — Start a 20-second vote for sidewalk navigation or free roaming.",
-    "camera": "!camera [first|third] — Start a 20-second vote to toggle the camera or select a perspective.",
-    "yes": "!yes — Vote yes on the active camera or mode vote.",
-    "no": "!no — Vote no on the active camera or mode vote.",
+    "mode": "!mode <sidewalk|free>: Switch immediately to sidewalk navigation or free roaming.",
+    "camera": "!camera [first|third]: Toggle the camera or select a perspective immediately.",
     "help": "!help [command] — Show commands or details for a command.",
     "more": "!more — Show the remaining commands.",
     "info": "!info — Show the current area, game time, weather, navigation mode, camera, and mission.",
@@ -163,8 +161,6 @@ class GTWBot:
                 target = args[0].lstrip("!")
                 target = ALIASES.get(target, target)
                 require_command(state, target)
-                if target in ("yes", "no") and not command_supported(state, "camera"):
-                    return HELP[target].replace("camera or mode vote", "mode vote")
                 return HELP.get(
                     target, f"Unknown command: !{target}. Type !help for commands."
                 )
@@ -180,8 +176,6 @@ class GTWBot:
             if len(args) == 1 and args[0] in ("1", "2", "3"):
                 return self.control.vote(viewer, int(args[0]))
             return HELP[name]
-        if name in {"yes", "no"}:
-            return HELP[name] if args else self.command_voting.cast(viewer, name)
         if name in DIRECTIONS:
             valid = not args or (
                 len(args) == 1
@@ -203,29 +197,6 @@ class GTWBot:
         if name == "info":
             return self._info_reply()
 
-        if name in {"camera", "mode"}:
-            if not state.get("ready"):
-                raise RuntimeError("Game loading; please wait.")
-            if name == "mode":
-                description = f"Navigation mode: {args[0]}."
-            elif args:
-                description = f"Camera: {args[0]} person."
-            else:
-                description = "Toggle camera perspective."
-            session = state.get("session", state.get("pid", "controller"))
-            return self.command_voting.start(
-                name, args, viewer, description,
-                execute=lambda command, values: self._execute_for_session(
-                    session, command, values
-                ),
-            )
-
-        return self._execute(name, args)
-
-    def _execute_for_session(self, session, name, args):
-        state = self.control.snapshot()
-        if state.get("session", state.get("pid", "controller")) != session:
-            raise RuntimeError("Game session changed; start a new vote.")
         return self._execute(name, args)
 
     def _execute(self, name, args):
@@ -249,7 +220,9 @@ class GTWBot:
             return "Game loading; please wait."
         location = state.get("location") or {}
         game = getattr(self.control, "game", get_game())
-        parts = [", ".join(location.get("places") or [game.title])]
+        parts = [f"Game: {game.title}"]
+        if location.get("places"):
+            parts.append(", ".join(location["places"]))
         clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
         if clock:
             period = location.get("period")

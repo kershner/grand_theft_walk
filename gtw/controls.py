@@ -206,7 +206,7 @@ class HighJump:
                     and state["vertical_speed"] > 0
                 ):
                     if self.game.boost_jump(state):
-                        logger.info("High jump boosted")
+                        logger.info("Jump takeoff adjusted")
                     self.cancel()
                 elif now >= self.deadline:
                     logger.warning("Jump did not take off; boost cancelled")

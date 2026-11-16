@@ -85,6 +85,41 @@ class MissionTests(unittest.TestCase):
         self.tick(10000)
         self.assertEqual(active, self.system.data["active"])
 
+    def test_halfway_reminder_includes_options_time_and_latest_votes_once(self):
+        self.tick(0)
+        poll = self.system.data["poll"]
+        self.tick(29.75)
+        self.assertEqual(len(self.system.data["events"]), 1)
+        self.ballot("alice", 2, 129)
+        self.tick(30)
+        reminders = [e["text"] for e in self.system.data["events"] if "halfway" in e["text"]]
+        self.assertEqual(len(reminders), 1)
+        self.assertIn("30 seconds remaining", reminders[0])
+        self.assertIn("!vote 1/2/3", reminders[0])
+        self.assertIn("1 vote)", reminders[0])
+        for option in poll["options"]:
+            self.assertIn(option["name"], reminders[0])
+        self.tick(31)
+        self.assertEqual(len(self.system.data["events"]), 2)
+        restored = MissionSystem(self.root, self.graph, self.destinations)
+        restored.tick(self.state, 32, True, wall=132)
+        self.assertEqual(restored.data["events"], [])
+
+    def test_expired_poll_does_not_send_a_late_halfway_reminder(self):
+        self.tick(0)
+        self.tick(60)
+        self.assertIsNotNone(self.system.data["active"])
+        self.assertFalse(any("halfway" in e["text"] for e in self.system.data["events"]))
+
+    def test_halfway_uses_the_poll_duration_instead_of_fixed_thirty_seconds(self):
+        self.system.config["vote_seconds"] = 10
+        self.tick(0)
+        self.tick(4.75)
+        self.assertEqual(len(self.system.data["events"]), 1)
+        self.tick(5)
+        self.assertIn("5 seconds remaining", self.system.data["events"][-1]["text"])
+        self.assertTrue(self.system.data["poll"]["halfway_announced"])
+
     def test_no_votes_and_ties_choose_only_a_winning_option(self):
         self.tick(0)
         options = self.system.data["poll"]["options"]
