@@ -1,18 +1,103 @@
 """Reversible map opening, native movement, and allocation reuse guards."""
 
+import math
 import struct
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.san_andreas.helpers import MemoryFixture
-from gtw.controls import can_control
+from gtw.controls import HighJump, can_control
 from gtw.navigation import Node, PedestrianGraph
 from vice_city.game import (
     BARRIER_MODELS, CONNECTIONS, CONTROL_ACTIONS, COUNTS, Game, OBJECT_POOL,
-    OBJECT_SIZE, PATHS, PLAYER_INFO, RuntimeChanges, WalkingPace,
-    bind_walk_key, island_path_changes, load_destinations, read_graph, unlock_regions,
+    OBJECT_SIZE, PATHS, PED_POOL, PLAYER_INFO, JUMP_ACTION, JUMP_KEY, JUMP_SPEED,
+    CAPABILITIES, RuntimeChanges, WalkingPace,
+    bind_jump_key, bind_walk_key, island_path_changes, load_destinations, read_graph, unlock_regions,
 )
+
+
+class JumpTests(unittest.TestCase):
+    def setUp(self):
+        self.mem = MemoryFixture()
+        self.mem.foreground = lambda: True
+        self.game = Game(self.mem, zones=[])
+        self.ped, self.pool, self.bitmap = 0x200000, 0x100000, 0x300000
+        self.mem.write(PLAYER_INFO, struct.pack("<I", self.ped))
+        self.mem.write(PED_POOL, struct.pack("<I", self.pool))
+        self.mem.write(self.pool, struct.pack("<3I", self.ped, self.bitmap, 1))
+        self.mem.write(self.bitmap, b"\x01")
+        self.mem.write(self.ped + 0x14C, b"\x00\x08")
+        self.mem.write(self.ped + 0x70, struct.pack("<3f", 0.1, 0.2, 0.12))
+        self.state = {
+            "ready": True, "ped": self.ped, "identity": self.game.identity(self.ped),
+            "in_air": True, "standing": False, "vertical_speed": 0.12,
+            "foreground": True, "paused": False, "controls_disabled": False,
+            "in_vehicle": False, "health": 100, "player_state": 0,
+        }
+
+    def test_boost_only_changes_vertical_velocity(self):
+        before = dict(self.mem.data)
+        self.assertTrue(self.game.boost_jump(self.state))
+        self.assertAlmostEqual(self.mem.unpack(self.ped + 0x78, "f")[0], JUMP_SPEED)
+        self.assertEqual(self.mem.data.keys(), before.keys())
+        for address, value in before.items():
+            if not self.ped + 0x78 <= address < self.ped + 0x7C:
+                self.assertEqual(self.mem.data[address], value)
+
+    def test_invalid_or_nonascending_takeoffs_are_rejected_without_writes(self):
+        for speed in (0, -0.1, JUMP_SPEED + 0.1, math.nan, math.inf):
+            with self.subTest(speed=speed):
+                self.mem.write(self.ped + 0x78, struct.pack("<f", speed))
+                before = dict(self.mem.data)
+                self.assertFalse(self.game.boost_jump(self.state))
+                self.assertEqual(self.mem.data, before)
+        self.mem.write(self.ped + 0x78, struct.pack("<f", 0.12))
+        for flags in (b"\x01\x08", b"\x00\x00"):
+            self.mem.write(self.ped + 0x14C, flags)
+            before = dict(self.mem.data)
+            self.assertFalse(self.game.boost_jump(self.state))
+            self.assertEqual(self.mem.data, before)
+
+    def test_stale_snapshot_and_reused_player_slot_are_rejected(self):
+        for update in ({"ready": False}, {"standing": True}, {"in_air": False}, {"identity": "old"}):
+            self.assertFalse(self.game.boost_jump(dict(self.state, **update)))
+        self.mem.write(self.bitmap, b"\x02")
+        before = dict(self.mem.data)
+        self.assertFalse(self.game.boost_jump(self.state))
+        self.assertEqual(self.mem.data, before)
+        self.mem.write(self.bitmap, b"\x01")
+        self.mem.write(PLAYER_INFO, struct.pack("<I", self.ped + 4))
+        self.assertFalse(self.game.boost_jump(self.state))
+
+    def test_binding_removes_conflicts_and_restores_all_owned_changes(self):
+        self.mem.write(CONTROL_ACTIONS + 12 * 32, struct.pack("<II", JUMP_KEY, 1))
+        self.mem.write(CONTROL_ACTIONS + 19 * 32 + 8, struct.pack("<II", JUMP_KEY, 2))
+        before = self.mem.read(CONTROL_ACTIONS, 44 * 32)
+        changes = RuntimeChanges(self.mem)
+        bind_jump_key(self.game, changes)
+        bind_jump_key(self.game, changes)
+        self.assertEqual(self.mem.unpack(CONTROL_ACTIONS + JUMP_ACTION * 32, "2I"), (32, 1))
+        self.assertEqual(self.mem.u32(CONTROL_ACTIONS + 12 * 32), 1056)
+        self.assertEqual(self.mem.u32(CONTROL_ACTIONS + 19 * 32 + 8), 1056)
+        self.assertEqual(changes.restore(), [])
+        self.assertEqual(self.mem.read(CONTROL_ACTIONS, 44 * 32), before)
+
+    def test_shared_jump_drives_vice_city_takeoff_and_boosts_once(self):
+        self.assertTrue(CAPABILITIES.jump)
+        changes = RuntimeChanges(self.mem)
+        with patch("gtw.controls.Keys") as keys, patch.object(self.game, "boost_jump", wraps=self.game.boost_jump) as boost:
+            jump = HighJump(self.game, changes, binder=bind_jump_key)
+            request = {"id": "vice-jump", "issued": time.time()}
+            jump.tick(request, dict(self.state, standing=True, in_air=False, vertical_speed=0), 10)
+            keys.return_value.set.assert_called_once_with({"jump"})
+            boost.assert_not_called()
+            jump.tick(request, self.state, 10.2)
+            jump.tick(request, self.state, 10.3)
+            boost.assert_called_once_with(self.state)
+            keys.return_value.release.assert_called()
+            self.assertIsNone(jump.player)
 
 
 class WorldTests(unittest.TestCase):

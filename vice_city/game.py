@@ -9,8 +9,11 @@ from gtw.saves import Autosave as SharedAutosave
 from gtw.navigation import Node, PedestrianGraph
 from gtw.winmemory import Memory as ProcessMemory
 
-CAPABILITIES = Capabilities(unlock_map=True, walk_binding=True, walking_pace=True, autosave=True, view=True)
+CAPABILITIES = Capabilities(unlock_map=True, walk_binding=True, walking_pace=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
+JUMP_ACTION = 11
+JUMP_KEY = 32  # Space; avoid the game's hardcoded replay shortcuts.
+JUMP_SPEED = math.sqrt(0.96)
 
 PLAYER_INFO = 0x94AD28
 PED_POOL = 0x97F2AC
@@ -226,6 +229,21 @@ class Game:
             "cutscene": bool(mem.byte(0xA10AB2)),
         }
 
+    def boost_jump(self, state):
+        """Boost native takeoff once, preserving horizontal motion and gravity."""
+        if not state.get("ready") or not state.get("in_air") or state.get("standing"):
+            return False
+        ped = state["ped"]
+        if self.mem.u32(PLAYER_INFO) != ped or self.identity(ped) != state["identity"]:
+            return False
+        if self.mem.byte(ped + 0x14C) & 1 or not self.mem.byte(ped + 0x14D) & 8:
+            return False
+        speed = self.mem.unpack(ped + 0x78, "f")[0]
+        if not math.isfinite(speed) or not 0 < speed < JUMP_SPEED:
+            return False
+        self.mem.write(ped + 0x78, struct.pack("<f", JUMP_SPEED))
+        return True
+
     def location(self, state):
         point = tuple(state["position"][axis] for axis in ("x", "y", "z"))
         names = [name for name, b in self.zones if all(b[i] <= point[i] <= b[i + 3] for i in range(3))]
@@ -382,6 +400,23 @@ def bind_walk_key(game, changes):
                 if struct.unpack_from("<I", data, at)[0] == key:
                     changes.patch(CONTROL_ACTIONS + at, struct.pack("<I", 1056))
         changes.patch(CONTROL_ACTIONS + action * 32, struct.pack("<II", key, 1))
+
+
+def bind_jump_key(game, changes):
+    """Temporarily own Space in both keyboard binding columns."""
+    data = game.mem.read(CONTROL_ACTIONS, 44 * 32)
+    if struct.unpack_from("<I", data, JUMP_ACTION * 32)[0] > 1056:
+        raise RuntimeError("Invalid control binding")
+    for action in range(44):
+        if action == JUMP_ACTION:
+            continue
+        for keyboard in (0, 1):
+            at = action * 32 + keyboard * 8
+            if struct.unpack_from("<I", data, at)[0] == JUMP_KEY:
+                changes.patch(CONTROL_ACTIONS + at, struct.pack("<I", 1056))
+    changes.patch(CONTROL_ACTIONS + JUMP_ACTION * 32, struct.pack("<I", JUMP_KEY))
+    if not struct.unpack_from("<I", data, JUMP_ACTION * 32 + 4)[0]:
+        changes.patch(CONTROL_ACTIONS + JUMP_ACTION * 32 + 4, struct.pack("<I", 1))
 
 
 class WalkingPace:
