@@ -8,8 +8,9 @@ from gtw.games import Capabilities
 from gtw.saves import Autosave as SharedAutosave
 from gtw.navigation import Node, PedestrianGraph
 from gtw.winmemory import Memory as ProcessMemory
+from vice_city.camera import FirstPersonCamera
 
-CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, jump=True, autosave=True, view=True)
+CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, first_person=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
 WALK_SPEED_MULTIPLIER = 1.0
 JUMP_ACTION = 11

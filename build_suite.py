@@ -33,9 +33,9 @@ def add_component(stage, game):
     source = ROOT / game / "installer"
     base = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     manifests = [(base, source / "payload")]
-    if game == "san_andreas":
-        camera = json.loads((source / "first-person.json").read_text(encoding="utf-8"))
-        manifests.append((camera, source / "payload/first_person"))
+    camera = source / "first-person.json"
+    if game in ("san_andreas", "vice_city"):
+        manifests.append((json.loads(camera.read_text(encoding="utf-8")), source / "payload/first_person"))
     graphics = source / "graphics.json"
     if graphics.is_file():
         manifests.append((json.loads(graphics.read_text(encoding="utf-8")), source / "payload/graphics"))
@@ -140,7 +140,7 @@ def build(keep_stage=False):
     for name in ("manifest.json", "build.ps1", "save_bridge.c", "save_shared.h", "save_request.c", *native_manifest["files"]):
         copy_file(native / name, stage / "gtw/native" / name)
     definitions = {game: add_component(stage, game) for game in GAMES}
-    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-graphics1", "uses_existing_venv": True, "games": definitions}
+    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-camera1", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     copy_file(ROOT / "Setup.ps1", stage / "Setup.ps1")
     copy_file(ROOT / "Setup.cmd", stage / "Setup.cmd")

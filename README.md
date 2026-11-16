@@ -35,4 +35,4 @@ Open [localhost:5050](http://localhost:5050). **F12** exits the game; **Ctrl+C**
   GInput, ZMenu (first-person camera), Ultimate ASI Loader, classic 1.0 compatibility executable.
 - **Vice City:** SilentPatch + DDraw fix, SkyGfx (PS2 lighting/water), Widescreen Fix,
   Project2DFX + Open Limit Adjuster, D3D8-to-D3D9 wrapper, Ultimate ASI Loader,
-  classic 1.0 compatibility executable.
+  First Person View Mod (GenuisZ), classic 1.0 compatibility executable.

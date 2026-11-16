@@ -29,8 +29,8 @@ def definition(game, root=ROOT):
     graphics = installer / "graphics.json"
     if graphics.is_file():
         files += json.loads(graphics.read_text(encoding="utf-8"))["files"]
-    if game == "san_andreas":
-        camera = installer / "first-person.json"
+    camera = installer / "first-person.json"
+    if game in ("san_andreas", "vice_city"):
         if not camera.is_file():
             return None
         files += json.loads(camera.read_text(encoding="utf-8"))["files"]
