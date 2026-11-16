@@ -11,7 +11,7 @@ from unittest.mock import Mock
 from core.saves import NativeSaveRequest
 from tests.san_andreas.helpers import MemoryFixture
 from tests.san_andreas.test_saves import FakeBridge
-from tests.test_vice_city_launch import checkpoint
+from tests.vice_city.test_launch import checkpoint
 from games.vice_city.game import Autosave, MENU, SAVE_PREFIX, SCRIPT_SPACE, valid_save
 
 
