@@ -36,7 +36,7 @@ class CommandVoting:
         self.events = []
         self.closes_at = 0.0
 
-    def start(self, name, args, starter, help_text):
+    def start(self, name, args, starter, help_text, execute=None):
         with self.lock:
             if self.vote.active:
                 return "Vote already in progress."
@@ -46,7 +46,7 @@ class CommandVoting:
             self.closes_at = time.monotonic() + self.duration
             # A thread timer survives Flask's per-request asyncio event loop.
             timer = self.timer_factory(
-                self.duration, lambda: self._finish(vote, help_text)
+                self.duration, lambda: self._finish(vote, help_text, execute)
             )
             timer.daemon = True
             vote.timer = timer
@@ -70,7 +70,7 @@ class CommandVoting:
             user = cast_ballot(self.vote.votes, user, side)
             return f"{user} voted {side.upper()} • {self._tally(self.vote)}"
 
-    def _finish(self, vote, help_text):
+    def _finish(self, vote, help_text, execute=None):
         with self.lock:
             if self.vote is not vote or not vote.active:
                 return
@@ -81,7 +81,7 @@ class CommandVoting:
             )
             try:
                 if yes > no:
-                    feedback = self.execute(vote.command, vote.args)
+                    feedback = (execute or self.execute)(vote.command, vote.args)
                     if feedback:
                         self.events.append(feedback)
             except (OSError, ValueError, RuntimeError) as error:

@@ -1,4 +1,4 @@
-"""San Andreas runtime files, control requests, and bounded logging."""
+"""Shared runtime files, control requests, and bounded logging."""
 
 import json
 import logging
@@ -10,9 +10,12 @@ from pathlib import Path
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
+from gtw.games import get_game
+
 LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2
-DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "runtime"
+DEFAULT_STATE_DIR = get_game().state_dir
+PROTOCOL_VERSION = 1
 MODES = ("sidewalk", "free")
 DIRECTIONS = {"left", "right", "forward", "back", "up", "down"}
 VIEW_COMMANDS = {"up", "down", "center"}
@@ -123,8 +126,9 @@ class NavigationModeError(RuntimeError):
 class WalkerControl:
     """Send chat commands through the walker's existing control file."""
 
-    def __init__(self, state_dir=DEFAULT_STATE_DIR):
-        self.state_dir = Path(state_dir)
+    def __init__(self, state_dir=None, game="san_andreas"):
+        self.game = get_game(game)
+        self.state_dir = Path(state_dir) if state_dir is not None else self.game.state_dir
         self.lock = threading.Lock()
 
     def snapshot(self):
@@ -132,12 +136,18 @@ class WalkerControl:
             state = read_json(self.state_dir / "state.json")
         except (OSError, ValueError) as error:
             raise RuntimeError(
-                "Start the San Andreas walker controller first."
+                f"Start the {self.game.title} walker controller first."
             ) from error
+        # Legacy reports may omit identity/version only for the original default profile.
+        if state.get("game", "san_andreas") != self.game.id:
+            raise RuntimeError(f"The runtime folder belongs to another game; expected {self.game.title}.")
+        protocol = state.get("protocol", 1 if self.game.id == "san_andreas" else None)
+        if type(protocol) is not int or protocol != PROTOCOL_VERSION:
+            raise RuntimeError("Unsupported walker protocol version.")
         age = time.time() - state.get("updated", 0)
         if state.get("controller") != "running" or not 0 <= age <= 5:
             raise RuntimeError(
-                "The San Andreas walker controller is offline. Start it first."
+                f"The {self.game.title} walker controller is offline. Start it first."
             )
         return state
 
@@ -189,10 +199,10 @@ class WalkerControl:
         return f"Vote submitted: {choice}. Your latest vote counts."
 
 
-def configure_logging(log_dir=DEFAULT_STATE_DIR):
+def configure_logging(log_dir=DEFAULT_STATE_DIR, log_name="san_andreas"):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    path = log_dir / "san_andreas.log"
+    path = log_dir / f"{log_name}.log"
     root = logging.getLogger()
     if any(
         isinstance(handler, ConcurrentRotatingFileHandler) for handler in root.handlers

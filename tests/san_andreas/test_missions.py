@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from missions import MissionSystem
-from navigation import Node, PedestrianGraph, SidewalkNavigator
-from runtime import atomic_json
+from gtw.missions import MissionSystem
+from gtw.navigation import Node, PedestrianGraph, SidewalkNavigator
+from gtw.runtime import atomic_json
 
 
 def graph_fixture():

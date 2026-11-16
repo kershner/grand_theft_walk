@@ -9,8 +9,8 @@ from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
 
-from runtime import atomic_json, mission_distance, read_json
-from voting import cast_ballot, tally
+from gtw.runtime import atomic_json, mission_distance, read_json
+from gtw.voting import cast_ballot, tally
 
 DEFAULT_CONFIG = {
     "hold_seconds": 30.0,

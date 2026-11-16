@@ -6,9 +6,9 @@ import time
 from ctypes import wintypes as w
 
 import keyboard
-from game import bind_jump_key
-from navigation import SmoothTurn
-from runtime import request_expired
+
+from gtw.navigation import SmoothTurn
+from gtw.runtime import request_expired
 
 logger = logging.getLogger(__name__)
 MOUSE_UNITS_PER_STEP = 10
@@ -177,9 +177,10 @@ class ViewControl:
 
 
 class HighJump:
-    def __init__(self, game, bindings):
+    def __init__(self, game, bindings, binder):
         self.game = game
         self.bindings = bindings
+        self.binder = binder
         self.keys = Keys({"jump": "space"}, focused=game.mem.foreground)
         self.last_request = None
         self.player = None
@@ -221,7 +222,7 @@ class HighJump:
         if self.player is not None or not state["standing"] or state["in_air"]:
             logger.debug("Jump ignored: already jumping or airborne")
             return
-        bind_jump_key(self.game, self.bindings)
+        self.binder(self.game, self.bindings)
         self.keys.set({"jump"})
         self.player = (state["ped"], state["identity"])
         self.release_at = now + 0.12

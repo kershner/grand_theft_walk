@@ -10,12 +10,17 @@ import sys
 import time
 from pathlib import Path
 
-from controls import Keys, key_down
-from game import Game
-from runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging, read_json
-from saves import MENU, SAVE_PREFIX, valid_save
-from walker import run
-from winmemory import EXPECTED_EXE, Memory, elevate, game_pids, k32
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from gtw.controls import Keys, key_down
+from gtw.games import get_game
+from gtw.manager import component_status
+from san_andreas.game import Game
+from gtw.runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging, read_json
+from san_andreas.saves import MENU, SAVE_PREFIX, valid_save
+from san_andreas.walker import run
+from gtw.winmemory import Memory, elevate, game_pids, k32
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +267,7 @@ def main():
     parser.add_argument(
         "--game",
         type=Path,
-        default=Path("C:/Program Files/Rockstar Games/Grand Theft Auto San Andreas/gta_sa.exe"),
+        default=get_game("san_andreas").install_dir / get_game("san_andreas").executable,
     )
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--timeout", type=float, default=600)
@@ -285,10 +290,12 @@ def main():
                 "Close the existing San Andreas instance before using the full launcher."
             )
         exe = args.game.resolve()
-        if hashlib.sha256(exe.read_bytes()).hexdigest() != EXPECTED_EXE:
+        if hashlib.sha256(exe.read_bytes()).hexdigest() != get_game("san_andreas").verified_executable:
             raise RuntimeError(
                 "Unsupported game executable. Install the verified PS2-style setup first."
             )
+        if not component_status("san_andreas", exe.parent)["setup_matches"]:
+            raise RuntimeError("San Andreas's mod files do not match the pinned setup. Run the suite repair before launching.")
         logger.info("Launching Grand Theft Walk... F12 cancels startup.")
         try:
             process = subprocess.Popen([str(exe)], cwd=str(exe.parent))

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
-from runtime import (
+from gtw.runtime import (
     LOG_BACKUPS,
     LOG_MAX_BYTES,
     atomic_json,
@@ -47,7 +47,7 @@ class RuntimeFileTests(unittest.TestCase):
             PermissionError("file is being replaced"),
             '{"walking":false}',
         ]
-        with patch("runtime.time.sleep"):
+        with patch("gtw.runtime.time.sleep"):
             self.assertEqual(read_json(path), {"walking": False})
         self.assertEqual(path.read_text.call_count, 2)
 
@@ -55,7 +55,7 @@ class RuntimeFileTests(unittest.TestCase):
         path = unittest.mock.Mock()
         path.read_text.side_effect = PermissionError("temporarily locked")
         settings = {"walking": True, "mode": "free"}
-        with patch("runtime.time.sleep"):
+        with patch("gtw.runtime.time.sleep"):
             read_controls(path, settings)
         self.assertEqual(settings, {"walking": True, "mode": "free"})
         self.assertEqual(path.read_text.call_count, 6)
@@ -74,13 +74,13 @@ class RuntimeFileTests(unittest.TestCase):
                     raise PermissionError("reader still has the file open")
                 return replace(source, destination)
 
-            with patch.object(Path, "replace", replace_after_unlock), patch("runtime.time.sleep"):
+            with patch.object(Path, "replace", replace_after_unlock), patch("gtw.runtime.time.sleep"):
                 atomic_json(path, {"value": 2})
             self.assertEqual(read_json(path), {"value": 2})
             self.assertEqual(attempts, 3)
             with (
                 patch.object(Path, "replace", side_effect=PermissionError("still locked")),
-                patch("runtime.time.sleep"),
+                patch("gtw.runtime.time.sleep"),
             ):
                 with self.assertRaises(PermissionError):
                     atomic_json(path, {"value": 3})

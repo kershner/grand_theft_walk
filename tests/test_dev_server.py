@@ -9,10 +9,13 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from dev_server import create_app
+from gtw.games import get_game
 from gtw_chat_bot import ANNOUNCEMENT_INTERVAL
 
 
 class ChatIntegrationTests(unittest.TestCase):
+    game = "san_andreas"
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.root = Path(self.folder.name)
@@ -26,6 +29,8 @@ class ChatIntegrationTests(unittest.TestCase):
         }
         self.write("control.json", self.settings)
         self.state = {
+            "game": self.game,
+            "protocol": 1,
             "controller": "running",
             "updated": time.time(),
             "ready": True,
@@ -37,7 +42,7 @@ class ChatIntegrationTests(unittest.TestCase):
             "interior": 0,
         }
         self.write("state.json", self.state)
-        self.app = create_app(self.root, start_runtime=False)
+        self.app = create_app(self.root, start_runtime=False, game=self.game)
         self.client = self.app.test_client()
         self.voting = self.app.extensions["gtw_bot"].command_voting
         self.timer = Mock()
@@ -419,7 +424,7 @@ class ChatIntegrationTests(unittest.TestCase):
         old = {"id": "previous-event", "text": "Mission complete: old destination!"}
         self.state["missions"] = {"events": [old]}
         self.write("state.json", self.state)
-        app = create_app(self.root, start_runtime=False)
+        app = create_app(self.root, start_runtime=False, game=self.game)
         self.addCleanup(app.extensions["gtw_bot"].close)
         client = app.test_client()
         self.assertEqual(client.get("/chat").json["messages"], [])
@@ -436,7 +441,7 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def test_live_mission_events_wait_until_startup_messages_are_delivered(self):
         with patch("dev_server.GTWBot.start_runtime") as start:
-            app = create_app(self.root)
+            app = create_app(self.root, game=self.game)
         bot = app.extensions["gtw_bot"]
         self.addCleanup(bot.close)
         client = app.test_client()
@@ -479,7 +484,7 @@ class ChatIntegrationTests(unittest.TestCase):
         messages = self.client.get(f"/chat?after={cursor}").json["messages"]
         self.assertEqual(len(messages), 1)
         self.assertEqual(
-            messages[0], "San Andreas • mode: sidewalk • camera: third person"
+            messages[0], f"{get_game(self.game).title} • mode: sidewalk • camera: third person"
         )
         self.assertEqual(self.client.get("/chat?after=invalid").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=-1").json["cursor"], 2)
@@ -533,6 +538,38 @@ class ChatIntegrationTests(unittest.TestCase):
             self.client.get("/chat").json["messages"][-1],
             "Unknown command: !mission. Type !help for commands.",
         )
+
+    def test_vote_from_previous_session_cannot_change_new_session(self):
+        self.command("camera first")
+        self.state["session"] = "replacement-session"
+        self.write("state.json", self.state)
+        self.finish_vote()
+        self.assertFalse(self.control()["first_person"])
+        self.assertIn(
+            "Could not apply voted command: Game session changed; start a new vote.",
+            self.client.get("/chat").json["messages"],
+        )
+
+    def test_other_game_state_cannot_receive_commands_or_votes(self):
+        self.state["game"] = "vice_city" if self.game == "san_andreas" else "san_andreas"
+        self.write("state.json", self.state)
+        for command in ("walk", "camera first", "vote 1"):
+            self.command(command)
+        self.assertEqual(self.control(), self.settings)
+        self.assertFalse(self.voting.vote.active)
+        self.assertFalse((self.root / "mission_votes").exists())
+
+
+class ViceCityChatIntegrationTests(ChatIntegrationTests):
+    """Same interaction contract with simulated Vice City controller reports."""
+
+    game = "vice_city"
+
+
+class GTAIIIChatIntegrationTests(ChatIntegrationTests):
+    """Same interaction contract with simulated GTA III controller reports."""
+
+    game = "gta_iii"
 
 
 if __name__ == "__main__":

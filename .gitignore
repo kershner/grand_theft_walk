@@ -1,6 +1,12 @@
 # Local game setup and generated state
 /san_andreas/installer/
+/vice_city/installer/
+/gta_iii/installer/
+/gtw/runtime/
+/runtime/
 /san_andreas/runtime/
+/vice_city/runtime/
+/gta_iii/runtime/
 
 # Python environments, caches, and test output
 .venv/

@@ -4,7 +4,8 @@ import logging
 import threading
 import time
 
-from san_andreas.runtime import (
+from gtw.games import get_game
+from gtw.runtime import (
     DIRECTIONS,
     MOVEMENT_COMMANDS,
     NavigationModeError,
@@ -12,7 +13,7 @@ from san_andreas.runtime import (
     chat_ready,
     mission_distance,
 )
-from san_andreas.voting import CommandVoting
+from gtw.voting import CommandVoting
 
 HELP = {
     "walk": "!walk — Start autowalking. Alias: !w.",
@@ -200,8 +201,20 @@ class GTWBot:
                 description = f"Camera: {args[0]} person."
             else:
                 description = "Toggle camera perspective."
-            return self.command_voting.start(name, args, viewer, description)
+            session = state.get("session", state.get("pid", "controller"))
+            return self.command_voting.start(
+                name, args, viewer, description,
+                execute=lambda command, values: self._execute_for_session(
+                    session, command, values
+                ),
+            )
 
+        return self._execute(name, args)
+
+    def _execute_for_session(self, session, name, args):
+        state = self.control.snapshot()
+        if state.get("session", state.get("pid", "controller")) != session:
+            raise RuntimeError("Game session changed; start a new vote.")
         return self._execute(name, args)
 
     def _execute(self, name, args):
@@ -224,7 +237,8 @@ class GTWBot:
         if not chat_ready(state):
             return "Game loading; please wait."
         location = state.get("location") or {}
-        parts = [", ".join(location.get("places") or ["San Andreas"])]
+        game = getattr(self.control, "game", get_game())
+        parts = [", ".join(location.get("places") or [game.title])]
         clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
         if clock:
             period = location.get("period")

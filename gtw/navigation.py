@@ -1,4 +1,4 @@
-"""San Andreas pedestrian path loading, waypoint selection, and steering."""
+"""Pedestrian path loading, waypoint selection, and steering."""
 
 import heapq
 import logging

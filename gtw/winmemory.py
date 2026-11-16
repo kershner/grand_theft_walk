@@ -8,7 +8,8 @@ import sys
 from ctypes import wintypes as w
 from pathlib import Path
 
-EXPECTED_EXE = "a559aa772fd136379155efa71f00c47aad34bbfeae6196b0fe1047d0645cbd26"
+from gtw.games import get_game
+
 k32 = c.WinDLL("kernel32", use_last_error=True)
 u32 = c.WinDLL("user32", use_last_error=True)
 
@@ -88,7 +89,8 @@ api(u32, "GetForegroundWindow", [], w.HWND)
 api(u32, "GetWindowThreadProcessId", [w.HWND, c.POINTER(w.DWORD)], w.DWORD)
 
 
-def game_pids():
+def game_pids(game="san_andreas"):
+    profile = get_game(game)
     snapshot = k32.CreateToolhelp32Snapshot(2, 0)
     if snapshot == c.c_void_p(-1).value:
         raise c.WinError(c.get_last_error())
@@ -97,7 +99,7 @@ def game_pids():
     try:
         ok = k32.Process32FirstW(snapshot, c.byref(entry))
         while ok:
-            if entry.szExeFile.lower() == "gta_sa.exe":
+            if entry.szExeFile.lower() == profile.executable:
                 yield entry.th32ProcessID
             ok = k32.Process32NextW(snapshot, c.byref(entry))
     finally:
@@ -105,10 +107,19 @@ def game_pids():
 
 
 class Memory:
-    def __init__(self, writable=False, pid=None):
-        matches = [pid] if pid else list(game_pids())
+    def __init__(self, writable=False, pid=None, game="san_andreas"):
+        self.profile = get_game(game)
+        self.handle = None
+        if writable and not self.profile.verified_executable:
+            raise RuntimeError(f"Memory writes are not enabled for {self.profile.title}.")
+        expected_executable = self.profile.verified_executable or (
+            self.profile.inspection_executable if not writable else None
+        )
+        if not expected_executable:
+            raise RuntimeError(f"No inspected executable is configured for {self.profile.title}.")
+        matches = [pid] if pid else list(game_pids(game))
         if len(matches) != 1:
-            raise RuntimeError("Start exactly one San Andreas instance and load into the world.")
+            raise RuntimeError(f"Start exactly one {self.profile.title} instance and load into the world.")
         self.pid, self.writable = matches[0], writable
         self.handle = k32.OpenProcess(0x1010 | (0x28 if writable else 0), False, self.pid)
         if not self.handle:
@@ -119,9 +130,10 @@ class Memory:
             if not k32.QueryFullProcessImageNameW(self.handle, 0, name, c.byref(size)):
                 raise c.WinError(c.get_last_error())
             self.exe = Path(name.value)
-            if hashlib.sha256(self.exe.read_bytes()).hexdigest() != EXPECTED_EXE:
+            if (self.exe.name.casefold() != self.profile.executable
+                or hashlib.sha256(self.exe.read_bytes()).hexdigest() != expected_executable):
                 raise RuntimeError(
-                    "Unsupported executable: this profile requires the verified modded 1.0 build."
+                    f"Unsupported executable for {self.profile.title}; a verified build is required."
                 )
         except Exception:
             self.close()

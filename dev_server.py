@@ -11,22 +11,24 @@ from types import SimpleNamespace
 
 from flask import Flask, g, jsonify, request, send_from_directory
 
-from gtw_chat_bot import GTWBot
-from san_andreas.runtime import (
-    DEFAULT_STATE_DIR,
+from gtw.games import GAMES, get_game
+from gtw.runtime import (
     WalkerControl,
     configure_logging,
     read_json,
 )
+from gtw_chat_bot import GTWBot
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(state_dir=DEFAULT_STATE_DIR, start_runtime=True):
+def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
+    profile = get_game(game)
+    state_dir = Path(state_dir) if state_dir is not None else profile.state_dir
     app = Flask(__name__)
     messages = []
     messages_lock = threading.Lock()
-    bot = GTWBot(control=WalkerControl(state_dir))
+    bot = GTWBot(control=WalkerControl(state_dir, game=game))
     app.extensions["gtw_bot"] = bot
     try:
         previous = read_json(Path(state_dir) / "state.json")
@@ -107,12 +109,15 @@ def create_app(state_dir=DEFAULT_STATE_DIR, start_runtime=True):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    parser.add_argument("--game", choices=GAMES, default="san_andreas")
+    parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5050)
     args = parser.parse_args()
-    log_path = configure_logging(args.state_dir)
-    app = create_app(args.state_dir.resolve())
+    profile = get_game(args.game)
+    state_dir = (args.state_dir or profile.state_dir).resolve()
+    log_path = configure_logging(state_dir, log_name=profile.id)
+    app = create_app(state_dir, game=profile.id)
     ip = socket.gethostbyname(socket.gethostname())
     logger.info(
         f"\n  Grand Theft Walk Dev Server running\n"

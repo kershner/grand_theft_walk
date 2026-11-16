@@ -9,7 +9,7 @@ import zlib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from game import (
+from san_andreas.game import (
     CONTROL_ACTIONS,
     ENTRY_EXIT_POOL,
     ENTRY_EXIT_SIZE,
@@ -347,7 +347,7 @@ class CameraTests(unittest.TestCase):
         path = Path(self.temp.name) / "ZMenuSA.asi"
         data = b"verified camera fixture"
         path.write_bytes(data)
-        self.hash_patch = patch("game.CAMERA_MODULE_SHA256", hashlib.sha256(data).hexdigest())
+        self.hash_patch = patch("san_andreas.game.CAMERA_MODULE_SHA256", hashlib.sha256(data).hexdigest())
         self.hash_patch.start()
         self.addCleanup(self.hash_patch.stop)
         self.module = {"base": 0x10000000, "size": 0x600000, "path": path}
