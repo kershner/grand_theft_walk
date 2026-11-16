@@ -13,7 +13,7 @@ from gtw.controls import (
     ViewControl,
     can_control,
 )
-from gtw.missions import MissionSystem, load_destinations
+from gtw.missions import MissionSystem
 from gtw.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
 from gtw.runtime import (
     DEFAULTS,
@@ -34,8 +34,10 @@ def distance(a, b):
 
 
 class Walking:
-    def __init__(self, graph=None, navigation_error=None, focused=None):
-        self.keys = Keys({"forward": "w", "back": "s", "walk": "f2"}, focused=focused)
+    def __init__(self, graph=None, navigation_error=None, focused=None, bindings=None):
+        bindings = bindings if bindings is not None else {"forward": "w", "back": "s", "walk": "f2"}
+        self.keys = Keys(bindings, focused=focused)
+        self.walk_modifier = {"walk"} if "walk" in bindings else set()
         self.origin = None
         self.progress_at = 0.0
         self.reverse_until = 0.0
@@ -122,7 +124,7 @@ class Walking:
         position = state["position"]
         if self.reverse_until:
             if now < self.reverse_until:
-                self.keys.set({"walk", "back"})
+                self.keys.set(self.walk_modifier | {"back"})
                 return "backing away from obstacle"
             self.keys.release()
             if mode == "free":
@@ -186,15 +188,15 @@ class Walking:
             self.keys.turn(turn)
         if mode == "free" and (self.manual_direction or not enabled):
             if self.manual_direction:
-                self.keys.set({"walk", self.manual_direction})
+                self.keys.set(self.walk_modifier | {self.manual_direction})
                 return f"stepping {self.manual_direction}"
             self.keys.release()
             return "turning" if self.manual_turn else "stopped"
         if mode == "sidewalk" and self.aligning:
-            self.keys.set({"walk"})
+            self.keys.set(self.walk_modifier)
             self.origin, self.progress_at, self.approach_at = position, now, now
             return "aligning with pedestrian path"
-        self.keys.set({"walk", "forward"})
+        self.keys.set(self.walk_modifier | {"forward"})
         if self.origin is None or distance(position, self.origin) >= 0.8:
             self.origin, self.progress_at = position, now
         elif now - self.progress_at > 4.0:
@@ -208,36 +210,40 @@ class Walking:
 
 
 class Controller:
-    def __init__(self, mem, args, backend, graph_loader, autosave_factory):
+    def __init__(self, mem, args, backend, graph_loader, autosave_factory=None):
         self.backend = backend
+        self.capabilities = backend.CAPABILITIES
         self.mem = mem
         self.game = backend.Game(mem)
         self.state_dir = args.state_dir
         self.control_path = self.state_dir / "control.json"
         self.session = uuid.uuid4().hex
         self.startup_ready = False
-        self.protection = backend.RuntimeChanges(mem)
-        self.world = backend.RuntimeChanges(mem)
-        self.peaceful = backend.RuntimeChanges(mem)
-        self.bindings = backend.RuntimeChanges(mem)
+        self.protection = backend.RuntimeChanges(mem) if self.capabilities.protection else None
+        self.world = backend.RuntimeChanges(mem) if self.capabilities.unlock_map else None
+        self.peaceful = backend.RuntimeChanges(mem) if self.capabilities.peaceful else None
+        self.bindings = backend.RuntimeChanges(mem) if (
+            self.capabilities.walk_binding or self.capabilities.jump
+        ) else None
         self.navigation_error = None
         try:
             graph = graph_loader(mem)
         except (OSError, ValueError) as error:
             graph, self.navigation_error = None, str(error)
-        self.movement = Walking(graph, self.navigation_error, focused=mem.foreground)
+        self.movement = Walking(graph, self.navigation_error, focused=mem.foreground,
+                                bindings=getattr(backend, "WALK_KEYS", None))
         destinations = []
         if graph:
             try:
-                destinations = load_destinations(mem.exe.parent, graph, backend.read_game_text)
+                destinations = backend.load_destinations(mem.exe.parent, graph, backend.read_game_text)
             except (OSError, ValueError) as error:
                 logger.warning("Mission locations unavailable: %s", error)
         self.missions = MissionSystem(self.state_dir, graph, destinations)
-        self.pace = backend.WalkingPace(mem, WALK_SPEED_MULTIPLIER)
-        self.autosave = autosave_factory(mem, self.state_dir)
-        self.camera = backend.FirstPersonCamera(mem)
-        self.jump = HighJump(self.game, self.bindings, binder=backend.bind_jump_key)
-        self.view = ViewControl(focused=mem.foreground)
+        self.pace = backend.WalkingPace(mem, WALK_SPEED_MULTIPLIER) if self.capabilities.walking_pace else None
+        self.autosave = autosave_factory(mem, self.state_dir) if self.capabilities.autosave else None
+        self.camera = backend.FirstPersonCamera(mem) if self.capabilities.first_person else None
+        self.jump = HighJump(self.game, self.bindings, binder=backend.bind_jump_key) if self.capabilities.jump else None
+        self.view = ViewControl(focused=mem.foreground) if self.capabilities.view else None
         self.hotkeys = Hotkeys(("f5", "f6", "f7", "f8", "f9", "f11", "f12"))
         self.settings = dict(DEFAULTS, walking=args.walk)
         previous = {}
@@ -247,6 +253,7 @@ class Controller:
                 self.settings[key] = previous[key]
         if getattr(args, "mode", None) in MODES:
             self.settings["mode"] = args.mode
+        self.limit_settings()
         atomic_json(self.control_path, self.settings)
         self.saved_at = self.world_at = self.peace_at = self.camera_at = 0.0
         self.bindings_at = float("-inf")
@@ -256,8 +263,10 @@ class Controller:
         self.report = {}
         logger.info(
             "Controller ready. Return to the game.\n"
-            "F11 first-person | F5 sidewalk/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
-            "Protection, peaceful mode, map and interior access enabled. Autosave every 60 seconds."
+            "%sF5 sidewalk/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
+            "Available features: %s",
+            "F11 first-person | " if self.capabilities.first_person else "",
+            ", ".join(name.replace("_", " ") for name, enabled in self.capabilities.report().items() if enabled) or "basic walking",
         )
         logger.info(
             "Navigation: %s (%s pedestrian nodes)",
@@ -265,13 +274,23 @@ class Controller:
             len(graph.nodes) if graph else 0,
         )
 
+    def limit_settings(self):
+        for name in ("protection", "peaceful", "unlock_map", "autosave", "first_person"):
+            if not getattr(self.capabilities, name):
+                self.settings[name] = False
+        for name in ("jump", "view"):
+            if not getattr(self.capabilities, name):
+                self.settings.pop(name, None)
+
     def stop(self):
         self.settings["walking"] = False
         self.movement.stop()
-        self.jump.cancel()
-        self.view.cancel()
-        self.view.last_request = self.settings.get("view", {}).get("id")
-        self.jump.last_request = self.settings.get("jump", {}).get("id")
+        if self.jump:
+            self.jump.cancel()
+            self.jump.last_request = self.settings.get("jump", {}).get("id")
+        if self.view:
+            self.view.cancel()
+            self.view.last_request = self.settings.get("view", {}).get("id")
         self.last_steering = self.settings.get("steering", {}).get("id")
 
     def handle_steering(self, state):
@@ -299,7 +318,7 @@ class Controller:
             elif key == "f12":
                 self.settings["quit"] = True
             elif state.get("ready") and state["foreground"] and not state["paused"]:
-                if key == "f11":
+                if key == "f11" and self.capabilities.first_person:
                     self.settings["first_person"] = not self.settings["first_person"]
                 elif key == "f5":
                     self.settings["mode"] = (
@@ -320,7 +339,7 @@ class Controller:
     def update_game(self, state, now, saving):
         if saving:
             return
-        if now - self.bindings_at > 0.75:
+        if self.capabilities.walk_binding and now - self.bindings_at > 0.75:
             self.backend.bind_walk_key(self.game, self.bindings)
             self.bindings_at = now
         requested_camera = (
@@ -328,7 +347,8 @@ class Controller:
             not self.movement.backing_up(now),
         )
         if (
-            state["foreground"]
+            self.camera is not None
+            and state["foreground"]
             and not state["paused"]
             and (self.camera_request != requested_camera or now - self.camera_at > 0.75)
         ):
@@ -345,7 +365,7 @@ class Controller:
             if now - self.peace_at > 0.75:
                 self.neutral_npcs = self.backend.apply_peaceful_mode(self.game, self.peaceful)
                 self.peace_at = now
-        elif self.peaceful.entries:
+        elif self.peaceful is not None and self.peaceful.entries:
             self.peaceful.restore()
             self.neutral_npcs = 0
         if (
@@ -354,14 +374,14 @@ class Controller:
             and state["player_state"] == 0
         ):
             self.backend.apply_protection(self.game, self.protection, state)
-        elif self.protection.entries:
+        elif self.protection is not None and self.protection.entries:
             self.protection.restore()
         if self.settings["unlock_map"]:
             if now - self.world_at > 0.75:
                 self.barriers = self.backend.unlock_regions(self.game, self.world)
                 self.interiors = self.backend.unlock_interiors(self.game, self.world)
                 self.world_at = now
-        elif self.world.entries:
+        elif self.world is not None and self.world.entries:
             self.world.restore()
             self.barriers = self.interiors = 0
 
@@ -394,8 +414,9 @@ class Controller:
             neutral_npcs=self.neutral_npcs,
             obstacle_recoveries=movement.recoveries,
             updated=time.time(),
-            autosave=self.autosave.report(),
-            camera=self.camera.report(),
+            capabilities=self.capabilities.report(),
+            autosave=self.autosave.report() if self.autosave else {"supported": False},
+            camera=self.camera.report() if self.camera else {"supported": False},
         )
         navigation = (
             movement.navigator.report()
@@ -412,6 +433,7 @@ class Controller:
 
     def tick(self, now):
         read_controls(self.control_path, self.settings)
+        self.limit_settings()
         if self.settings["quit"]:
             return False
         state = self.game.snapshot()
@@ -422,9 +444,11 @@ class Controller:
         self.handle_hotkeys(state)
         if self.settings["quit"]:
             return False
-        saving = self.autosave.tick(state, now, self.settings["autosave"])
-        self.jump.tick(self.settings.get("jump"), state, now, saving=saving)
-        self.view.tick(self.settings.get("view"), state, now, saving=saving)
+        saving = self.autosave.tick(state, now, self.settings["autosave"]) if self.autosave else False
+        if self.jump:
+            self.jump.tick(self.settings.get("jump"), state, now, saving=saving)
+        if self.view:
+            self.view.tick(self.settings.get("view"), state, now, saving=saving)
         holding = self.missions.tick(state, now, can_control(state), saving)
         if self.movement.navigator:
             active = self.missions.data["active"]
@@ -443,14 +467,15 @@ class Controller:
         else:
             self.movement.stop()
             status = state["reason"]
-        self.pace.tick(
-            state,
-            not saving
-            and can_control(state)
-            and state["standing"]
-            and not state["in_air"]
-            and bool(self.movement.keys.held & {"forward", "back"}),
-        )
+        if self.pace:
+            self.pace.tick(
+                state,
+                not saving
+                and can_control(state)
+                and state["standing"]
+                and not state["in_air"]
+                and bool(self.movement.keys.held & {"forward", "back"}),
+            )
         if status != self.last_message:
             logger.info(status)
             self.last_message = status
@@ -460,22 +485,27 @@ class Controller:
         return True
 
     def close(self):
-        self.view.cancel()
+        if self.view:
+            self.view.cancel()
         try:
             try:
-                self.jump.cancel()
+                if self.jump:
+                    self.jump.cancel()
             finally:
                 self.movement.stop()
         finally:
             failures = []
-            self.autosave.close()
+            if self.autosave:
+                self.autosave.close()
             if self.mem.alive():
                 try:
-                    self.pace.tick(self.game.snapshot(), False)
+                    if self.pace:
+                        self.pace.tick(self.game.snapshot(), False)
                 except OSError as error:
                     failures.append(str(error))
                 try:
-                    self.camera.close()
+                    if self.camera:
+                        self.camera.close()
                 except OSError as error:
                     failures.append(str(error))
                 for changes in (
@@ -484,12 +514,13 @@ class Controller:
                     self.world,
                     self.peaceful,
                 ):
-                    failures.extend(changes.restore())
+                    if changes is not None:
+                        failures.extend(changes.restore())
             self.report.update(
                 controller="stopped",
                 updated=time.time(),
                 restore_errors=failures,
-                autosave=self.autosave.report(),
+                autosave=self.autosave.report() if self.autosave else {"supported": False},
             )
             atomic_json(self.state_dir / "state.json", self.report)
             logger.info(

@@ -13,9 +13,10 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gtw.controls import Keys, key_down
+from gtw.controls import Keys
 from gtw.games import get_game
 from gtw.manager import component_status
+from gtw.startup import StartupWait, choose_save as select_save
 from san_andreas.game import Game
 from gtw.runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging, read_json
 from san_andreas.saves import MENU, SAVE_PREFIX, valid_save
@@ -33,29 +34,10 @@ INTRO_SHA256 = "5715d5cd355df00beae42775b1a9531f97d23c5687ab48df95779422bfc1ae6c
 
 
 def choose_save(prefix, record=None):
-    paths = [Path(f"{prefix}{slot + 1}.b") for slot in range(8)]
-    if record is not None:
-        slot = record.get("slot")
-        if type(slot) is not int or slot not in range(8):
-            raise RuntimeError("Invalid walker save record.")
-        path = paths[slot]
-        if str(path).casefold() != str(record.get("path", "")).casefold():
-            raise RuntimeError("The game's save folder changed; check runtime/launch.json.")
-        if valid_save(path):
-            return slot, path, False
-        if path.exists():
-            raise RuntimeError(f"The walker save is damaged; refusing to overwrite it: {path}")
-        return slot, path, True
-    for slot, path in enumerate(paths):
-        if valid_save(path):
-            return slot, path, False
-    for slot, path in enumerate(paths):
-        if not path.exists():
-            return slot, path, True
-    raise RuntimeError("All eight normal save slots are occupied and none passes validation.")
+    return select_save(prefix, valid_save, record)
 
 
-class Startup:
+class Startup(StartupWait):
     def __init__(self, memory, timeout):
         self.mem = memory
         self.game = Game(memory)
@@ -64,33 +46,6 @@ class Startup:
         self.last_skip = 0
         self.bootstrap_intro = False
         self.intro_finished = False
-
-    def wait(self, description, predicate):
-        logger.info(description)
-        background_at = None
-        while time.monotonic() < self.deadline:
-            if not self.mem.alive():
-                raise RuntimeError("San Andreas exited during startup.")
-            if key_down("f12"):
-                raise RuntimeError("Startup cancelled with F12.")
-            now = time.monotonic()
-            if not self.mem.foreground():
-                if background_at is None:
-                    logger.info("Startup paused while the game is in the background.")
-                else:
-                    self.deadline += now - background_at
-                background_at = now
-                time.sleep(0.1)
-                continue
-            if background_at is not None:
-                self.deadline += now - background_at
-                background_at = None
-                logger.info("Resuming startup.")
-            result = predicate()
-            if result:
-                return result
-            time.sleep(0.1)
-        raise RuntimeError(f"Startup timed out: {description}")
 
     def menu(self):
         return self.mem.byte(MENU + 0x15D) if self.mem.byte(MENU + 0x5C) else None

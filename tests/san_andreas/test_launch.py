@@ -60,7 +60,7 @@ class FocusTests(unittest.TestCase):
         memory.foreground.side_effect = [False, False, True]
         predicate = Mock(return_value="ready")
         startup = Startup(memory, 10)
-        with patch("san_andreas.launch.time.sleep"), patch("san_andreas.launch.key_down", return_value=False):
+        with patch("gtw.startup.time.sleep"), patch("gtw.startup.key_down", return_value=False):
             self.assertEqual(startup.wait("Test startup", predicate), "ready")
         predicate.assert_called_once_with()
         self.assertEqual(memory.foreground.call_count, 3)

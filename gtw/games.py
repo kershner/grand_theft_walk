@@ -1,10 +1,26 @@
-"""Game identities and isolated runtime locations; no process-memory offsets."""
+"""Game profiles, backend capabilities, and isolated runtime locations."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    protection: bool = False
+    peaceful: bool = False
+    unlock_map: bool = False
+    walk_binding: bool = False
+    walking_pace: bool = False
+    first_person: bool = False
+    jump: bool = False
+    autosave: bool = False
+    view: bool = False
+
+    def report(self):
+        return asdict(self)
 
 
 @dataclass(frozen=True)

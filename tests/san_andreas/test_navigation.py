@@ -20,6 +20,7 @@ from gtw.navigation import (
 )
 from gtw.runtime import DEFAULTS, control_request
 from gtw.controller import Controller, Walking
+from san_andreas.game import CAPABILITIES
 
 
 def graph_fixture():
@@ -409,6 +410,8 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(state_dir=Path(folder), walk=True, mode="free")
             memory, backend, autosave = Mock(), Mock(), Mock()
+            backend.CAPABILITIES = CAPABILITIES
+            backend.WALK_KEYS = None
             memory.profile.id = "san_andreas"
             state = {
                 "ready": True, "foreground": True, "paused": False,
@@ -449,6 +452,9 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(state_dir=Path(folder), walk=True, mode="free")
             memory, backend, autosave = Mock(), Mock(), Mock()
+            backend.CAPABILITIES = CAPABILITIES
+            backend.WALK_KEYS = None
+            backend.load_destinations.return_value = []
             graph = graph_fixture()
             loader = Mock(return_value=graph)
             with (
@@ -456,13 +462,12 @@ class ControllerTests(unittest.TestCase):
                 patch("gtw.controller.HighJump") as jump,
                 patch("gtw.controller.ViewControl"),
                 patch("gtw.controller.Hotkeys"),
-                patch("gtw.controller.load_destinations", return_value=[]) as destinations,
             ):
                 controller = Controller(memory, args, backend, loader, autosave)
             loader.assert_called_once_with(memory)
             backend.Game.assert_called_once_with(memory)
             autosave.assert_called_once_with(memory, args.state_dir)
-            destinations.assert_called_once_with(memory.exe.parent, graph, backend.read_game_text)
+            backend.load_destinations.assert_called_once_with(memory.exe.parent, graph, backend.read_game_text)
             jump.assert_called_once_with(controller.game, controller.bindings, binder=backend.bind_jump_key)
             self.assertIs(controller.movement.navigator.graph, graph)
             self.assertEqual(controller.settings["mode"], "free")

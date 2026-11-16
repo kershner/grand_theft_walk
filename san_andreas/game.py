@@ -7,6 +7,14 @@ import re
 import struct
 import zlib
 
+from gtw.games import Capabilities
+from gtw.missions import load_destinations
+
+CAPABILITIES = Capabilities(
+    protection=True, peaceful=True, unlock_map=True, walk_binding=True,
+    walking_pace=True, first_person=True, jump=True, autosave=True, view=True,
+)
+
 logger = logging.getLogger(__name__)
 
 PLAYER_INFO = 0xB7CD98
