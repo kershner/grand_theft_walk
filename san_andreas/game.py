@@ -46,7 +46,7 @@ CHEAT_IDS = {"health": 61, "oxygen": 62, "no_wanted": 65, "no_hunger": 68, "ammo
 
 CAMERA_MODULE = "ZMenuSA.asi"
 CAMERA_MODULE_SHA256 = (
-    "931718c7ef9eef64933ec60cbf7b4f8a5a59216bff6933770f4449a9def280d0"
+    "b07eb04be443736ea2039ecb6bd4fab64c0eebc2f0e90205f2638d3466595ee1"
 )
 FIRST_PERSON = 0x582EF2
 ROTATE_PLAYER = 0x582F38
