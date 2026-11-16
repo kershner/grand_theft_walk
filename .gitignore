@@ -32,15 +32,15 @@ htmlcov/
 !.env.template
 
 # Native build intermediates
-/san_andreas/native/*.def
-/san_andreas/native/*.o
-/san_andreas/native/*.obj
-/san_andreas/native/*.pdb
-/san_andreas/native/*.ilk
-/san_andreas/native/*.exp
-/san_andreas/native/*.lib
-!/san_andreas/native/save_bridge.dll
-!/san_andreas/native/save_request.exe
+/gtw/native/*.def
+/gtw/native/*.o
+/gtw/native/*.obj
+/gtw/native/*.pdb
+/gtw/native/*.ilk
+/gtw/native/*.exp
+/gtw/native/*.lib
+!/gtw/native/save_bridge.dll
+!/gtw/native/save_request.exe
 
 # Logs, temporary files, and editor/OS clutter
 *.log

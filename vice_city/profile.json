@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "id": "vice_city",
+  "title": "Vice City",
+  "executable": "gta-vc.exe",
+  "install_folder": "Grand Theft Auto Vice City",
+  "verified_executable": "04e4db72629eaa786fdd182ac224f4fd6d68806f5f4fe5c1fb5f756dc4da11d7",
+  "inspection_executable": "04e4db72629eaa786fdd182ac224f4fd6d68806f5f4fe5c1fb5f756dc4da11d7",
+  "controller_ready": true
+}

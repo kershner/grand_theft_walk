@@ -127,13 +127,13 @@ def build(keep_stage=False):
     for path in (ROOT / "templates").rglob("*"):
         if path.is_file():
             copy_file(path, stage / "templates" / path.relative_to(ROOT / "templates"))
-    native = ROOT / "san_andreas/native"
+    native = ROOT / "gtw/native"
     native_manifest = json.loads((native / "manifest.json").read_text(encoding="utf-8"))
     for name, expected in native_manifest["files"].items():
         if sha256(native / name) != expected:
             raise ValueError(f"Native helper failed verification: {name}")
     for name in ("manifest.json", "build.ps1", "save_bridge.c", "save_shared.h", "save_request.c", *native_manifest["files"]):
-        copy_file(native / name, stage / "san_andreas/native" / name)
+        copy_file(native / name, stage / "gtw/native" / name)
     definitions = {game: add_component(stage, game) for game in GAMES}
     manifest = {"format": 1, "suite_version": "2026.11-sa-vc-preview2", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
