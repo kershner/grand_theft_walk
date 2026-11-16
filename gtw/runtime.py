@@ -20,6 +20,8 @@ MODES = ("sidewalk", "free")
 DIRECTIONS = {"left", "right", "forward", "back", "up", "down"}
 VIEW_COMMANDS = {"up", "down", "center"}
 MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump", "center"}
+COMMAND_CAPABILITIES = {"up": "view", "down": "view", "center": "view",
+                        "jump": "jump", "camera": "first_person"}
 DEFAULTS = {
     "walking": False,
     "protection": True,
@@ -123,6 +125,27 @@ class NavigationModeError(RuntimeError):
     """A movement command needs a different navigation mode."""
 
 
+class UnsupportedCommandError(RuntimeError):
+    """The active backend does not implement the requested command."""
+
+
+def command_supported(state, name):
+    capability = COMMAND_CAPABILITIES.get(name)
+    if capability is None:
+        return True
+    capabilities = state.get("capabilities")
+    if capabilities is None:
+        # Preserve the original San Andreas protocol before capability reports.
+        return state.get("game", "san_andreas") == "san_andreas"
+    return isinstance(capabilities, dict) and capabilities.get(capability) is True
+
+
+def require_command(state, name):
+    if not command_supported(state, name):
+        title = get_game(state.get("game", "san_andreas")).title
+        raise UnsupportedCommandError(f"!{name} is not available in {title} yet.")
+
+
 class WalkerControl:
     """Send chat commands through the walker's existing control file."""
 
@@ -153,8 +176,10 @@ class WalkerControl:
 
     def request(self, name, args):
         with self.lock:
-            if not chat_ready(self.snapshot()):
+            state = self.snapshot()
+            if not chat_ready(state):
                 raise RuntimeError("Game loading; please wait.")
+            require_command(state, name)
             path = self.state_dir / "control.json"
             settings = read_json(path)
             if settings.get("quit"):

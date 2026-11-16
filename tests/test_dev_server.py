@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from dev_server import create_app
-from gtw.games import get_game
+from gtw.games import Capabilities, get_game
+from gtw.runtime import UnsupportedCommandError
 from gtw_chat_bot import ANNOUNCEMENT_INTERVAL
 
 
@@ -40,6 +41,7 @@ class ChatIntegrationTests(unittest.TestCase):
             "settings": self.settings,
             "position": {"x": 1, "y": 2, "z": 3},
             "interior": 0,
+            "capabilities": {name: True for name in Capabilities().report()},
         }
         self.write("state.json", self.state)
         self.app = create_app(self.root, start_runtime=False, game=self.game)
@@ -558,6 +560,84 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(self.control(), self.settings)
         self.assertFalse(self.voting.vote.active)
         self.assertFalse((self.root / "mission_votes").exists())
+
+    def test_partial_backend_rejects_jump_and_camera_before_writing_or_starting_votes(self):
+        self.state["capabilities"].update(jump=False, first_person=False)
+        self.write("state.json", self.state)
+        for command in ("jump", "j", "camera", "camera first", "help jump", "help j", "help camera"):
+            self.command(command)
+            self.assertEqual(self.control(), self.settings)
+        messages = self.client.get("/chat").json["messages"]
+        self.assertEqual(len(messages), 7)
+        self.assertTrue(all("not available" in message for message in messages))
+        self.assertFalse(self.voting.vote.active)
+        self.timer.assert_not_called()
+
+    def test_help_lists_only_available_commands_and_updates_with_capabilities(self):
+        self.state["capabilities"].update(jump=False, first_person=False, view=False)
+        self.write("state.json", self.state)
+        self.command("help")
+        self.command("more")
+        self.command("help yes")
+        messages = self.client.get("/chat").json["messages"]
+        self.assertNotIn("!jump", messages[0])
+        for command in ("!camera", "!up", "!down", "!center"):
+            self.assertNotIn(command, messages[1])
+        self.assertNotIn("camera", messages[2])
+        self.assertIn("mode vote", messages[2])
+        self.state["capabilities"]["view"] = True
+        self.write("state.json", self.state)
+        self.command("more")
+        self.command("help u")
+        messages = self.client.get("/chat").json["messages"]
+        for command in ("!up", "!down", "!center"):
+            self.assertIn(command, messages[-2])
+        self.assertIn("Look up", messages[-1])
+
+    def test_unsupported_view_commands_and_aliases_receive_explicit_replies(self):
+        self.state["capabilities"]["view"] = False
+        self.write("state.json", self.state)
+        for command in ("up", "u 20", "down", "d", "center", "help u"):
+            self.command(command)
+            self.assertEqual(self.control(), self.settings)
+        messages = self.client.get("/chat").json["messages"]
+        self.assertEqual(len(messages), 6)
+        self.assertTrue(all("not available" in message for message in messages))
+
+    def test_direct_control_requests_cannot_bypass_capability_checks(self):
+        self.state["capabilities"].update(jump=False, first_person=False, view=False)
+        self.write("state.json", self.state)
+        control = self.app.extensions["gtw_bot"].control
+        for command in ("up", "down", "center", "jump", "camera"):
+            with self.assertRaises(UnsupportedCommandError):
+                control.request(command, [])
+            self.assertEqual(self.control(), self.settings)
+
+    def test_camera_vote_rechecks_capability_when_applied(self):
+        self.command("camera first")
+        self.state["capabilities"]["first_person"] = False
+        self.write("state.json", self.state)
+        self.finish_vote()
+        self.assertFalse(self.control()["first_person"])
+        messages = self.client.get("/chat").json["messages"]
+        self.assertTrue(any("Could not apply voted command: !camera is not available" in message
+                            for message in messages))
+
+    def test_missing_capabilities_keep_only_original_san_andreas_compatibility(self):
+        self.state.pop("capabilities")
+        self.write("state.json", self.state)
+        control = self.app.extensions["gtw_bot"].control
+        if self.game == "san_andreas":
+            control.request("up", [])
+            self.assertEqual(self.control()["view"]["direction"], "up")
+        else:
+            with self.assertRaises(UnsupportedCommandError):
+                control.request("up", [])
+            self.assertEqual(self.control(), self.settings)
+        self.state["capabilities"] = {"view": "true"}
+        self.write("state.json", self.state)
+        with self.assertRaises(UnsupportedCommandError):
+            control.request("up", [])
 
 
 class ViceCityChatIntegrationTests(ChatIntegrationTests):

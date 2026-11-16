@@ -9,7 +9,7 @@ from gtw.saves import Autosave as SharedAutosave
 from gtw.navigation import Node, PedestrianGraph
 from gtw.winmemory import Memory as ProcessMemory
 
-CAPABILITIES = Capabilities(unlock_map=True, walk_binding=True, walking_pace=True, autosave=True)
+CAPABILITIES = Capabilities(unlock_map=True, walk_binding=True, walking_pace=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
 
 PLAYER_INFO = 0x94AD28

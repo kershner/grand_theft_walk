@@ -9,9 +9,12 @@ from gtw.runtime import (
     DIRECTIONS,
     MOVEMENT_COMMANDS,
     NavigationModeError,
+    UnsupportedCommandError,
     WalkerControl,
     chat_ready,
+    command_supported,
     mission_distance,
+    require_command,
 )
 from gtw.voting import CommandVoting
 
@@ -141,7 +144,7 @@ class GTWBot:
             viewer = getattr(author, "name", None) or getattr(author, "id", None)
             viewer = str(viewer) if viewer else ""
             reply = self._reply(name, args, viewer)
-        except NavigationModeError as error:
+        except (NavigationModeError, UnsupportedCommandError) as error:
             reply = str(error)
         except (OSError, ValueError, RuntimeError) as error:
             reply = str(error)
@@ -152,18 +155,27 @@ class GTWBot:
             await ctx.send(reply)
 
     def _reply(self, name, args, viewer=""):
+        if name not in HELP:
+            return
+        state = self.control.snapshot()
         if name == "help":
             if args:
                 target = args[0].lstrip("!")
                 target = ALIASES.get(target, target)
+                require_command(state, target)
+                if target in ("yes", "no") and not command_supported(state, "camera"):
+                    return HELP[target].replace("camera or mode vote", "mode vote")
                 return HELP.get(
                     target, f"Unknown command: !{target}. Type !help for commands."
                 )
-            return "Commands: !walk • !stop • !left • !right • !forward • !back • !jump • Type !more for more commands."
+            commands = ("walk", "stop", "left", "right", "forward", "back", "jump")
+            available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
+            return f"Commands: {available} • Type !more for more commands."
         if name == "more":
-            return "More: !up • !down • !center • !mode • !camera • !help • !info • Type !help <cmd> for details."
-        if name not in HELP:
-            return
+            commands = ("up", "down", "center", "mode", "camera", "help", "info")
+            available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
+            return f"More: {available} • Type !help <cmd> for details."
+        require_command(state, name)
         if name == "vote":
             if len(args) == 1 and args[0] in ("1", "2", "3"):
                 return self.control.vote(viewer, int(args[0]))
@@ -192,7 +204,6 @@ class GTWBot:
             return self._info_reply()
 
         if name in {"camera", "mode"}:
-            state = self.control.snapshot()
             if not state.get("ready"):
                 raise RuntimeError("Game loading; please wait.")
             if name == "mode":
