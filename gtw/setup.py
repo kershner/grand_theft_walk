@@ -19,6 +19,18 @@ from pathlib import Path, PureWindowsPath
 STATE_DIR = ".gtw-suite"
 
 
+def game_directory(path, executable):
+    """Accept either an installation folder or its classic game executable."""
+    path = Path(path).absolute()
+    if path.is_file():
+        if path.name.casefold() != executable.casefold():
+            raise ValueError(f"Select {executable} in the game folder, rather than {path.name}.")
+        return path.parent
+    if path.suffix.casefold() == ".exe":
+        raise ValueError(f"Game executable not found: {path}")
+    return path
+
+
 def discover_game(install_folder, executable):
     """Locate classic Rockstar installations without reading account data."""
     candidates = [Path("C:/Program Files/Rockstar Games") / install_folder]
@@ -420,7 +432,11 @@ def run_setup(args, bundle):
         if args.game not in ("all", game):
             continue
         configured = args.san_andreas_dir if game == "san_andreas" else args.vice_city_dir
-        directory = configured or (Path(existing[game]) if existing.get(game) else None) or discover_game(definition["install_folder"], definition["executable"])
+        directory = game_directory(
+            configured or (Path(existing[game]) if existing.get(game) else None)
+            or discover_game(definition["install_folder"], definition["executable"]),
+            definition["executable"],
+        )
         if not (directory / definition["executable"]).is_file() and not (directory / STATE_DIR / "installed.json").is_file():
             if args.game != "all" or configured is not None:
                 raise ValueError(f"Game executable not found in {directory}")

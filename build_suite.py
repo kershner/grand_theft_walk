@@ -6,6 +6,7 @@ using installed Python. Run: venv/Scripts/python.exe build_suite.py
 """
 
 import argparse
+import configparser
 import hashlib
 import json
 import os
@@ -24,6 +25,29 @@ from gtw.setup import sha256, under, verify_bundle
 GAMES = ("san_andreas", "vice_city")
 
 
+def validate_graphics_capacity(game, payload):
+    """Reject the reproduced SA maximum-distance load-crash configuration."""
+    if game != "san_andreas":
+        return
+    distances = configparser.ConfigParser()
+    distances.read(payload / "scripts/SALodLights.cfg", encoding="utf-8")
+    maximum = any(distances.getfloat("DISTANCE", key, fallback=0) >= value
+                  for key, value in (("ViewDistance", 3000), ("DrawDistance", 5),
+                                     ("DetailDistance", 4)))
+    if not maximum:
+        return
+    limits = configparser.ConfigParser()
+    limits.read(payload / "scripts/III.VC.SA.LimitAdjuster.ini", encoding="utf-8")
+    if not limits.has_section("SALIMITS"):
+        raise ValueError("Maximum-distance San Andreas needs the scenery limit adjuster configuration.")
+    # Live load exceeded the native 2500 dummy / 13000 building limits, then
+    # exhausted single-link nodes. Keep the verified headroom in future builds.
+    for key, minimum in (("Buildings", 32767), ("Dummys", 32767), ("PtrNodeSingle", 200000)):
+        capacity = limits.get("SALIMITS", key, fallback="unlimited").strip().casefold()
+        if capacity != "unlimited" and int(capacity) < minimum:
+            raise ValueError(f"Maximum-distance San Andreas requires {key} >= {minimum} or unlimited; got {capacity}.")
+
+
 def copy_file(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
@@ -38,6 +62,7 @@ def add_component(stage, game):
         manifests.append((json.loads(camera.read_text(encoding="utf-8")), source / "payload/first_person"))
     graphics = source / "graphics.json"
     if graphics.is_file():
+        validate_graphics_capacity(game, source / "payload/graphics")
         manifests.append((json.loads(graphics.read_text(encoding="utf-8")), source / "payload/graphics"))
     files = []
     seen = set()
@@ -62,7 +87,9 @@ def add_component(stage, game):
         "index.bin": "f584192253849361915898ee621e03248fab1e7af33b9030742336b8ad73fc45",
     } if game == "san_andreas" else {}
     for name in base.get("disable", []):
-        expected = originals[name]
+        expected = base.get("disabled_hashes", {}).get(name, originals.get(name))
+        if expected is None:
+            raise ValueError(f"Missing known hash for retired component: {game}/{name}")
         files.append({"path": name, "payload": None, "sha256": None, "accepted_before": [None, expected]})
     profile = json.loads((ROOT / game / "profile.json").read_text(encoding="utf-8"))
     fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
@@ -140,7 +167,7 @@ def build(keep_stage=False):
     for name in ("manifest.json", "build.ps1", "save_bridge.c", "save_shared.h", "save_request.c", *native_manifest["files"]):
         copy_file(native / name, stage / "gtw/native" / name)
     definitions = {game: add_component(stage, game) for game in GAMES}
-    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-camera1", "uses_existing_venv": True, "games": definitions}
+    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-max-distance1", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     copy_file(ROOT / "Setup.ps1", stage / "Setup.ps1")
     copy_file(ROOT / "Setup.cmd", stage / "Setup.cmd")

@@ -201,6 +201,25 @@ class InstallerTests(unittest.TestCase):
             setup.main(["repair", "--bundle", str(self.bundle), "--game", "vice_city"])
         self.assertTrue(self.installer.check()["ok"])
 
+    def test_executable_path_installs_and_records_the_game_folder(self):
+        self.index()
+        with patch("gtw.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
+            setup.main(["install", "--bundle", str(self.bundle), "--game", "vice_city",
+                        "--vice-city-dir", str(self.game / self.definition["executable"])])
+        self.assertTrue(self.installer.check()["ok"])
+        locations = json.loads((self.bundle / "runtime/installations.json").read_text())
+        self.assertEqual(locations["vice_city"], str(self.game.absolute()))
+        self.installer.apply("restore")
+        self.assertEqual((self.game / self.definition["executable"]).read_bytes(), b"original executable")
+
+    def test_executable_path_rejects_launcher_or_wrong_game(self):
+        launcher = self.game / "Launcher.exe"
+        launcher.write_bytes(b"launcher")
+        with self.assertRaisesRegex(ValueError, "Select san_andreas.game.exe"):
+            setup.game_directory(launcher, self.definition["executable"])
+        with self.assertRaisesRegex(ValueError, "Game executable not found"):
+            setup.game_directory(self.game / "missing.exe", self.definition["executable"])
+
     def upgraded_installer(self):
         definition = copy.deepcopy(self.definition)
         definition["component_id"] = "test-component-graphics"

@@ -1,6 +1,7 @@
 param(
     [ValidateSet('Install','Check','Repair','Restore')][string]$Action = 'Install',
     [ValidateSet('all','san_andreas','vice_city')][string]$Game = 'all',
+    # Each path may name the game folder or the classic Rockstar game EXE.
     [string]$SanAndreasPath = '',
     [string]$ViceCityPath = '',
     [switch]$Elevated
@@ -72,7 +73,10 @@ try {
             $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Action ' + $Action + ' -Game ' + $Game + ' -Elevated'
             if ($SanAndreasPath) { $arguments += ' -SanAndreasPath "' + $SanAndreasPath + '"' }
             if ($ViceCityPath) { $arguments += ' -ViceCityPath "' + $ViceCityPath + '"' }
-            $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+            # PowerShell 7 and the Codex runtime use pwsh.exe; $PSHOME need not
+            # contain powershell.exe. Elevate with the Windows system copy.
+            $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $child = Start-Process -FilePath $windowsPowerShell -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
             $result = $child.ExitCode
             if ($result) { Write-Host "Setup failed. See runtime\setup-last.log." }
             else { Write-Host "$Action completed. See runtime\setup-last.log for the result." }
