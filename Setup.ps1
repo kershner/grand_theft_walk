@@ -16,9 +16,6 @@ function Get-ContentSHA256([string]$Path) {
 try {
     $root = $PSScriptRoot
     $python = Join-Path $root 'venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        throw 'Place this suite in the project folder containing your existing venv\Scripts\python.exe.'
-    }
     $indexPath = Join-Path $root 'bundle-index.json'
     if (Test-Path -LiteralPath $indexPath) {
         $index = Get-Content -LiteralPath (Join-Path $root 'bundle-index.json') -Raw | ConvertFrom-Json
@@ -41,6 +38,31 @@ try {
         if (-not (Test-Path -LiteralPath $archive) -or -not (Test-Path -LiteralPath $checksum)) { throw 'The setup archive is missing. Run build_suite.py first.' }
         $expected = ((Get-Content -LiteralPath $checksum -Raw).Trim() -split '\s+')[0]
         if ((Get-ContentSHA256 $archive) -ne $expected) { throw 'The setup archive failed verification. Restore or rebuild the ZIP.' }
+    }
+    # Use the existing project venv. A new PC needs an installed Python 3.10+
+    # (we never download Python or copy a machine-specific virtual environment).
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        Write-Host 'Creating the project environment using installed Python...'
+        $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+        if ($launcher) { & $launcher.Source -3 -m venv (Join-Path $root 'venv') }
+        else {
+            $launcher = Get-Command python.exe -ErrorAction SilentlyContinue
+            if (-not $launcher) { throw 'Install Python 3.10+ or provide this project with a working venv. Setup never downloads Python.' }
+            & $launcher.Source -m venv (Join-Path $root 'venv')
+        }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $python)) { throw 'Could not create the project environment. Install Python 3.10+ first.' }
+    }
+    & $python -B -c "import sys; assert sys.version_info >= (3,10), 'Python 3.10+ is required'"
+    if ($LASTEXITCODE -ne 0) { throw 'Python 3.10+ is required.' }
+    $ErrorActionPreference = 'Continue'
+    & $python -B -c "import importlib.metadata as m, pathlib, sys; rows=pathlib.Path(sys.argv[1]).read_text().splitlines(); sys.exit(0 if all(m.version(n.strip()) == v.strip() for row in rows if row.strip() and not row.lstrip().startswith('#') for n,v in [row.split('==')]) else 1)" (Join-Path $root 'requirements.txt') 2>$null
+    $dependenciesMatch = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = 'Stop'
+    if (-not $dependenciesMatch) {
+        if ($Action -ne 'Install') { throw 'Python dependencies are missing. Run Setup.cmd -Action Install first.' }
+        Write-Host 'Installing project dependencies (internet required on first setup)...'
+        & $python -m pip install -r (Join-Path $root 'requirements.txt')
+        if ($LASTEXITCODE -ne 0) { throw 'Could not install project dependencies.' }
     }
     if ($Action -ne 'Check') {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

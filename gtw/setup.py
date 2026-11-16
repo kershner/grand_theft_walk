@@ -19,6 +19,38 @@ from pathlib import Path, PureWindowsPath
 STATE_DIR = ".gtw-suite"
 
 
+def discover_game(install_folder, executable):
+    """Locate classic Rockstar installations without reading account data."""
+    candidates = [Path("C:/Program Files/Rockstar Games") / install_folder]
+    try:
+        import winreg
+    except ImportError:
+        return candidates[0]
+    normalized = "".join(c for c in install_folder.casefold() if c.isalnum())
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", 0,
+                                    winreg.KEY_READ | view) as parent:
+                    for index in range(winreg.QueryInfoKey(parent)[0]):
+                        try:
+                            with winreg.OpenKey(parent, winreg.EnumKey(parent, index)) as key:
+                                display = winreg.QueryValueEx(key, "DisplayName")[0]
+                                name = "".join(c for c in display.casefold() if c.isalnum())
+                                if name == normalized:
+                                    location = Path(winreg.QueryValueEx(key, "InstallLocation")[0])
+                                    if location.is_absolute():
+                                        candidates.append(location)
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+    matches = list(dict.fromkeys(path for path in candidates if (path / executable).is_file()))
+    if len(matches) > 1:
+        raise ValueError(f"Multiple installations found for {install_folder}; supply an explicit game path.")
+    return matches[0] if matches else candidates[0]
+
+
 def sha256(path):
     if not path.exists():
         return None
@@ -173,21 +205,48 @@ class Installer:
         if not self.state_path.exists():
             return None
         record = json.loads(self.state_path.read_text(encoding="utf-8"))
+        expected = {name: entry["sha256"] for name, entry in self.files.items()}
+        if record.get("component_id") != self.definition["component_id"]:
+            expected = next((version["files"] for version in self.definition.get("previous_versions", [])
+                             if version["component_id"] == record.get("component_id")), None)
         if (record.get("format") != 1 or record.get("game") != self.game
                 or record.get("directory") != str(self.directory)
-                or record.get("component_id") != self.definition["component_id"]
+                or expected is None or not set(expected) <= set(self.files)
                 or record.get("status") not in {"installed", "restored"}
-                or len(record.get("entries", [])) != len(self.files)
-                or {entry["path"] for entry in record.get("entries", [])} != set(self.files)):
+                or len(record.get("entries", [])) != len(expected)
+                or {entry["path"] for entry in record.get("entries", [])} != set(expected)):
             raise ValueError("This backup record belongs to another setup or game directory.")
         for entry in record["entries"]:
-            if entry["after"] != self.files[entry["path"]]["sha256"]:
+            if entry["after"] != expected[entry["path"]]:
                 raise ValueError("The backup record belongs to a different component version.")
             if entry["before"] is not None:
                 backup = self.backup_path(entry["original"])
                 if sha256(backup) != entry["before"]:
                     raise ValueError(f"Original backup missing or damaged: {entry['path']}")
         return record
+
+    def upgrade(self, previous):
+        """Carry original backups forward only from explicitly pinned predecessors."""
+        entries = {entry["path"]: dict(entry) for entry in previous["entries"]}
+        original_id = uuid.uuid4().hex
+        for name, entry in self.files.items():
+            if name not in entries:
+                current = sha256(under(self.directory, name))
+                if current not in {*entry["accepted_before"], entry["sha256"]}:
+                    raise ValueError(f"Unrecognized existing file: {name}. Nothing was overwritten.")
+        for name, entry in self.files.items():
+            if name not in entries:
+                target = under(self.directory, name)
+                before = sha256(target)
+                original = f"{STATE_DIR}/originals/{original_id}/{name}"
+                if before is not None:
+                    saved = under(self.directory, original)
+                    put_file(target, saved)
+                    if sha256(saved) != before:
+                        raise ValueError(f"Original backup failed verification: {name}")
+                entries[name] = {"path": name, "before": before, "original": original}
+            entries[name]["after"] = entry["sha256"]
+        return dict(previous, component_id=self.definition["component_id"], entries=list(entries.values()))
 
     def backup_path(self, name):
         if not isinstance(name, str) or not name.replace("\\", "/").startswith(STATE_DIR + "/"):
@@ -290,6 +349,8 @@ class Installer:
                 for entry in previous["entries"]
             }
             next_state = dict(previous, status="restored")
+            # Restoration of a predecessor is recorded against that predecessor;
+            # a subsequent install can then establish the new version normally.
         else:
             for name in self.definition["required_files"]:
                 if not under(self.directory, name).is_file():
@@ -300,9 +361,11 @@ class Installer:
             desired = {name: (entry["sha256"], self.payload(entry) if entry["sha256"] else None)
                        for name, entry in self.files.items()}
             if previous is not None and previous["status"] == "installed":
-                if action == "install" and not self.check()["ok"]:
+                previous_files = {entry["path"]: entry["after"] for entry in previous["entries"]}
+                if action == "install" and any(sha256(under(self.directory, name)) != expected
+                                                for name, expected in previous_files.items()):
                     raise ValueError("Installed files changed. Run Setup.cmd -Action Repair to back up changes and restore the pinned setup.")
-                next_state = previous
+                next_state = self.upgrade(previous) if previous["component_id"] != self.definition["component_id"] else previous
             else:
                 for name, entry in self.files.items():
                     current = sha256(under(self.directory, name))
@@ -357,7 +420,7 @@ def run_setup(args, bundle):
         if args.game not in ("all", game):
             continue
         configured = args.san_andreas_dir if game == "san_andreas" else args.vice_city_dir
-        directory = configured or (Path(existing[game]) if existing.get(game) else None) or Path("C:/Program Files/Rockstar Games") / definition["install_folder"]
+        directory = configured or (Path(existing[game]) if existing.get(game) else None) or discover_game(definition["install_folder"], definition["executable"])
         if not (directory / definition["executable"]).is_file() and not (directory / STATE_DIR / "installed.json").is_file():
             if args.game != "all" or configured is not None:
                 raise ValueError(f"Game executable not found in {directory}")

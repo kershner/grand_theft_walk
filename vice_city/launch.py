@@ -126,6 +126,9 @@ class Startup(StartupWait):
 
         try:
             self.wait("Waiting for Vice City's title screen...", title_ready)
+            # The pinned Widescreen Fix uses index 1 for 30 FPS. Keep the native
+            # physics cap on even when a previous user settings file disabled it.
+            self.world.patch(MENU + 0x25, b"\x01")
             prefix = self.mem.read(SAVE_PREFIX, 260).split(b"\0", 1)[0].decode("mbcs")
             if not prefix or not Path(prefix).is_absolute() or Path(prefix).name.casefold() != "gtavcsf":
                 raise RuntimeError("Vice City did not provide a valid normal save folder.")
@@ -170,6 +173,7 @@ class Startup(StartupWait):
                 self.mem.write(MENU + 0x12, b"\x01")
                 self.wait("Preparing to reload the new save...", lambda: self.menu() is not None)
             state = self.load_save(slot)
+            self.world.patch(MENU + 0x25, b"\x01")
             # A loaded checkpoint must also have full map access before navigation.
             barriers = unlock_regions(self.game, self.world)
             logger.info("Opened %s island roadblocks and gates after load.", barriers)

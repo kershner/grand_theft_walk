@@ -1,7 +1,8 @@
 """Build the personal offline suite ZIP from hash-pinned, Git-ignored payloads.
 
 Uses the existing venv. No Python runtime, virtualenv, credentials or live game
-state is copied. Run: venv/Scripts/python.exe build_suite.py
+state is copied. The extracted setup may install missing pinned Python packages
+using installed Python. Run: venv/Scripts/python.exe build_suite.py
 """
 
 import argparse
@@ -35,6 +36,9 @@ def add_component(stage, game):
     if game == "san_andreas":
         camera = json.loads((source / "first-person.json").read_text(encoding="utf-8"))
         manifests.append((camera, source / "payload/first_person"))
+    graphics = source / "graphics.json"
+    if graphics.is_file():
+        manifests.append((json.loads(graphics.read_text(encoding="utf-8")), source / "payload/graphics"))
     files = []
     seen = set()
     for manifest, payload in manifests:
@@ -48,7 +52,7 @@ def add_component(stage, game):
                 raise ValueError(f"Source component missing or changed: {original}")
             relative = f"{game}/installer/payload/{name}"
             copy_file(original, under(stage, relative))
-            accepted = [entry.get("clean_sha256")]
+            accepted = entry.get("accepted_before", [entry.get("clean_sha256")])
             if game == "vice_city" and name.lower() == "ddraw.dll":
                 accepted.append(None)  # A fresh original game has no startup fix.
             files.append({"path": name, "payload": relative, "sha256": entry["sha256"],
@@ -69,6 +73,7 @@ def add_component(stage, game):
         "controller_defaults": DEFAULTS,
         "required_files": ["models/gta3.img", "anim/anim.img", "data/script/main.scm"] if game == "san_andreas" else ["models/gta3.img", "anim/ped.ifp", "data/main.scm"],
         "required_hashes": {"data/timecycp.dat": base["ps2_timecycle_sha256"]} if game == "san_andreas" else {},
+        "previous_versions": base.get("previous_versions", []),
     }
     installer = stage / game / "installer"
     installer.mkdir(parents=True, exist_ok=True)
@@ -79,7 +84,7 @@ def add_component(stage, game):
                 copy_file(path, installer / "documentation" / path.relative_to(source / "documentation"))
     records = installer / "documentation/source-manifests"
     records.mkdir(parents=True, exist_ok=True)
-    for filename in ("manifest.json", "first-person.json"):
+    for filename in ("manifest.json", "first-person.json", "graphics.json", "downloads.lock.json"):
         if (source / filename).is_file():
             copy_file(source / filename, records / filename)
     return definition
@@ -135,11 +140,12 @@ def build(keep_stage=False):
     for name in ("manifest.json", "build.ps1", "save_bridge.c", "save_shared.h", "save_request.c", *native_manifest["files"]):
         copy_file(native / name, stage / "gtw/native" / name)
     definitions = {game: add_component(stage, game) for game in GAMES}
-    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-preview2", "uses_existing_venv": True, "games": definitions}
+    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-graphics1", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     copy_file(ROOT / "Setup.ps1", stage / "Setup.ps1")
     copy_file(ROOT / "Setup.cmd", stage / "Setup.cmd")
     copy_file(ROOT / "Launch Grand Theft Walk.cmd", stage / "Launch Grand Theft Walk.cmd")
+    copy_file(ROOT / "README.md", stage / "README.md")
     files = {path.relative_to(stage).as_posix(): sha256(path) for path in sorted(stage.rglob("*")) if path.is_file()}
     bundle_id = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     index = {"format": 1, "bundle_id": bundle_id, "files": files}

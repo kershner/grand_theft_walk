@@ -1,6 +1,7 @@
 """Exercise installs, repairs, interrupted writes and restoration on fake games."""
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -199,6 +200,73 @@ class InstallerTests(unittest.TestCase):
             (self.game / "san_andreas.game.exe").unlink()
             setup.main(["repair", "--bundle", str(self.bundle), "--game", "vice_city"])
         self.assertTrue(self.installer.check()["ok"])
+
+    def upgraded_installer(self):
+        definition = copy.deepcopy(self.definition)
+        definition["component_id"] = "test-component-graphics"
+        definition["previous_versions"] = [{"component_id": self.definition["component_id"],
+            "files": {e["path"]: e["sha256"] for e in self.definition["files"]}}]
+        (self.bundle / "payload/graphics.asi").write_bytes(b"graphics plugin")
+        definition["files"].append({"path": "scripts/graphics.asi", "payload": "payload/graphics.asi",
+            "sha256": digest(b"graphics plugin"), "accepted_before": [None]})
+        return setup.Installer(self.bundle, self.game, "vice_city", definition)
+
+    def test_graphics_upgrade_retains_original_backups_and_restores_everything(self):
+        self.installer.apply("install")
+        original = self.record()["entries"]
+        upgraded = self.upgraded_installer()
+        self.assertEqual(upgraded.apply("install")["changed"], 1)
+        self.assertTrue(upgraded.check()["ok"])
+        self.assertEqual(self.record()["entries"][:2], original)
+        self.assertEqual(upgraded.apply("repair")["changed"], 0)
+        upgraded.apply("restore")
+        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertFalse((self.game / "scripts/graphics.asi").exists())
+        self.assertFalse((self.game / "options.ini").exists())
+
+    def test_upgrade_rejects_unrelated_existing_graphics_file_before_writing(self):
+        self.installer.apply("install")
+        upgraded = self.upgraded_installer()
+        target = self.game / "scripts/graphics.asi"
+        target.parent.mkdir()
+        target.write_bytes(b"another mod")
+        before = self.record()
+        with self.assertRaisesRegex(ValueError, "Unrecognized existing file"):
+            upgraded.apply("repair")
+        self.assertEqual(self.record(), before)
+        self.assertEqual(target.read_bytes(), b"another mod")
+
+    def test_unpinned_predecessor_cannot_be_adopted(self):
+        self.installer.apply("install")
+        upgraded = self.upgraded_installer()
+        upgraded.definition["previous_versions"] = []
+        with self.assertRaisesRegex(ValueError, "another setup"):
+            upgraded.apply("repair")
+
+    def test_interrupted_upgrade_recovers_with_original_backup_record(self):
+        self.installer.apply("install")
+        original = self.record()
+        upgraded = self.upgraded_installer()
+        put = setup.put_file
+        def interrupted(source, target):
+            if target.name == "graphics.asi":
+                raise KeyboardInterrupt()
+            return put(source, target)
+        with patch("gtw.setup.put_file", side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
+            upgraded.apply("install")
+        self.assertTrue(upgraded.pending_path.exists())
+        upgraded.recover()
+        self.assertEqual(self.record(), original)
+        upgraded.apply("repair")
+        self.assertTrue(upgraded.check()["ok"])
+
+    def test_new_bundle_can_restore_a_predecessor_without_first_upgrading(self):
+        self.installer.apply("install")
+        upgraded = self.upgraded_installer()
+        upgraded.apply("restore")
+        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        upgraded.apply("install")
+        self.assertTrue(upgraded.check()["ok"])
 
 
 if __name__ == "__main__":

@@ -1,46 +1,38 @@
 # Grand Theft Walk
 
-Walking controllers and chat controls for GTA III, Vice City, and San Andreas.
-Currently, San Andreas is playable; Vice City is in development and GTA III is planned.
+## Install / repair
 
-Run commands in PowerShell from the project folder. Close Rockstar Games Launcher first.
-Replace `<game>` with a supported game ID: `san_andreas` or `vice_city`.
+Requires the activated **classic Rockstar Launcher editions**, Python 3.10+, and DirectX.
+Extract the full suite ZIP. Close the games and Rockstar Launcher, then run these
+commands in PowerShell from the extracted folder. Accept the administrator prompt.
 
-Launch a game:
+```powershell
+.\Setup.cmd -Action Install
+.\Setup.cmd -Action Repair -Game <game>
+```
+
+Use `san_andreas` or `vice_city` for `<game>`. First setup needs internet for Python packages.
+
+## Run
+
+Launch the game:
 
 ```powershell
 & ".\Launch Grand Theft Walk.cmd" launch <game>
 ```
 
-Start chat controls in a second terminal, then open http://localhost:5050:
+Start chat controls in a second terminal:
 
 ```powershell
 .\venv\Scripts\python.exe -B dev_server.py --game <game>
 ```
 
-F12 ends the game session. Ctrl+C stops the dev server.
+Open [localhost:5050](http://localhost:5050). **F12** exits the game; **Ctrl+C** stops chat controls.
 
-First-time setup: install and activate your original PC games, install Python,
-and extract the suite ZIP into a permanent writable project folder. If `venv` is missing:
+## Installed mods
 
-```powershell
-py -m venv venv
-.\venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Close both games and Rockstar Launcher before setup or repair. Accept the administrator prompt.
-
-```powershell
-.\Setup.cmd -Action Install
-.\Setup.cmd -Action Check
-.\Setup.cmd -Action Repair -Game <game>
-```
-
-Use Repair for missing or changed mod files. To undo installation, run
-`.\Setup.cmd -Action Restore -Game <game>`.
-
-Setup handles installed, supported games. For custom locations, add
-`-SanAndreasPath "D:\Games\San Andreas"` or `-ViceCityPath "D:\Games\Vice City"` to Install.
-
-Keep the ZIP and the game's `.gtw-suite` backup folder. Saves are preserved.
-Setup logs: `runtime/setup-last.log`.
+- **San Andreas:** SilentPatch, SkyGfx (PS2 preset and timecycle), Widescreen Fix,
+  GInput, ZMenu (first-person camera), Ultimate ASI Loader, classic 1.0 compatibility executable.
+- **Vice City:** SilentPatch + DDraw fix, SkyGfx (PS2 lighting/water), Widescreen Fix,
+  Project2DFX + Open Limit Adjuster, D3D8-to-D3D9 wrapper, Ultimate ASI Loader,
+  classic 1.0 compatibility executable.

@@ -26,6 +26,9 @@ def definition(game, root=ROOT):
     if manifest.get("format") != 1:
         raise ValueError("Unsupported game component manifest")
     files = list(manifest["files"])
+    graphics = installer / "graphics.json"
+    if graphics.is_file():
+        files += json.loads(graphics.read_text(encoding="utf-8"))["files"]
     if game == "san_andreas":
         camera = installer / "first-person.json"
         if not camera.is_file():
