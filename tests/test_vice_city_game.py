@@ -116,7 +116,7 @@ class ProtectionTests(unittest.TestCase):
         self.mem.write(self.bitmap, b"\x01")
         self.mem.write(self.ped + 0x52, b"\x81\xc1")
         self.mem.write(self.ped + 0x154, b"\x80")
-        self.mem.write(self.ped + 0x156, b"\xff")
+        self.mem.write(self.ped + 0x156, b"\xfe")  # Drowns normally; not currently drowning.
         self.mem.write(self.ped + 0x354, struct.pack("<2f", 25, 50))
         self.mem.write(PLAYER_INFO + 0x143, b"\x96")
         self.mem.write(self.ped + 0x5F4, struct.pack("<I", self.wanted))
@@ -132,7 +132,7 @@ class ProtectionTests(unittest.TestCase):
         apply_protection(self.game, self.changes, self.state)
         self.assertEqual(self.mem.read(self.ped + 0x52, 2), b"\x83\xff")
         self.assertEqual(self.mem.byte(self.ped + 0x154), 0x82)
-        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFD)
+        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFE)
         self.assertEqual(self.mem.unpack(self.ped + 0x354, "2f"), (150, 50))
         self.assertEqual(self.mem.byte(PLAYER_INFO + 0x140), 1)
         self.assertEqual(self.mem.byte(PLAYER_INFO + 0x142), 1)
@@ -145,12 +145,39 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(self.changes.restore(), [])
         self.assertEqual(self.mem.read(self.ped + 0x52, 2), b"\x81\xc1")
         self.assertEqual(self.mem.byte(self.ped + 0x154), 0x80)
-        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFF)
+        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFE)
         self.assertEqual(self.mem.byte(PLAYER_INFO + 0x140), 0)
         self.assertEqual(self.mem.byte(PLAYER_INFO + 0x142), 0)
         self.assertEqual(self.mem.unpack(self.wanted + 0x14, "f")[0], 1)
         self.assertEqual(self.mem.unpack(self.ped + 0x354, "f")[0], 150)
         self.assertEqual(self.mem.u32(self.wanted + 0x20), 0)
+
+    def test_water_entry_restores_proofs_and_allows_health_to_fall(self):
+        apply_protection(self.game, self.changes, self.state)
+        self.mem.write(self.ped + 0x54, b"\x04")
+        self.mem.write(self.ped + 0x156, b"\xff")  # Native drowning begins.
+        self.mem.write(self.ped + 0x354, struct.pack("<f", 12))
+        apply_protection(self.game, self.changes, self.state)
+        self.assertEqual(self.mem.read(self.ped + 0x52, 2), b"\x81\xc1")
+        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFF)
+        self.assertEqual(self.mem.unpack(self.ped + 0x354, "f")[0], 12)
+        self.assertFalse(self.changes.entries)
+        self.mem.write(self.ped + 0x54, b"\0")
+        self.mem.write(self.ped + 0x156, b"\xfe")
+        apply_protection(self.game, self.changes, self.state)
+        self.assertEqual(self.mem.unpack(self.ped + 0x354, "f")[0], 150)
+
+    def test_snapshot_exposes_native_water_and_drowning_flags(self):
+        self.mem.pid = 42
+        self.mem.foreground = lambda: True
+        self.assertFalse(self.game.snapshot()["in_water"])
+        self.mem.write(self.ped + 0x54, b"\x04")
+        self.assertTrue(self.game.snapshot()["in_water"])
+        self.assertFalse(self.game.snapshot()["drowning"])
+        self.mem.write(self.ped + 0x54, b"\0")
+        self.mem.write(self.ped + 0x156, b"\xff")
+        self.assertTrue(self.game.snapshot()["in_water"])
+        self.assertTrue(self.game.snapshot()["drowning"])
 
     def test_dead_loading_or_stale_players_are_untouched(self):
         for update in ({"ready": False}, {"identity": "old"}):

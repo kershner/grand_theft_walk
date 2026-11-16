@@ -22,6 +22,7 @@ def can_control(state):
         and not state["controls_disabled"]
         and not state["in_vehicle"]
         and not state.get("cutscene", False)
+          and not state.get("drowning", False)
         and state["health"] > 0
         and state["player_state"] == 0
     )

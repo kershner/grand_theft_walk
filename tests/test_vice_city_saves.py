@@ -56,7 +56,8 @@ class AutosaveTests(unittest.TestCase):
     def test_unsafe_gameplay_never_starts_a_save(self):
         for key, value in (("ready", False), ("health", 0), ("in_vehicle", True),
                            ("interior", 1), ("paused", True), ("controls_disabled", True),
-                           ("player_state", 1), ("ped_state", 24), ("standing", False), ("in_air", True)):
+                           ("player_state", 1), ("ped_state", 24), ("standing", False), ("in_air", True),
+                           ("in_water", True)):
             with self.subTest(key=key):
                 self.assertFalse(self.saver.tick(dict(self.state, **{key: value}), 60))
         self.assertEqual(self.bridge.calls, [])

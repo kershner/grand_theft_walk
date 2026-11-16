@@ -138,6 +138,7 @@ class Autosave(SharedAutosave):
         page = self.menu()
         pause_menu = page == 32 and state.get("paused")
         if not (state["player_state"] == 0 and state["health"] > 0
+                and not state.get("in_water", False)
                 and not state["in_vehicle"] and state["interior"] == 0
                 and state["ped_state"] in (0, 1)
                 and state["standing"] and not state["in_air"]
@@ -214,6 +215,8 @@ class Game:
             "heading": heading_value,
             "camera_heading": heading, "camera_pitch": pitch,
             "standing": bool(flags[0] & 1), "in_air": bool(flags[1] & 8),
+            "in_water": bool(block[0x54] & 4 or block[0x156] & 1),
+            "drowning": bool(block[0x156] & 1),
             "vertical_speed": vertical_speed,
             "health": health, "armor": armor,
             "max_health": mem.byte(PLAYER_INFO + 0x143),
@@ -441,6 +444,9 @@ def apply_protection(game, changes, state):
     guard = ("ped", ped, state["identity"])
     if not changes.valid_guard(guard) or mem.byte(PLAYER_INFO + 0xCC) != 0:
         return
+    if state.get("in_water") or mem.byte(ped + 0x54) & 4 or mem.byte(ped + 0x156) & 1:
+        changes.restore()
+        return
     health = mem.unpack(ped + 0x354, "f")[0]
     if not math.isfinite(health) or health <= 0:
         return
@@ -448,7 +454,6 @@ def apply_protection(game, changes, state):
     changes.patch(ped + 0x52, b"\x02", b"\x02", guard)
     changes.patch(ped + 0x53, b"\x3e", b"\x3e", guard)
     changes.patch(ped + 0x154, b"\x02", b"\x02", guard)  # No critical hits.
-    changes.patch(ped + 0x156, b"\0", b"\x02", guard)  # Does not drown.
     changes.patch(PLAYER_INFO + 0x140, b"\x01")  # Infinite sprint; fixed player-info storage.
     changes.patch(PLAYER_INFO + 0x142, b"\x01")  # Fireproof.
     maximum = max(100, mem.byte(PLAYER_INFO + 0x143))

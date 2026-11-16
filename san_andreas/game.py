@@ -400,6 +400,7 @@ class Game:
             "camera_pitch": camera_pitch,
             "standing": bool(block[0x46C] & 1),
             "in_air": bool(block[0x46D] & 2),
+            "in_water": bool(block[0x41] & 1 or block[0x43] & 8),
             "vertical_speed": struct.unpack_from("<f", block, 0x4C)[0],
             "health": health,
             "max_health": max_health,
@@ -614,6 +615,11 @@ class RuntimeChanges:
 
 def apply_protection(game, changes, state):
     mem = game.mem
+    # Water is native gameplay: allow swimming, breath depletion and drowning.
+    # Read the live flags too, in case entry happened after the last snapshot.
+    if state.get("in_water") or mem.byte(state["ped"] + 0x41) & 1 or mem.byte(state["ped"] + 0x43) & 8:
+        changes.restore()
+        return
     guard = ("ped", state["player_info"], state["ped"], state["identity"])
     for cheat_id in CHEAT_IDS.values():
         changes.patch(CHEATS + cheat_id, b"\x01")

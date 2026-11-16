@@ -35,6 +35,7 @@ class Autosave(SharedAutosave):
             and (not state["controls_disabled"] or pause_menu)
             and state["player_state"] == 0
             and state["health"] > 0
+            and not state.get("in_water", False)
             and not state["in_vehicle"]
             and state["interior"] == 0
             and state["ped_state"] in (0, 1)

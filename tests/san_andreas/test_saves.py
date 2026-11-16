@@ -150,6 +150,7 @@ class AutosaveTests(unittest.TestCase):
             ("paused", True),
             ("controls_disabled", True),
             ("in_vehicle", True),
+            ("in_water", True),
             ("interior", 5),
             ("health", 0),
         ):

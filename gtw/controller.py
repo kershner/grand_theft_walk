@@ -374,6 +374,7 @@ class Controller:
             self.settings["protection"]
             and state["health"] > 0
             and state["player_state"] == 0
+            and not state.get("in_water", False)
         ):
             self.backend.apply_protection(self.game, self.protection, state)
         elif self.protection is not None and self.protection.entries:
