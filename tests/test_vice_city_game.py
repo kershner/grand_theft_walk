@@ -14,7 +14,7 @@ from vice_city.game import (
     BARRIER_MODELS, CONNECTIONS, CONTROL_ACTIONS, COUNTS, Game, OBJECT_POOL,
     OBJECT_SIZE, PATHS, PED_POOL, PLAYER_INFO, JUMP_ACTION, JUMP_KEY, JUMP_SPEED,
     CAPABILITIES, RuntimeChanges, WalkingPace,
-    bind_jump_key, bind_walk_key, island_path_changes, load_destinations, read_graph, unlock_regions,
+    apply_protection, bind_jump_key, bind_walk_key, island_path_changes, load_destinations, read_graph, unlock_regions,
 )
 
 
@@ -98,6 +98,100 @@ class JumpTests(unittest.TestCase):
             boost.assert_called_once_with(self.state)
             keys.return_value.release.assert_called()
             self.assertIsNone(jump.player)
+
+
+class ProtectionTests(unittest.TestCase):
+    def setUp(self):
+        self.mem = MemoryFixture()
+        self.game = Game(self.mem, zones=[])
+        self.ped, self.pool, self.bitmap, self.wanted = 0x200000, 0x100000, 0x300000, 0x400000
+        self.mem.write(PLAYER_INFO, struct.pack("<I", self.ped))
+        self.mem.write(PED_POOL, struct.pack("<I", self.pool))
+        self.mem.write(self.pool, struct.pack("<3I", self.ped, self.bitmap, 1))
+        self.mem.write(self.bitmap, b"\x01")
+        self.mem.write(self.ped + 0x52, b"\x81\xc1")
+        self.mem.write(self.ped + 0x154, b"\x80")
+        self.mem.write(self.ped + 0x156, b"\xff")
+        self.mem.write(self.ped + 0x354, struct.pack("<2f", 25, 50))
+        self.mem.write(PLAYER_INFO + 0x143, b"\x96")
+        self.mem.write(self.ped + 0x5F4, struct.pack("<I", self.wanted))
+        self.mem.write(self.wanted + 0x14, struct.pack("<f", 1))
+        for offset in (0, 4, 0x20, 0x24, 0x28, 0x28 + 15 * 0x1C):
+            self.mem.write(self.wanted + offset, struct.pack("<I", 5))
+        self.state = {"ready": True, "ped": self.ped, "identity": self.game.identity(self.ped)}
+        self.changes = RuntimeChanges(self.mem)
+
+    def test_protection_preserves_other_flags_heals_and_clears_wanted(self):
+        self.assertTrue(CAPABILITIES.protection)
+        self.assertFalse(CAPABILITIES.peaceful)
+        apply_protection(self.game, self.changes, self.state)
+        self.assertEqual(self.mem.read(self.ped + 0x52, 2), b"\x83\xff")
+        self.assertEqual(self.mem.byte(self.ped + 0x154), 0x82)
+        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFD)
+        self.assertEqual(self.mem.unpack(self.ped + 0x354, "2f"), (150, 50))
+        self.assertEqual(self.mem.byte(PLAYER_INFO + 0x140), 1)
+        self.assertEqual(self.mem.byte(PLAYER_INFO + 0x142), 1)
+        for offset in (0, 4, 0x14, 0x20, 0x24, 0x28, 0x28 + 15 * 0x1C):
+            self.assertEqual(self.mem.u32(self.wanted + offset), 0)
+
+    def test_shutdown_restores_settings_but_keeps_health_and_cleared_chase(self):
+        apply_protection(self.game, self.changes, self.state)
+        apply_protection(self.game, self.changes, self.state)
+        self.assertEqual(self.changes.restore(), [])
+        self.assertEqual(self.mem.read(self.ped + 0x52, 2), b"\x81\xc1")
+        self.assertEqual(self.mem.byte(self.ped + 0x154), 0x80)
+        self.assertEqual(self.mem.byte(self.ped + 0x156), 0xFF)
+        self.assertEqual(self.mem.byte(PLAYER_INFO + 0x140), 0)
+        self.assertEqual(self.mem.byte(PLAYER_INFO + 0x142), 0)
+        self.assertEqual(self.mem.unpack(self.wanted + 0x14, "f")[0], 1)
+        self.assertEqual(self.mem.unpack(self.ped + 0x354, "f")[0], 150)
+        self.assertEqual(self.mem.u32(self.wanted + 0x20), 0)
+
+    def test_dead_loading_or_stale_players_are_untouched(self):
+        for update in ({"ready": False}, {"identity": "old"}):
+            before = dict(self.mem.data)
+            apply_protection(self.game, self.changes, dict(self.state, **update))
+            self.assertEqual(self.mem.data, before)
+        for health in (0, -1, math.nan, math.inf):
+            self.mem.write(self.ped + 0x354, struct.pack("<f", health))
+            before = dict(self.mem.data)
+            apply_protection(self.game, self.changes, self.state)
+            self.assertEqual(self.mem.data, before)
+        self.mem.write(self.ped + 0x354, struct.pack("<f", 25))
+        self.mem.write(PLAYER_INFO + 0xCC, b"\x01")
+        before = dict(self.mem.data)
+        apply_protection(self.game, self.changes, self.state)
+        self.assertEqual(self.mem.data, before)
+
+    def test_restore_skips_reused_ped_and_wanted_allocations(self):
+        apply_protection(self.game, self.changes, self.state)
+        self.mem.write(self.bitmap, b"\x02")
+        self.mem.write(self.ped + 0x52, b"\x04")
+        self.mem.write(self.wanted + 0x14, struct.pack("<f", 2))
+        self.changes.restore()
+        self.assertEqual(self.mem.byte(self.ped + 0x52), 4)
+        self.assertEqual(self.mem.unpack(self.wanted + 0x14, "f")[0], 2)
+        self.assertEqual(self.mem.byte(PLAYER_INFO + 0x140), 0)
+
+    def test_changed_wanted_pointer_does_not_restore_old_allocation(self):
+        apply_protection(self.game, self.changes, self.state)
+        self.mem.write(self.ped + 0x5F4, struct.pack("<I", self.wanted + 0x1000))
+        self.changes.restore()
+        self.assertEqual(self.mem.unpack(self.wanted + 0x14, "f")[0], 0)
+
+
+class LocationTests(unittest.TestCase):
+    def test_sunny_weather_modes_are_clear_skies_even_at_night(self):
+        mem = MemoryFixture()
+        game = Game(mem, zones=[])
+        state = {"position": {"x": 0, "y": 0, "z": 0}, "heading": 0, "interior": 0}
+        for hour in (0, 12, 23):
+            mem.write(0xA10B6B, bytes([hour]))
+            for weather in (0, 4):
+                mem.write(0xA10A2E, struct.pack("<h", weather))
+                location = game.location(state)
+                self.assertEqual(location["weather"], "clear skies")
+                self.assertEqual(location["period"], "night" if hour in (0, 23) else "afternoon")
 
 
 class WorldTests(unittest.TestCase):

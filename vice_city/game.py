@@ -9,7 +9,7 @@ from gtw.saves import Autosave as SharedAutosave
 from gtw.navigation import Node, PedestrianGraph
 from gtw.winmemory import Memory as ProcessMemory
 
-CAPABILITIES = Capabilities(unlock_map=True, walk_binding=True, walking_pace=True, jump=True, autosave=True, view=True)
+CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
 JUMP_ACTION = 11
 JUMP_KEY = 32  # Space; avoid the game's hardcoded replay shortcuts.
@@ -40,7 +40,7 @@ COUNTS = 0x537F0
 CONNECTIONS = 0x3A980
 MAX_NODES = 9650
 MAX_CONNECTIONS = 20400
-WEATHER = ("clear skies", "cloudy", "rainy", "foggy", "extra sunny", "hurricane", "extra colours")
+WEATHER = ("clear skies", "cloudy", "rainy", "foggy", "clear skies", "hurricane", "extra colours")
 
 
 def read_game_text(path):
@@ -352,6 +352,11 @@ class RuntimeChanges:
         kind, *values = guard
         if kind == "paths":
             return self.mem.unpack(PATHS + COUNTS, "3I") == tuple(values)
+        if kind in ("ped", "wanted"):
+            ped, identity, *wanted = values
+            return (self.mem.u32(PLAYER_INFO) == ped
+                    and Game(self.mem, zones=[]).identity(ped) == identity
+                    and (not wanted or self.mem.u32(ped + 0x5F4) == wanted[0]))
         pool, objects, bitmap, slot, generation, identity = values
         return (self.mem.u32(OBJECT_POOL) == pool
                 and self.mem.unpack(pool, "2I") == (objects, bitmap)
@@ -386,6 +391,41 @@ class RuntimeChanges:
                 failures.append(str(error))
         self.entries.clear()
         return failures
+
+
+def apply_protection(game, changes, state):
+    """Protect the current living player without changing NPC behavior."""
+    if not state.get("ready"):
+        return
+    mem, ped = game.mem, state["ped"]
+    guard = ("ped", ped, state["identity"])
+    if not changes.valid_guard(guard) or mem.byte(PLAYER_INFO + 0xCC) != 0:
+        return
+    health = mem.unpack(ped + 0x354, "f")[0]
+    if not math.isfinite(health) or health <= 0:
+        return
+    # Explosion, bullet, fire, collision/fall, melee and non-player damage.
+    changes.patch(ped + 0x52, b"\x02", b"\x02", guard)
+    changes.patch(ped + 0x53, b"\x3e", b"\x3e", guard)
+    changes.patch(ped + 0x154, b"\x02", b"\x02", guard)  # No critical hits.
+    changes.patch(ped + 0x156, b"\0", b"\x02", guard)  # Does not drown.
+    changes.patch(PLAYER_INFO + 0x140, b"\x01")  # Infinite sprint; fixed player-info storage.
+    changes.patch(PLAYER_INFO + 0x142, b"\x01")  # Fireproof.
+    maximum = max(100, mem.byte(PLAYER_INFO + 0x143))
+    if health < maximum and changes.valid_guard(guard):
+        mem.write(ped + 0x354, struct.pack("<f", maximum))
+    wanted = mem.u32(ped + 0x5F4)
+    if not wanted:
+        return
+    wanted_guard = ("wanted", ped, state["identity"], wanted)
+    # Zero crime multiplier prevents new chaos; clear existing wanted values
+    # and queued crimes as gameplay state, without restoring a previous chase.
+    changes.patch(wanted + 0x14, struct.pack("<f", 0), guard=wanted_guard)
+    for offset in (0, 4, 0x20, 0x24, *(0x28 + index * 0x1C for index in range(16))):
+        if not changes.valid_guard(wanted_guard):
+            return
+        if mem.u32(wanted + offset):
+            mem.write(wanted + offset, b"\0" * 4)
 
 
 def bind_walk_key(game, changes):
