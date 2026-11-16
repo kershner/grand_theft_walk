@@ -5,8 +5,8 @@ import time
 import unittest
 from unittest.mock import Mock, call, patch
 
-from gtw.controls import HighJump, Hotkeys, Keys, ViewControl
-from san_andreas.game import (
+from core.controls import HighJump, Hotkeys, Keys, ViewControl
+from games.san_andreas.game import (
     CONTROL_ACTIONS,
     JUMP_ACTION,
     JUMP_KEY,
@@ -15,14 +15,14 @@ from san_andreas.game import (
     RuntimeChanges,
     bind_jump_key,
 )
-from gtw.runtime import control_request
+from core.runtime import control_request
 
 from .helpers import MemoryFixture
 
 
 class InputTests(unittest.TestCase):
     def test_vertical_mouse_input_preserves_the_horizontal_axis_and_checks_focus(self):
-        with patch("gtw.controls._user32.SendInput", return_value=1) as send:
+        with patch("core.controls._user32.SendInput", return_value=1) as send:
             self.keys.look(-12)
             event = send.call_args.args[1]._obj
             self.assertEqual((event.data.mouse.dx, event.data.mouse.dy), (0, -12))
@@ -31,7 +31,7 @@ class InputTests(unittest.TestCase):
             self.assertEqual(send.call_count, 1)
 
     def setUp(self):
-        self.backend = patch("gtw.controls.keyboard")
+        self.backend = patch("core.controls.keyboard")
         self.keyboard = self.backend.start()
         self.addCleanup(self.backend.stop)
         self.focused = Mock(return_value=True)
@@ -55,7 +55,7 @@ class InputTests(unittest.TestCase):
         self.keyboard.press.assert_not_called()
         self.assertEqual(self.keyboard.release.call_count, 2)
         self.assertFalse(self.keys.held)
-        with patch("gtw.controls._user32.SendInput") as mouse:
+        with patch("core.controls._user32.SendInput") as mouse:
             self.keys.turn(5)
         mouse.assert_not_called()
         self.assertFalse(self.keys.tap("enter"))
@@ -63,7 +63,7 @@ class InputTests(unittest.TestCase):
 
     def test_tap_releases_key_even_when_waiting_raises(self):
         with (
-            patch("gtw.controls.time.sleep", side_effect=RuntimeError("interrupted")),
+            patch("core.controls.time.sleep", side_effect=RuntimeError("interrupted")),
             self.assertRaises(RuntimeError),
         ):
             self.keys.tap("enter")
@@ -98,7 +98,7 @@ class InputTests(unittest.TestCase):
 
 class ViewControlTests(unittest.TestCase):
     def setUp(self):
-        keys_patch = patch("gtw.controls.Keys")
+        keys_patch = patch("core.controls.Keys")
         self.keys = keys_patch.start().return_value
         self.addCleanup(keys_patch.stop)
         self.view = ViewControl()
@@ -226,7 +226,7 @@ class JumpBoostTests(unittest.TestCase):
 
 class HighJumpTests(unittest.TestCase):
     def setUp(self):
-        self.keys_patch = patch("gtw.controls.Keys")
+        self.keys_patch = patch("core.controls.Keys")
         self.key_factory = self.keys_patch.start()
         self.keys = self.key_factory.return_value
         self.addCleanup(self.keys_patch.stop)
@@ -299,7 +299,7 @@ class HighJumpTests(unittest.TestCase):
         self.jump.tick(expired, self.state, 10)
         self.keys.set.assert_not_called()
         self.jump.tick(self.request, self.state, 10)
-        with self.assertLogs("gtw.controls", level="WARNING"):
+        with self.assertLogs("core.controls", level="WARNING"):
             self.jump.tick(self.request, self.state, 12)
         self.assertIsNone(self.jump.player)
         self.game.boost_jump.assert_not_called()

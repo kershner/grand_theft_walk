@@ -2,13 +2,14 @@
 
 import ctypes as c
 import logging
+import struct
 import time
 from ctypes import wintypes as w
 
 import keyboard
 
-from gtw.navigation import SmoothTurn
-from gtw.runtime import request_expired
+from core.navigation import SmoothTurn
+from core.runtime import request_expired
 
 logger = logging.getLogger(__name__)
 MOUSE_UNITS_PER_STEP = 10
@@ -22,10 +23,27 @@ def can_control(state):
         and not state["controls_disabled"]
         and not state["in_vehicle"]
         and not state.get("cutscene", False)
-          and not state.get("drowning", False)
+        and not state.get("drowning", False)
         and state["health"] > 0
         and state["player_state"] == 0
     )
+
+
+def bind_action_key(memory, changes, address, count, action, key):
+    """Own a native keyboard binding and clear conflicts in both keyboard columns."""
+    data = memory.read(address, count * 32)
+    if struct.unpack_from("<I", data, action * 32)[0] > 1056:
+        raise RuntimeError("Invalid control binding")
+    for other in range(count):
+        if other == action:
+            continue
+        for column in (0, 1):
+            offset = other * 32 + column * 8
+            if struct.unpack_from("<I", data, offset)[0] == key:
+                changes.patch(address + offset, struct.pack("<I", 1056))
+    changes.patch(address + action * 32, struct.pack("<I", key))
+    if not struct.unpack_from("<I", data, action * 32 + 4)[0]:
+        changes.patch(address + action * 32 + 4, struct.pack("<I", 1))
 
 
 class MouseInput(c.Structure):

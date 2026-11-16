@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from gtw.missions import MissionSystem
-from gtw.navigation import Node, PedestrianGraph, SidewalkNavigator
-from gtw.runtime import atomic_json
-from vice_city.game import load_destinations, main_sidewalk_network
+from core.missions import MissionSystem
+from core.navigation import Node, PedestrianGraph, SidewalkNavigator
+from core.runtime import atomic_json
+from games.vice_city.game import load_destinations, main_sidewalk_network
 
 
 def graph_fixture():
@@ -31,7 +31,7 @@ def graph_fixture():
 
 
 def destinations(graph):
-    with patch("vice_city.game.load_zones", return_value=[
+    with patch("games.vice_city.game.load_zones", return_value=[
         ("Ocean Beach", (-10, -10, 0, 60, 10, 20)),
         ("Washington Beach", (60, -10, 0, 110, 10, 20)),
     ]):

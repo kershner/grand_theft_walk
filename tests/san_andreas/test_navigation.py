@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gtw.navigation import (
+from core.navigation import (
     Node,
     PedestrianGraph,
     SidewalkNavigator,
@@ -18,9 +18,9 @@ from gtw.navigation import (
     heading_to,
     read_area,
 )
-from gtw.runtime import DEFAULTS, control_request
-from gtw.controller import Controller, Walking
-from san_andreas.game import CAPABILITIES
+from core.runtime import DEFAULTS, control_request
+from core.controller import Controller, Walking
+from games.san_andreas.game import CAPABILITIES
 
 
 def graph_fixture():
@@ -208,14 +208,14 @@ class MovementTests(unittest.TestCase):
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, -3, 0)):
             self.state["camera_heading"] = 0
             for now in (0, 1, 3, 5):
-                with patch("gtw.controller.time.monotonic", return_value=now):
+                with patch("core.controller.time.monotonic", return_value=now):
                     self.assertIn(
                         "aligning", self.movement.tick(self.state, True, "sidewalk")
                     )
                 self.keys.set.assert_called_with({"walk"})
             self.assertEqual(self.movement.recoveries, 0)
             self.state["camera_heading"] = math.pi - 0.1
-            with patch("gtw.controller.time.monotonic", return_value=6):
+            with patch("core.controller.time.monotonic", return_value=6):
                 self.movement.tick(self.state, True, "sidewalk")
             self.keys.set.assert_called_with({"walk", "forward"})
 
@@ -225,7 +225,7 @@ class MovementTests(unittest.TestCase):
             for now, x in ((0, 0), (3, 1), (6, -1), (9, 0)):
                 self.state["position"] = {"x": x, "y": 0, "z": 0}
                 self.state["camera_heading"] = heading_to((x, 0), (0, 10))
-                with patch("gtw.controller.time.monotonic", return_value=now):
+                with patch("core.controller.time.monotonic", return_value=now):
                     status = self.movement.tick(self.state, True, "sidewalk")
         self.assertIn("no route progress", status)
         self.assertIsNone(self.movement.navigator.target)
@@ -244,16 +244,16 @@ class MovementTests(unittest.TestCase):
             self.movement.navigator, "waypoint", return_value=(0, -10, 0)
         ):
             self.state["camera_heading"] = -0.01
-            with patch("gtw.controller.time.monotonic", return_value=0):
+            with patch("core.controller.time.monotonic", return_value=0):
                 self.movement.tick(self.state, True, "sidewalk")
             first = self.movement.turn_direction
             self.state["camera_heading"] = 0.01
-            with patch("gtw.controller.time.monotonic", return_value=0.05):
+            with patch("core.controller.time.monotonic", return_value=0.05):
                 self.movement.tick(self.state, True, "sidewalk")
         self.assertEqual(self.movement.turn_direction, first)
 
     def setUp(self):
-        self.keys_patch = patch("gtw.controller.Keys")
+        self.keys_patch = patch("core.controller.Keys")
         self.keys = self.keys_patch.start().return_value
         self.addCleanup(self.keys_patch.stop)
         self.movement = Walking(graph_fixture())
@@ -308,13 +308,13 @@ class MovementTests(unittest.TestCase):
         self.assertEqual(movement.tick(self.state, True, "free"), "walking freely")
 
     def test_manual_turn_is_spread_across_ticks_and_cancelled_on_alt_tab(self):
-        with patch("gtw.controller.time.monotonic", return_value=0):
+        with patch("core.controller.time.monotonic", return_value=0):
             self.movement.tick(self.state, True, "free")
         self.assertTrue(self.movement.steer("left", "free", self.state, 25))
         self.keys.turn.assert_not_called()
         for i in range(1, 161):
             self.state["position"] = {"x": i * 0.1, "y": 0, "z": 0}
-            with patch("gtw.controller.time.monotonic", return_value=i * 0.05):
+            with patch("core.controller.time.monotonic", return_value=i * 0.05):
                 self.movement.tick(self.state, True, "free")
         amounts = [call.args[0] for call in self.keys.turn.call_args_list]
         self.assertEqual(sum(amounts), -250)
@@ -332,7 +332,7 @@ class MovementTests(unittest.TestCase):
                 self.keys.reset_mock()
                 self.assertTrue(self.movement.steer(direction, "free", self.state, 10))
                 for i in range(600):
-                    with patch("gtw.controller.time.monotonic", return_value=i / 120):
+                    with patch("core.controller.time.monotonic", return_value=i / 120):
                         self.movement.tick(self.state, False, "free")
                 amounts = [call.args[0] for call in self.keys.turn.call_args_list]
                 self.assertEqual(sum(amounts), sign * 100)
@@ -343,29 +343,29 @@ class MovementTests(unittest.TestCase):
         for direction in ("forward", "back"):
             with self.subTest(direction=direction):
                 self.movement.stop()
-                with patch("gtw.controller.time.monotonic", return_value=10):
+                with patch("core.controller.time.monotonic", return_value=10):
                     self.assertTrue(
                         self.movement.steer(direction, "free", self.state, 3)
                     )
                 for now in (10, 11, 12.9):
-                    with patch("gtw.controller.time.monotonic", return_value=now):
+                    with patch("core.controller.time.monotonic", return_value=now):
                         self.assertEqual(
                             self.movement.tick(self.state, False),
                             f"stepping {direction}",
                         )
                     self.keys.set.assert_called_with({"walk", direction})
                 self.keys.reset_mock()
-                with patch("gtw.controller.time.monotonic", return_value=13):
+                with patch("core.controller.time.monotonic", return_value=13):
                     self.assertEqual(self.movement.tick(self.state, False), "stopped")
                 self.keys.set.assert_not_called()
                 self.keys.release.assert_called()
 
     def test_manual_back_resumes_existing_autowalk_when_finished(self):
-        with patch("gtw.controller.time.monotonic", return_value=10):
+        with patch("core.controller.time.monotonic", return_value=10):
             self.movement.steer("back", "free", self.state, 2)
             self.movement.tick(self.state, True)
         self.keys.set.assert_called_with({"walk", "back"})
-        with patch("gtw.controller.time.monotonic", return_value=12):
+        with patch("core.controller.time.monotonic", return_value=12):
             self.assertEqual(self.movement.tick(self.state, True), "walking freely")
         self.keys.set.assert_called_with({"walk", "forward"})
 
@@ -393,7 +393,7 @@ class MovementTests(unittest.TestCase):
                 self.assertIsNone(self.movement.manual_direction)
 
     def test_backing_up_covers_manual_steps_and_obstacle_recovery(self):
-        with patch("gtw.controller.time.monotonic", return_value=10):
+        with patch("core.controller.time.monotonic", return_value=10):
             self.movement.steer("back", "free", self.state, 2)
         self.assertTrue(self.movement.backing_up(10))
         self.assertTrue(self.movement.backing_up(11.9))
@@ -429,10 +429,10 @@ class ControllerTests(unittest.TestCase):
             autosave.return_value.tick.return_value = False
             autosave.return_value.report.return_value = {}
             with (
-                patch("gtw.controller.Keys") as keys,
-                patch("gtw.controller.HighJump"),
-                patch("gtw.controller.ViewControl"),
-                patch("gtw.controller.Hotkeys") as hotkeys,
+                patch("core.controller.Keys") as keys,
+                patch("core.controller.HighJump"),
+                patch("core.controller.ViewControl"),
+                patch("core.controller.Hotkeys") as hotkeys,
             ):
                 keys.return_value.held = {"forward", "walk"}
                 hotkeys.return_value.pressed.return_value = []
@@ -458,10 +458,10 @@ class ControllerTests(unittest.TestCase):
             graph = graph_fixture()
             loader = Mock(return_value=graph)
             with (
-                patch("gtw.controller.Keys"),
-                patch("gtw.controller.HighJump") as jump,
-                patch("gtw.controller.ViewControl"),
-                patch("gtw.controller.Hotkeys"),
+                patch("core.controller.Keys"),
+                patch("core.controller.HighJump") as jump,
+                patch("core.controller.ViewControl"),
+                patch("core.controller.Hotkeys"),
             ):
                 controller = Controller(memory, args, backend, loader, autosave)
             loader.assert_called_once_with(memory)

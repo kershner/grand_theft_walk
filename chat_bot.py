@@ -4,8 +4,8 @@ import logging
 import threading
 import time
 
-from gtw.games import get_game
-from gtw.runtime import (
+from games import get_game
+from core.runtime import (
     DIRECTIONS,
     MOVEMENT_COMMANDS,
     NavigationModeError,
@@ -16,7 +16,7 @@ from gtw.runtime import (
     mission_distance,
     require_command,
 )
-from gtw.voting import CommandVoting
+from core.voting import CommandVoting
 
 HELP = {
     "walk": "!walk — Start autowalking. Alias: !w.",
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 ANNOUNCEMENT_INTERVAL = 20 * 60
 
 
-class GTWBot:
+class ChatBot:
     def __init__(self, control=None):
         self.control = control if control is not None else WalkerControl()
         self.command_voting = CommandVoting(self._execute)

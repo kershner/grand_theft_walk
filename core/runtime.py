@@ -10,7 +10,7 @@ from pathlib import Path
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
-from gtw.games import get_game
+from games import get_game
 
 LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2

@@ -19,8 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from gtw.runtime import DEFAULTS
-from gtw.setup import sha256, under, verify_bundle
+from core.runtime import DEFAULTS
+from core.setup import sha256, under, verify_bundle
 
 GAMES = ("san_andreas", "vice_city")
 
@@ -54,7 +54,7 @@ def copy_file(source, destination):
 
 
 def add_component(stage, game):
-    source = ROOT / game / "installer"
+    source = ROOT / "games" / game / "installer"
     base = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     manifests = [(base, source / "payload")]
     camera = source / "first-person.json"
@@ -75,7 +75,7 @@ def add_component(stage, game):
             original = under(payload, name)
             if sha256(original) != entry["sha256"]:
                 raise ValueError(f"Source component missing or changed: {original}")
-            relative = f"{game}/installer/payload/{name}"
+            relative = f"games/{game}/installer/payload/{name}"
             copy_file(original, under(stage, relative))
             accepted = entry.get("accepted_before", [entry.get("clean_sha256")])
             if game == "vice_city" and name.lower() == "ddraw.dll":
@@ -91,7 +91,7 @@ def add_component(stage, game):
         if expected is None:
             raise ValueError(f"Missing known hash for retired component: {game}/{name}")
         files.append({"path": name, "payload": None, "sha256": None, "accepted_before": [None, expected]})
-    profile = json.loads((ROOT / game / "profile.json").read_text(encoding="utf-8"))
+    profile = json.loads((ROOT / "games" / game / "profile.json").read_text(encoding="utf-8"))
     fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
     definition = {
         "component_id": f"{game}-{fingerprint}", "title": profile["title"],
@@ -102,7 +102,7 @@ def add_component(stage, game):
         "required_hashes": {"data/timecycp.dat": base["ps2_timecycle_sha256"]} if game == "san_andreas" else {},
         "previous_versions": base.get("previous_versions", []),
     }
-    installer = stage / game / "installer"
+    installer = stage / "games" / game / "installer"
     installer.mkdir(parents=True, exist_ok=True)
     (installer / "manifest.json").write_text(json.dumps(definition, indent=2) + "\n", encoding="utf-8")
     if (source / "documentation").is_dir():
@@ -138,34 +138,35 @@ def build(keep_stage=False):
     stage = ROOT / "build" / ("suite-" + uuid.uuid4().hex)
     stage.mkdir(parents=True)
     # Explicit inclusion lists keep runtime state and private local files out.
-    for name in ("gtw", "san_andreas", "vice_city", "tests"):
+    for name in ("core", "games", "tests"):
         folder = ROOT / name
         for path in folder.rglob("*.py"):
             parts = path.relative_to(folder).parts
             if any(part in {"runtime", "installer", "__pycache__"} for part in parts):
                 continue
             copy_file(path, stage / name / path.relative_to(folder))
-    for name in ("gtw_chat_bot.py", "dev_server.py", "requirements.txt"):
+    # The packaged regression tests also exercise the builder's validation helpers.
+    for name in ("chat_bot.py", "dev_server.py", "build_suite.py", "requirements.txt"):
         copy_file(ROOT / name, stage / name)
     for game in GAMES:
-        copy_file(ROOT / game / "profile.json", stage / game / "profile.json")
-        sources = ROOT / game / "docs/SOURCES.txt"
+        copy_file(ROOT / "games" / game / "profile.json", stage / "games" / game / "profile.json")
+        sources = ROOT / "games" / game / "docs/SOURCES.txt"
         if sources.exists():
-            copy_file(sources, stage / game / "docs/SOURCES.txt")
+            copy_file(sources, stage / "games" / game / "docs/SOURCES.txt")
         else:
-            path = stage / game / "docs/SOURCES.txt"
+            path = stage / "games" / game / "docs/SOURCES.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("Component origins and hashes: ../installer/documentation/\nController is not yet ready; memory writes are disabled.\n", encoding="utf-8")
     for path in (ROOT / "templates").rglob("*"):
         if path.is_file():
             copy_file(path, stage / "templates" / path.relative_to(ROOT / "templates"))
-    native = ROOT / "gtw/native"
+    native = ROOT / "core/native"
     native_manifest = json.loads((native / "manifest.json").read_text(encoding="utf-8"))
     for name, expected in native_manifest["files"].items():
         if sha256(native / name) != expected:
             raise ValueError(f"Native helper failed verification: {name}")
     for name in ("manifest.json", "build.ps1", "save_bridge.c", "save_shared.h", "save_request.c", *native_manifest["files"]):
-        copy_file(native / name, stage / "gtw/native" / name)
+        copy_file(native / name, stage / "core/native" / name)
     definitions = {game: add_component(stage, game) for game in GAMES}
     manifest = {"format": 1, "suite_version": "2026.11-sa-vc-max-distance1", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

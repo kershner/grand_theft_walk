@@ -5,7 +5,7 @@ import random
 import time
 import uuid
 
-from gtw.controls import (
+from core.controls import (
     MOUSE_UNITS_PER_STEP,
     HighJump,
     Hotkeys,
@@ -13,9 +13,9 @@ from gtw.controls import (
     ViewControl,
     can_control,
 )
-from gtw.missions import MissionSystem
-from gtw.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
-from gtw.runtime import (
+from core.missions import MissionSystem
+from core.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
+from core.runtime import (
     DEFAULTS,
     DIRECTIONS,
     MODES,

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.san_andreas.helpers import MemoryFixture
-from vice_city.camera import ACTIVE, PED_ZOOM_INDICATOR, FirstPersonCamera
+from games.vice_city.game import ACTIVE, PED_ZOOM_INDICATOR, FirstPersonCamera
 
 
 class CameraTests(unittest.TestCase):
@@ -26,8 +26,8 @@ class CameraTests(unittest.TestCase):
                           controls_disabled=False, in_vehicle=False, cutscene=False,
                           health=100, player_state=0)
         for target, kwargs in (
-            ("vice_city.camera.CAMERA_MODULE_SHA256", {"new": hashlib.sha256(path.read_bytes()).hexdigest()}),
-            ("vice_city.game.Game.snapshot", {"side_effect": lambda: dict(self.state)}),
+            ("games.vice_city.game.CAMERA_MODULE_SHA256", {"new": hashlib.sha256(path.read_bytes()).hexdigest()}),
+            ("games.vice_city.game.Game.snapshot", {"side_effect": lambda: dict(self.state)}),
         ):
             patcher = patch(target, **kwargs)
             patcher.start()

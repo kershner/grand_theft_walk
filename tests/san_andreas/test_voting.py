@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from gtw.voting import CommandVoting
+from core.voting import CommandVoting
 
 
 class CommandVotingTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class CommandVotingTests(unittest.TestCase):
         self.system.cast("bob", "no")
         self.system.cast("ALICE", "no")
         self.system.cast("alice", "yes")
-        with patch("gtw.voting.time.monotonic", return_value=self.system.closes_at + 1):
+        with patch("core.voting.time.monotonic", return_value=self.system.closes_at + 1):
             self.assertIsNone(self.system.cast("charlie", "yes"))
         self.finish()
         self.execute.assert_not_called()

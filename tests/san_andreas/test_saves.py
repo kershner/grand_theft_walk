@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from san_andreas.saves import MENU, SAVE_PREFIX, Autosave, NativeSaveRequest
+from games.san_andreas.game import MENU, SAVE_PREFIX, Autosave
+from core.saves import NativeSaveRequest
 
 from .helpers import MemoryFixture, checkpoint
 
@@ -48,14 +49,14 @@ class NativeSaveTests(unittest.TestCase):
         )
 
     def test_helper_is_hidden_and_receives_only_game_pid_and_save_slot(self):
-        with patch("gtw.saves.subprocess.Popen") as popen:
+        with patch("core.saves.subprocess.Popen") as popen:
             self.client.start(2)
         self.assertEqual(popen.call_args.args[0][1:], ["1234", "2"])
         self.assertTrue(popen.call_args.kwargs["creationflags"])
 
     def test_modified_bridge_is_rejected_before_starting_process(self):
         (self.client.folder / "save_bridge.dll").write_bytes(b"modified")
-        with patch("gtw.saves.subprocess.Popen") as popen:
+        with patch("core.saves.subprocess.Popen") as popen:
             with self.assertRaisesRegex(ValueError, "validation"):
                 self.client.start(0)
         popen.assert_not_called()
@@ -189,7 +190,7 @@ class AutosaveTests(unittest.TestCase):
 
     def test_occupied_save_slot_mismatch_is_never_overwritten(self):
         self.record.write_text(json.dumps({"slot": 1, "path": str(self.path)}))
-        with self.assertLogs("gtw.saves", level="WARNING"):
+        with self.assertLogs("core.saves", level="WARNING"):
             self.assertFalse(self.saver.tick(self.state, 60))
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertEqual(self.mem.byte(MENU + 0x5F), 0)
@@ -199,7 +200,7 @@ class AutosaveTests(unittest.TestCase):
         self.start_save()
         self.path.write_bytes(b"incomplete save")
         self.bridge.result = {"status": "saved"}
-        with self.assertLogs("gtw.saves", level="WARNING"):
+        with self.assertLogs("core.saves", level="WARNING"):
             self.saver.tick(self.state, 60.8)
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertEqual(self.saver.count, 0)

@@ -7,8 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gtw.navigation import Node, PedestrianGraph
-from vice_city import diagnostics
+from core.navigation import Node, PedestrianGraph
+from games.vice_city import diagnostics
 
 
 class DiagnosticTests(unittest.TestCase):

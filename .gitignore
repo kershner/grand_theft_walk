@@ -1,13 +1,13 @@
 # Local game setup and generated state
-/san_andreas/installer/
-/vice_city/installer/
-/gta_iii/installer/
-/san_andreas/docs/SOURCES.txt
-/gtw/runtime/
+/games/san_andreas/installer/
+/games/vice_city/installer/
+/games/gta_iii/installer/
+/games/san_andreas/docs/SOURCES.txt
+/core/runtime/
 /runtime/
-/san_andreas/runtime/
-/vice_city/runtime/
-/gta_iii/runtime/
+/games/san_andreas/runtime/
+/games/vice_city/runtime/
+/games/gta_iii/runtime/
 
 # Python environments, caches, and test output
 .venv/
@@ -33,15 +33,15 @@ htmlcov/
 !.env.template
 
 # Native build intermediates
-/gtw/native/*.def
-/gtw/native/*.o
-/gtw/native/*.obj
-/gtw/native/*.pdb
-/gtw/native/*.ilk
-/gtw/native/*.exp
-/gtw/native/*.lib
-!/gtw/native/save_bridge.dll
-!/gtw/native/save_request.exe
+/core/native/*.def
+/core/native/*.o
+/core/native/*.obj
+/core/native/*.pdb
+/core/native/*.ilk
+/core/native/*.exp
+/core/native/*.lib
+!/core/native/save_bridge.dll
+!/core/native/save_request.exe
 
 # Logs, temporary files, and editor/OS clutter
 *.log
@@ -52,3 +52,4 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
+SOURCES.txt

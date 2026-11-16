@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.san_andreas.helpers import MemoryFixture
-from gtw.controls import HighJump, can_control
-from gtw.navigation import Node, PedestrianGraph
-from vice_city.game import (
+from core.controls import HighJump, can_control
+from core.navigation import Node, PedestrianGraph
+from games.vice_city.game import (
     BARRIER_MODELS, CONNECTIONS, CONTROL_ACTIONS, COUNTS, Game, OBJECT_POOL,
     OBJECT_SIZE, PATHS, PED_POOL, PLAYER_INFO, JUMP_ACTION, JUMP_KEY, JUMP_SPEED,
     CAPABILITIES, RuntimeChanges, WalkingPace,
@@ -92,7 +92,7 @@ class JumpTests(unittest.TestCase):
     def test_shared_jump_drives_vice_city_takeoff_and_boosts_once(self):
         self.assertTrue(CAPABILITIES.jump)
         changes = RuntimeChanges(self.mem)
-        with patch("gtw.controls.Keys") as keys, patch.object(self.game, "boost_jump", wraps=self.game.boost_jump) as boost:
+        with patch("core.controls.Keys") as keys, patch.object(self.game, "boost_jump", wraps=self.game.boost_jump) as boost:
             jump = HighJump(self.game, changes, binder=bind_jump_key)
             request = {"id": "vice-jump", "issued": time.time()}
             jump.tick(request, dict(self.state, standing=True, in_air=False, vertical_speed=0), 10)
@@ -312,7 +312,7 @@ class WorldTests(unittest.TestCase):
             Node((0, 3), (49, 49, 0), (((0, 4), False),)),
             Node((0, 4), (50, 50, 0), (((0, 3), False),)),
         ])
-        with patch("vice_city.game.load_zones", return_value=[("Area", (0, 0, -10, 100, 100, 10))]):
+        with patch("games.vice_city.game.load_zones", return_value=[("Area", (0, 0, -10, 100, 100, 10))]):
             destinations = load_destinations(Path("game"), graph, Mock(return_value={}))
         self.assertEqual(destinations[0]["node"], [0, 2])
 

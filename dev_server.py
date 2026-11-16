@@ -11,13 +11,13 @@ from types import SimpleNamespace
 
 from flask import Flask, g, jsonify, request, send_from_directory
 
-from gtw.games import GAMES, get_game
-from gtw.runtime import (
+from games import GAMES, get_game
+from core.runtime import (
     WalkerControl,
     configure_logging,
     read_json,
 )
-from gtw_chat_bot import GTWBot
+from chat_bot import ChatBot
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
     app = Flask(__name__)
     messages = []
     messages_lock = threading.Lock()
-    bot = GTWBot(control=WalkerControl(state_dir, game=game))
+    bot = ChatBot(control=WalkerControl(state_dir, game=game))
     app.extensions["gtw_bot"] = bot
     try:
         previous = read_json(Path(state_dir) / "state.json")

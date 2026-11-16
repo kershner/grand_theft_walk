@@ -8,8 +8,8 @@ import argparse
 import json
 from pathlib import Path
 
-from gtw.games import GAMES, get_game
-from gtw.setup import sha256
+from games import GAMES, get_game
+from core.setup import sha256
 
 
 def read_game_text(path):

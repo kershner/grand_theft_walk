@@ -7,18 +7,20 @@ import time
 import unittest
 from pathlib import Path
 
-from gtw.games import GAMES, get_game
-from gtw.inspect_install import inspect_install
-from gtw.runtime import WalkerControl
+from games import GAMES, get_game
+from core.inspect_install import inspect_install
+from core.runtime import WalkerControl
 
 
 class GameProfileTests(unittest.TestCase):
-    def test_default_directories_are_distinct_and_san_andreas_is_unchanged(self):
+    def test_runtime_directories_are_isolated_under_the_games_folder(self):
         folders = {game.state_dir for game in GAMES.values()}
         self.assertEqual(len(folders), 3)
         self.assertEqual(get_game().state_dir.name, "runtime")
         self.assertEqual(get_game().state_dir.parent.name, "san_andreas")
         for game in GAMES.values():
+            self.assertEqual(game.source_dir.parent.name, "games")
+            self.assertEqual(game.state_dir, game.source_dir / "runtime")
             self.assertEqual(WalkerControl(game=game.id).state_dir, game.state_dir)
 
     def test_unknown_game_is_rejected(self):

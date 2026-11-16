@@ -3,10 +3,10 @@ import struct
 import unittest
 from unittest.mock import Mock, patch
 
-from gtw.controller import Controller, Walking
-from gtw.controls import can_control
-from gtw.games import Capabilities
-from san_andreas.game import Game, apply_protection
+from core.controller import Controller, Walking
+from core.controls import can_control
+from games import Capabilities
+from games.san_andreas.game import Game, apply_protection
 from tests.san_andreas.helpers import MemoryFixture
 
 
@@ -39,7 +39,7 @@ class WaterRecoveryTests(unittest.TestCase):
         dry = {'ready': True, 'foreground': True, 'paused': False, 'controls_disabled': False,
                'in_vehicle': False, 'health': 100, 'player_state': 0, 'ped_state': 1,
                'position': {'x': 0, 'y': 0, 'z': 0}, 'heading': 0, 'camera_heading': 0}
-        with patch('gtw.controller.Keys') as keys:
+        with patch('core.controller.Keys') as keys:
             keys.return_value.held = set()
             walking = Walking()
             self.assertFalse(can_control(dict(dry, drowning=True)))

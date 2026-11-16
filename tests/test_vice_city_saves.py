@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from gtw.saves import NativeSaveRequest
+from core.saves import NativeSaveRequest
 from tests.san_andreas.helpers import MemoryFixture
 from tests.san_andreas.test_saves import FakeBridge
 from tests.test_vice_city_launch import checkpoint
-from vice_city.game import Autosave, MENU, SAVE_PREFIX, SCRIPT_SPACE, valid_save
+from games.vice_city.game import Autosave, MENU, SAVE_PREFIX, SCRIPT_SPACE, valid_save
 
 
 class AutosaveTests(unittest.TestCase):
@@ -96,7 +96,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertTrue(self.saver.tick(self.state, 60))
         self.path.write_bytes(b"partial")
         self.bridge.result = {"status": "saved"}
-        with self.assertLogs("gtw.saves", level="WARNING"):
+        with self.assertLogs("core.saves", level="WARNING"):
             self.saver.tick(self.state, 60.1)
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertTrue(valid_save(self.saver.backup))
@@ -112,7 +112,7 @@ class AutosaveTests(unittest.TestCase):
 
     def test_slot_mismatch_preserves_files_and_never_dispatches(self):
         self.record.write_text(json.dumps({"slot": 1, "path": str(self.path)}))
-        with self.assertLogs("gtw.saves", level="WARNING"):
+        with self.assertLogs("core.saves", level="WARNING"):
             self.assertFalse(self.saver.tick(self.state, 60))
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertEqual(self.bridge.calls, [])

@@ -1,4 +1,4 @@
-param([string]$Compiler = (Join-Path $PSScriptRoot '../../san_andreas/runtime/build/tcc/tcc.exe'))
+param([string]$Compiler = (Join-Path $PSScriptRoot '../../games/san_andreas/runtime/build/tcc/tcc.exe'))
 $ErrorActionPreference = 'Stop'
 & $Compiler -shared -o (Join-Path $PSScriptRoot 'save_bridge.dll') (Join-Path $PSScriptRoot 'save_bridge.c') -luser32
 if ($LASTEXITCODE) { throw 'Save bridge compilation failed' }

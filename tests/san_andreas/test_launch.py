@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from san_andreas.launch import INTRO_SCRIPT, Startup, choose_save, valid_save
+from games.san_andreas.launch import INTRO_SCRIPT, Startup, choose_save, valid_save
 
 from .helpers import checkpoint
 
@@ -32,7 +32,7 @@ class IntroTests(unittest.TestCase):
         self.startup = Startup(self.memory, 10)
 
     def test_verified_intro_uses_existing_cleanup_call(self):
-        with patch("san_andreas.launch.INTRO_SHA256", hashlib.sha256(self.bytecode).hexdigest()):
+        with patch("games.san_andreas.launch.INTRO_SHA256", hashlib.sha256(self.bytecode).hexdigest()):
             self.assertTrue(self.startup.finish_intro())
         self.memory.write.assert_called_once_with(0xA90684, struct.pack("<I", INTRO_SCRIPT + 38))
         self.assertFalse(self.startup.finish_intro())
@@ -60,7 +60,7 @@ class FocusTests(unittest.TestCase):
         memory.foreground.side_effect = [False, False, True]
         predicate = Mock(return_value="ready")
         startup = Startup(memory, 10)
-        with patch("gtw.startup.time.sleep"), patch("gtw.startup.key_down", return_value=False):
+        with patch("core.session.time.sleep"), patch("core.session.key_down", return_value=False):
             self.assertEqual(startup.wait("Test startup", predicate), "ready")
         predicate.assert_called_once_with()
         self.assertEqual(memory.foreground.call_count, 3)

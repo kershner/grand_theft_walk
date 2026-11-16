@@ -34,8 +34,12 @@ class GameProfile:
     controller_ready: bool = False
 
     @property
+    def source_dir(self):
+        return ROOT / "games" / self.id
+
+    @property
     def state_dir(self):
-        return ROOT / self.id / "runtime"
+        return self.source_dir / "runtime"
 
     @property
     def install_dir(self):
@@ -51,7 +55,7 @@ class GameProfile:
 
 
 def load_profile(game, root=ROOT):
-    data = json.loads((root / game / "profile.json").read_text(encoding="utf-8"))
+    data = json.loads((root / "games" / game / "profile.json").read_text(encoding="utf-8"))
     if data.pop("format", None) != 1 or data.get("id") != game:
         raise ValueError(f"Invalid game profile: {game}")
     return GameProfile(**data)

@@ -6,9 +6,10 @@ import struct
 import subprocess
 import sys
 from ctypes import wintypes as w
+from contextlib import contextmanager
 from pathlib import Path
 
-from gtw.games import get_game
+from games import get_game
 
 k32 = c.WinDLL("kernel32", use_last_error=True)
 u32 = c.WinDLL("user32", use_last_error=True)
@@ -71,6 +72,7 @@ api(k32, "Module32FirstW", [w.HANDLE, c.POINTER(ModuleEntry)], w.BOOL)
 api(k32, "Module32NextW", [w.HANDLE, c.POINTER(ModuleEntry)], w.BOOL)
 api(k32, "OpenProcess", [w.DWORD, w.BOOL, w.DWORD], w.HANDLE)
 api(k32, "CloseHandle", [w.HANDLE], w.BOOL)
+api(k32, "CreateMutexW", [c.c_void_p, w.BOOL, w.LPCWSTR], w.HANDLE)
 api(k32, "QueryFullProcessImageNameW", [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)], w.BOOL)
 api(
     k32,
@@ -87,6 +89,19 @@ api(
 api(k32, "GetExitCodeProcess", [w.HANDLE, c.POINTER(w.DWORD)], w.BOOL)
 api(u32, "GetForegroundWindow", [], w.HWND)
 api(u32, "GetWindowThreadProcessId", [w.HWND, c.POINTER(w.DWORD)], w.DWORD)
+
+
+@contextmanager
+def process_mutex(name, message):
+    handle = k32.CreateMutexW(None, False, name)
+    if not handle or c.get_last_error() == 183:
+        if handle:
+            k32.CloseHandle(handle)
+        raise RuntimeError(message)
+    try:
+        yield
+    finally:
+        k32.CloseHandle(handle)
 
 
 def game_pids(game="san_andreas"):

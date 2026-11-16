@@ -404,7 +404,7 @@ class Installer:
 def ensure_closed():
     import ctypes as c
 
-    from gtw.winmemory import ProcessEntry, k32
+    from core.winmemory import ProcessEntry, k32
     snapshot = k32.CreateToolhelp32Snapshot(2, 0)
     if snapshot == c.c_void_p(-1).value:
         raise c.WinError(c.get_last_error())

@@ -1,31 +1,22 @@
 """Launch San Andreas, prepare its save, and start the walking controller."""
 
-import argparse
-import ctypes
 import hashlib
 import logging
 import struct
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from gtw.controls import Keys
-from gtw.games import get_game
-from gtw.manager import component_status
-from gtw.startup import StartupWait, choose_save as select_save
-from san_andreas.game import Game
-from gtw.runtime import DEFAULT_STATE_DIR, MODES, atomic_json, configure_logging, read_json
-from san_andreas.saves import MENU, SAVE_PREFIX, valid_save
-from san_andreas.walker import run
-from gtw.winmemory import Memory, elevate, game_pids, k32
+from core.controls import Keys
+from core.session import StartupWait, choose_save as select_save
+from core.runtime import atomic_json, read_json
+from games.san_andreas.game import Game, MENU, SAVE_PREFIX, valid_save
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent
 MAIN_MENU, NEW_GAME, LOAD, SAVE_LIST, SAVING, SAVED = 34, 6, 13, 16, 18, 19
 SCRIPT_SPACE = 0xA49960
 INTRO_SCRIPT = SCRIPT_SPACE + 200000
@@ -130,16 +121,7 @@ class Startup(StartupWait):
         return False
 
     def prepare(self, state_dir):
-        def title_ready():
-            if self.menu() == MAIN_MENU:
-                return True
-            # Startup movies need Enter; CCutsceneMgr is not active yet.
-            if time.monotonic() - self.last_skip >= 1.5:
-                if self.keys.tap("enter"):
-                    self.last_skip = time.monotonic()
-            return False
-
-        self.wait("Waiting for the game to reach its title screen...", title_ready)
+        self.wait_for_title(MAIN_MENU)
         prefix = self.mem.read(SAVE_PREFIX, 260).split(b"\0", 1)[0].decode("mbcs")
         if not prefix or not Path(prefix).is_absolute():
             raise RuntimeError("The game did not provide a valid normal save folder.")
@@ -169,15 +151,7 @@ class Startup(StartupWait):
             self.wait("Starting a new game...", start_new_game)
             self.wait("Waiting for the opening sequence to finish...", self.free_roam)
             # Require continuous free roam before serialising script/player state.
-            stable_at = time.monotonic()
-
-            def stable():
-                nonlocal stable_at
-                if not self.free_roam():
-                    stable_at = time.monotonic()
-                return time.monotonic() - stable_at >= 3
-
-            self.wait("Preparing the first normal save...", stable)
+            self.wait_for_free_roam()
             self.bootstrap_intro = False
             if path.exists():
                 raise RuntimeError(
@@ -217,68 +191,11 @@ class Startup(StartupWait):
         return path
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--game",
-        type=Path,
-        default=get_game("san_andreas").install_dir / get_game("san_andreas").executable,
-    )
-    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
-    parser.add_argument("--timeout", type=float, default=600)
-    parser.add_argument("--mode", choices=MODES, help="Override the remembered navigation mode")
-    parser.add_argument(
-        "--prepare-only", action="store_true", help="Create/load the save without walking"
-    )
-    parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)
-    args = parser.parse_args()
-    args.state_dir = args.state_dir.resolve()
-    configure_logging(args.state_dir)
-    mutex = k32.CreateMutexW(None, False, "Local\\GrandTheftWalkLauncher")
-    if not mutex or ctypes.get_last_error() == 183:
-        if mutex:
-            k32.CloseHandle(mutex)
-        raise RuntimeError("Grand Theft Walk is already launching or running.")
-    try:
-        if list(game_pids()):
-            raise RuntimeError(
-                "Close the existing San Andreas instance before using the full launcher."
-            )
-        exe = args.game.resolve()
-        if hashlib.sha256(exe.read_bytes()).hexdigest() != get_game("san_andreas").verified_executable:
-            raise RuntimeError(
-                "Unsupported game executable. Install the verified PS2-style setup first."
-            )
-        if not component_status("san_andreas", exe.parent)["setup_matches"]:
-            raise RuntimeError("San Andreas's mod files do not match the pinned setup. Run the suite repair before launching.")
-        logger.info("Launching Grand Theft Walk... F12 cancels startup.")
-        try:
-            process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
-        except PermissionError:
-            if args.elevated:
-                raise
-            parameters = [str(Path(__file__).resolve()), *sys.argv[1:], "--elevated"]
-            elevate(parameters, ROOT)
-            return
-        deadline = time.monotonic() + 30
-        while process.poll() is None and time.monotonic() < deadline:
-            if process.pid in list(game_pids()):
-                break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("The game failed to start.")
-        memory = Memory(writable=True, pid=process.pid)
-        try:
-            path = Startup(memory, args.timeout).prepare(args.state_dir)
-        finally:
-            memory.close()
-        logger.info("Loaded and ready: %s", path)
-        if not args.prepare_only:
-            args.walk = True
-            args.seconds = None
-            run(args)
-    finally:
-        k32.CloseHandle(mutex)
+
+def main(argv=None):
+    from core.session import launch
+
+    launch("san_andreas", Startup, argv)
 
 
 if __name__ == "__main__":
@@ -286,6 +203,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         pass
-    except Exception as error:
-        logger.exception("Grand Theft Walk stopped: %s", error)
-        sys.exit(1)
+    except Exception:
+        logger.exception("Grand Theft Walk stopped")
+        raise SystemExit(1)

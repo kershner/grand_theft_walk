@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gtw.games import Capabilities
-from gtw.controller import Controller
-from gtw.navigation import Node, PedestrianGraph
-from gtw.runtime import atomic_json, control_request
+from games import Capabilities
+from core.controller import Controller
+from core.navigation import Node, PedestrianGraph
+from core.runtime import atomic_json, control_request
 
 
 class PartialBackendTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class PartialBackendTests(unittest.TestCase):
                                      exe=directory / "game/gta-vc.exe", foreground=lambda: True,
                                      alive=lambda: True)
             args = SimpleNamespace(state_dir=directory, walk=False, mode="free")
-            with patch("gtw.controller.Keys") as keys, patch("gtw.controller.Hotkeys") as hotkeys:
+            with patch("core.controller.Keys") as keys, patch("core.controller.Hotkeys") as hotkeys:
                 keys.return_value.held = set()
                 hotkeys.return_value.pressed.return_value = []
                 controller = Controller(memory, args, backend, lambda mem: graph)

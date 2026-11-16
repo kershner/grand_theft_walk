@@ -84,7 +84,7 @@ try {
         }
     }
     Set-Location -LiteralPath $root
-    $arguments = @('-B','-m','gtw.setup',$Action.ToLowerInvariant(),'--bundle',$root,'--game',$Game)
+    $arguments = @('-B','-m','core.setup',$Action.ToLowerInvariant(),'--bundle',$root,'--game',$Game)
     if ($SanAndreasPath) { $arguments += @('--san-andreas-dir',$SanAndreasPath) }
     if ($ViceCityPath) { $arguments += @('--vice-city-dir',$ViceCityPath) }
     $logDirectory = Join-Path $root 'runtime'

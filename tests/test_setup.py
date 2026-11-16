@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gtw import setup
+from core import setup
 
 
 def digest(data):
@@ -27,14 +27,14 @@ class InstallerTests(unittest.TestCase):
         (self.bundle / "payload").mkdir(parents=True)
         (self.game / "data").mkdir(parents=True)
         (self.game / "data/main.scm").write_bytes(b"owned game data")
-        (self.game / "san_andreas.game.exe").write_bytes(b"original executable")
+        (self.game / "games.san_andreas.game.exe").write_bytes(b"original executable")
         (self.bundle / "payload/game.exe").write_bytes(b"pinned executable")
         (self.bundle / "payload/options.ini").write_bytes(b"pinned settings")
         self.definition = {
             "component_id": "test-component-1", "title": "Vice City", "install_folder": "Example",
-            "executable": "san_andreas.game.exe", "required_files": ["data/main.scm"],
+            "executable": "games.san_andreas.game.exe", "required_files": ["data/main.scm"],
             "files": [
-                {"path": "san_andreas.game.exe", "payload": "payload/game.exe", "sha256": digest(b"pinned executable"),
+                {"path": "games.san_andreas.game.exe", "payload": "payload/game.exe", "sha256": digest(b"pinned executable"),
                  "accepted_before": [digest(b"original executable")]},
                 {"path": "options.ini", "payload": "payload/options.ini", "sha256": digest(b"pinned settings"),
                  "accepted_before": [None]},
@@ -54,7 +54,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.installer.apply("install")["changed"], 2)
         self.assertTrue(self.installer.check()["ok"])
         self.installer.apply("restore")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         self.assertFalse((self.game / "options.ini").exists())
         self.assertEqual((self.game / "data/main.scm").read_bytes(), b"owned game data")
 
@@ -63,14 +63,14 @@ class InstallerTests(unittest.TestCase):
         original = self.record()
         self.assertEqual(self.installer.apply("install")["changed"], 0)
         for _ in range(2):
-            (self.game / "san_andreas.game.exe").write_bytes(b"original executable")
+            (self.game / "games.san_andreas.game.exe").write_bytes(b"original executable")
             self.assertFalse(self.installer.check()["ok"])
             with self.assertRaisesRegex(ValueError, "Run Setup.cmd -Action Repair"):
                 self.installer.apply("install")
             self.installer.apply("repair")
             self.assertEqual(self.record(), original)
         self.installer.apply("restore")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
 
     def test_repair_saves_changed_settings_in_a_checkpoint(self):
         self.installer.apply("install")
@@ -84,19 +84,19 @@ class InstallerTests(unittest.TestCase):
         (self.game / "options.ini").write_bytes(b"unrelated mod")
         with self.assertRaisesRegex(ValueError, "Unrecognized existing file"):
             self.installer.apply("install")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         self.assertFalse(self.installer.state_path.exists())
 
     def test_damaged_payload_is_rejected_before_any_game_write(self):
         (self.bundle / "payload/options.ini").write_bytes(b"broken download")
         with self.assertRaisesRegex(ValueError, "Payload missing or damaged"):
             self.installer.apply("install")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         self.assertFalse((self.game / "options.ini").exists())
 
     def test_missing_executable_can_be_repaired_from_existing_record(self):
         self.installer.apply("install")
-        (self.game / "san_andreas.game.exe").unlink()
+        (self.game / "games.san_andreas.game.exe").unlink()
         self.installer.apply("repair")
         self.assertTrue(self.installer.check()["ok"])
 
@@ -119,9 +119,9 @@ class InstallerTests(unittest.TestCase):
                 raise OSError("simulated write failure")
             return put(source, target)
 
-        with patch("gtw.setup.put_file", side_effect=fail_second_write), self.assertRaises(OSError):
+        with patch("core.setup.put_file", side_effect=fail_second_write), self.assertRaises(OSError):
             self.installer.apply("install")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         self.assertFalse((self.game / "options.ini").exists())
         self.assertFalse(self.installer.pending_path.exists())
         self.assertFalse(self.installer.state_path.exists())
@@ -137,18 +137,18 @@ class InstallerTests(unittest.TestCase):
                 raise KeyboardInterrupt()
             return put(source, target)
 
-        with patch("gtw.setup.put_file", side_effect=interrupt_second_write), self.assertRaises(KeyboardInterrupt):
+        with patch("core.setup.put_file", side_effect=interrupt_second_write), self.assertRaises(KeyboardInterrupt):
             self.installer.apply("install")
 
     def test_repair_recovers_a_process_interruption_then_retries(self):
         self.interrupt_install()
         self.assertTrue(self.installer.pending_path.exists())
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"pinned executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"pinned executable")
         self.installer.apply("repair")
         self.assertTrue(self.installer.check()["ok"])
         self.assertFalse(self.installer.pending_path.exists())
         self.installer.apply("restore")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
 
     def test_unknown_post_interruption_edit_is_preserved_before_any_recovery(self):
         self.interrupt_install()
@@ -156,7 +156,7 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed after setup was interrupted"):
             self.installer.apply("repair")
         self.assertEqual((self.game / "options.ini").read_bytes(), b"new user edit")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"pinned executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"pinned executable")
         self.assertTrue(self.installer.pending_path.exists())
 
     def test_disabled_files_are_backed_up_removed_and_restored(self):
@@ -176,13 +176,13 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.installer.apply("restore")["changed"], 0)
 
     def test_preconfigured_adoption_restores_its_actual_pre_suite_state(self):
-        (self.game / "san_andreas.game.exe").write_bytes(b"pinned executable")
+        (self.game / "games.san_andreas.game.exe").write_bytes(b"pinned executable")
         self.installer.apply("install")
         self.installer.apply("restore")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"pinned executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"pinned executable")
 
     def test_manifest_paths_cannot_escape_install_or_target_alternate_streams(self):
-        for name in ("../outside.exe", "C:/outside.exe", "\\\\server\\share\\outside.exe", "san_andreas.game.exe:stream", "data/../outside.exe", "trailing. "):
+        for name in ("../outside.exe", "C:/outside.exe", "\\\\server\\share\\outside.exe", "games.san_andreas.game.exe:stream", "data/../outside.exe", "trailing. "):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 setup.under(self.game, name)
 
@@ -195,15 +195,15 @@ class InstallerTests(unittest.TestCase):
 
     def test_custom_path_is_saved_and_reused_even_if_executable_is_deleted(self):
         self.index()
-        with patch("gtw.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
+        with patch("core.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
             setup.main(["install", "--bundle", str(self.bundle), "--game", "vice_city", "--vice-city-dir", str(self.game)])
-            (self.game / "san_andreas.game.exe").unlink()
+            (self.game / "games.san_andreas.game.exe").unlink()
             setup.main(["repair", "--bundle", str(self.bundle), "--game", "vice_city"])
         self.assertTrue(self.installer.check()["ok"])
 
     def test_executable_path_installs_and_records_the_game_folder(self):
         self.index()
-        with patch("gtw.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
+        with patch("core.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
             setup.main(["install", "--bundle", str(self.bundle), "--game", "vice_city",
                         "--vice-city-dir", str(self.game / self.definition["executable"])])
         self.assertTrue(self.installer.check()["ok"])
@@ -215,7 +215,7 @@ class InstallerTests(unittest.TestCase):
     def test_executable_path_rejects_launcher_or_wrong_game(self):
         launcher = self.game / "Launcher.exe"
         launcher.write_bytes(b"launcher")
-        with self.assertRaisesRegex(ValueError, "Select san_andreas.game.exe"):
+        with self.assertRaisesRegex(ValueError, "Select games.san_andreas.game.exe"):
             setup.game_directory(launcher, self.definition["executable"])
         with self.assertRaisesRegex(ValueError, "Game executable not found"):
             setup.game_directory(self.game / "missing.exe", self.definition["executable"])
@@ -239,7 +239,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.record()["entries"][:2], original)
         self.assertEqual(upgraded.apply("repair")["changed"], 0)
         upgraded.apply("restore")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         self.assertFalse((self.game / "scripts/graphics.asi").exists())
         self.assertFalse((self.game / "options.ini").exists())
 
@@ -271,7 +271,7 @@ class InstallerTests(unittest.TestCase):
             if target.name == "graphics.asi":
                 raise KeyboardInterrupt()
             return put(source, target)
-        with patch("gtw.setup.put_file", side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
+        with patch("core.setup.put_file", side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
             upgraded.apply("install")
         self.assertTrue(upgraded.pending_path.exists())
         upgraded.recover()
@@ -283,7 +283,7 @@ class InstallerTests(unittest.TestCase):
         self.installer.apply("install")
         upgraded = self.upgraded_installer()
         upgraded.apply("restore")
-        self.assertEqual((self.game / "san_andreas.game.exe").read_bytes(), b"original executable")
+        self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         upgraded.apply("install")
         self.assertTrue(upgraded.check()["ok"])
 

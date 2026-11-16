@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from gtw.runtime import atomic_json, read_json
+from core.runtime import atomic_json, read_json
 
 logger = logging.getLogger(__name__)
 

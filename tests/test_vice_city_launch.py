@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from vice_city.launch import MAIN_MENU, NEW_GAME, MENU, SAVE_SIZE, Startup, choose_save, valid_save
+from games.vice_city.launch import MAIN_MENU, NEW_GAME, MENU, SAVE_SIZE, Startup, choose_save, valid_save
 
 
 def checkpoint():
@@ -88,7 +88,7 @@ class NewGameTests(unittest.TestCase):
         self.startup.mem.write.assert_called_once_with(MENU + 0x30, struct.pack("<I", 2))
         self.startup.keys.tap.assert_not_called()
         self.startup.mem.u32.return_value = 2
-        with patch("vice_city.launch.time.monotonic", return_value=10):
+        with patch("games.vice_city.launch.time.monotonic", return_value=10):
             self.assertFalse(self.startup.start_new_game())
         self.startup.keys.tap.assert_called_once_with("enter")
 

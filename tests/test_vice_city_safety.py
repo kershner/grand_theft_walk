@@ -5,10 +5,10 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-from gtw.games import get_game
-from gtw.supervisor import watch
-from gtw.winmemory import Memory as ProcessMemory
-from vice_city.game import CONNECTIONS, COUNTS, Memory, read_graph
+from games import get_game
+from core.manager import watch
+from core.winmemory import Memory as ProcessMemory
+from games.vice_city.game import CONNECTIONS, COUNTS, Memory, read_graph
 
 
 class ReadOnlyTests(unittest.TestCase):
@@ -31,15 +31,15 @@ class ReadOnlyTests(unittest.TestCase):
         self.assertIsNotNone(profile.inspection_executable)
 
     def test_shared_api_rejects_vice_city_writes_before_opening_a_process(self):
-        with patch("gtw.winmemory.k32.OpenProcess") as open_process, patch(
-            "gtw.winmemory.get_game", return_value=replace(get_game("vice_city"), verified_executable=None)
+        with patch("core.winmemory.k32.OpenProcess") as open_process, patch(
+            "core.winmemory.get_game", return_value=replace(get_game("vice_city"), verified_executable=None)
         ):
             with self.assertRaisesRegex(RuntimeError, "writes are not enabled"):
                 ProcessMemory(writable=True, pid=123, game="vice_city")
             open_process.assert_not_called()
 
     def test_vice_city_api_rejects_unknown_runtime_signatures_and_closes(self):
-        with patch("vice_city.game.ProcessMemory.__init__") as attach, patch.object(
+        with patch("games.vice_city.game.ProcessMemory.__init__") as attach, patch.object(
             Memory, "read", return_value=b"nope"
         ), patch.object(Memory, "close") as close:
             with self.assertRaisesRegex(RuntimeError, "signature does not match"):

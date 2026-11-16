@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from dev_server import create_app
-from gtw.games import Capabilities, get_game
-from gtw.runtime import UnsupportedCommandError
-from gtw_chat_bot import ANNOUNCEMENT_INTERVAL
+from games import Capabilities, get_game
+from core.runtime import UnsupportedCommandError
+from chat_bot import ANNOUNCEMENT_INTERVAL
 
 
 class ChatIntegrationTests(unittest.TestCase):
@@ -161,7 +161,7 @@ class ChatIntegrationTests(unittest.TestCase):
                     self.assertEqual(updated["mode"], mode)
         self.assertEqual(self.client.get("/chat").json["messages"], [])
         expected = self.control()
-        with self.assertLogs("gtw_chat_bot", level="WARNING"):
+        with self.assertLogs("chat_bot", level="WARNING"):
             for command in ("up 0", "down 101", "center 5", "up nope"):
                 self.command(command)
                 self.assertEqual(self.control(), expected)
@@ -297,7 +297,7 @@ class ChatIntegrationTests(unittest.TestCase):
             self.assertLess(abs(time.time() - self.control()["jump"]["issued"]), 2)
         self.assertEqual(self.client.get("/chat").json["messages"], [])
         expected = self.control()
-        with self.assertLogs("gtw_chat_bot", level="WARNING"):
+        with self.assertLogs("chat_bot", level="WARNING"):
             self.command("jump 100")
         self.assertEqual(self.control(), expected)
 
@@ -432,7 +432,7 @@ class ChatIntegrationTests(unittest.TestCase):
         )
 
     def test_live_mission_events_wait_until_startup_messages_are_delivered(self):
-        with patch("dev_server.GTWBot.start_runtime") as start:
+        with patch("dev_server.ChatBot.start_runtime") as start:
             app = create_app(self.root, game=self.game)
         bot = app.extensions["gtw_bot"]
         self.addCleanup(bot.close)
@@ -452,7 +452,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(messages[0], "Grand Theft Walk is online!")
 
     def test_invalid_movement_is_silent_and_help_remains_available(self):
-        with self.assertLogs("gtw_chat_bot", level="WARNING"):
+        with self.assertLogs("chat_bot", level="WARNING"):
             for command in (
                 "l 0",
                 "r 101",
