@@ -15,12 +15,11 @@ from core.voting import cast_ballot, tally
 DEFAULT_CONFIG = {
     "hold_seconds": 30.0,
     "vote_seconds": 60.0,
-    "radius": 3.0,
-    "height_tolerance": 3.0,
+    "radius": 300.0,
+    "height_tolerance": 30.0,
 }
 BALLOT_CHOICES = (1, 2, 3)
 POLL_INTERVAL = 0.25
-STANDING_DRIFT = 0.3
 MAX_FRAME_GAP = 0.5
 
 
@@ -86,12 +85,15 @@ class MissionSystem:
         self.data["events"] = []
         self.standing_seconds = 0.0
         self.last_tick_at = None
-        self.standing_origin = None
+        self.holding = False
         self.next_vote_check_at = 0.0
         self.error = None
         self.saved_state = None
         if self.data["active"]:
             self.data["poll"] = None
+            # A restarted controller begins a new hold and must announce it again.
+            self.data["active"].pop("arrival_announced", None)
+            self.data["active"].pop("arrival_event_id", None)
 
     def save(self):
         if self.data != self.saved_state:
@@ -101,12 +103,25 @@ class MissionSystem:
     def event(self, text):
         self.data["events"].append({"id": uuid.uuid4().hex, "text": text})
         self.data["events"] = self.data["events"][-100:]
+        return self.data["events"][-1]["id"]
 
     def eligible(self, state):
         if not self.graph or state.get("interior") != 0:
             return []
         position = tuple(state["position"][axis] for axis in ("x", "y", "z"))
         start = self.graph.nearest(position)
+        if start is None:
+            # Free roaming can finish a mission away from the narrow sidewalk
+            # snap distance. Use the same area limits as mission arrival.
+            start = min(
+                (
+                    node for node in self.graph.nodes.values()
+                    if math.dist(node.position[:2], position[:2]) <= self.config["radius"]
+                    and abs(node.position[2] - position[2]) <= self.config["height_tolerance"]
+                ),
+                key=lambda node: math.dist(node.position, position),
+                default=None,
+            )
         if start is None:
             return []
         reachable, pending = {start.key}, [start.key]
@@ -171,23 +186,21 @@ class MissionSystem:
             and abs(position["z"] - target_z) <= self.config["height_tolerance"]
         )
 
-    def _update_standing(self, state, now, standing):
+    def _update_standing(self, now, holding):
         elapsed = 0 if self.last_tick_at is None else now - self.last_tick_at
         self.last_tick_at = now
-        if not standing:
-            self.standing_origin = None
+        if not holding:
+            self.holding = False
             self.standing_seconds = 0.0
             return
-        position = tuple(state["position"][axis] for axis in ("x", "y", "z"))
         if (
-            self.standing_origin is None
-            or math.dist(position, self.standing_origin) > STANDING_DRIFT
+            not self.holding
             or not 0 <= elapsed <= MAX_FRAME_GAP
         ):
-            self.standing_origin = position
             self.standing_seconds = 0.0
         else:
             self.standing_seconds += elapsed
+        self.holding = True
 
     def _complete_mission(self):
         name = self.data["active"]["name"]
@@ -195,7 +208,7 @@ class MissionSystem:
         self.data["last_completed"] = name
         self.data["completed"] += 1
         self.data["active"] = None
-        self.standing_origin = None
+        self.holding = False
         self.standing_seconds = 0.0
         self.next_vote_check_at = 0.0
         self.save()
@@ -211,7 +224,7 @@ class MissionSystem:
         self.data["poll"] = None
         self.event(
             f"Mission selected: {mission['name']} ({highest_count} votes). "
-            f"Stand at the meeting point for {self.config['hold_seconds']:g} seconds."
+            f"Stay inside the mission area for {self.config['hold_seconds']:g} seconds."
         )
 
     def _open_poll(self, state, wall):
@@ -249,15 +262,17 @@ class MissionSystem:
     def tick(self, state, now, usable, saving=False, wall=None):
         wall = time.time() if wall is None else wall
         arrived = self.at_destination(state)
-        standing = (
-            arrived
-            and usable
-            and not saving
-            and state.get("standing")
-            and not state.get("in_air")
-            and state.get("move_state") in (0, 1)
-        )
-        self._update_standing(state, now, standing)
+        if arrived and not self.data["active"].get("arrival_announced"):
+            arrival_event_id = self.event(
+                "Mission location reached!  "
+                f"Stay inside the area for {self.config['hold_seconds']:g} seconds."
+            )
+            self.data["active"] = dict(
+                self.data["active"], arrival_announced=True,
+                arrival_event_id=arrival_event_id,
+            )
+            self.save()
+        self._update_standing(now, arrived and usable and not saving)
         if self.data["active"] and self.standing_seconds >= self.config["hold_seconds"]:
             self._complete_mission()
         if now >= self.next_vote_check_at:

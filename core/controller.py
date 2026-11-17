@@ -480,7 +480,7 @@ class Controller:
             self.update_game(state, now, saving)
             if holding and self.settings["mode"] == "sidewalk":
                 self.movement.stop()
-                status = "standing at mission meeting point"
+                status = "staying inside mission area"
             else:
                 status = self.movement.tick(
                     state, self.settings["walking"], self.settings["mode"]

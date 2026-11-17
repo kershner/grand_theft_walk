@@ -62,7 +62,9 @@ class ViceCityMissionTests(unittest.TestCase):
                  "position": {"x": 0, "y": 0, "z": 10}}
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            atomic_json(root / "mission_config.json", {"hold_seconds": 1, "vote_seconds": 1})
+            atomic_json(root / "mission_config.json", {
+                "hold_seconds": 1, "vote_seconds": 1, "radius": 3.0,
+            })
             system = MissionSystem(root, graph, catalog, random.Random(1))
             system.tick(state, 0, True, wall=100)
             poll = system.data["poll"]
@@ -95,6 +97,33 @@ class ViceCityMissionTests(unittest.TestCase):
             system = MissionSystem(folder, graph, destinations(graph))
             state = {"interior": 0, "position": {"x": 120, "y": 0, "z": 10}}
             self.assertEqual(system.eligible(state), [])
+
+    def test_completion_off_sidewalk_opens_next_vote_with_large_arrival_area(self):
+        graph = PedestrianGraph([
+            Node((0, i), (i * 20, 0, 6.75),
+                 tuple(((0, j), False) for j in (i - 1, i + 1) if 0 <= j < 100))
+            for i in range(100)
+        ])
+        catalog = [
+            {"name": f"Area {i}", "node": [0, i], "position": [i * 20, 0, 6.75]}
+            for i in (0, 40, 60, 80, 99)
+        ]
+        state = {"ready": True, "interior": 0,
+                 "position": {"x": 0, "y": 10, "z": 14.86}}
+        self.assertIsNone(graph.nearest((0, 10, 14.86)))
+        with tempfile.TemporaryDirectory() as folder:
+            system = MissionSystem(folder, graph, catalog, random.Random(1))
+            system.data["active"] = catalog[0]
+            for step in range(122):
+                system.tick(state, step / 4, True, wall=100 + step / 4)
+            self.assertEqual(system.data["completed"], 1)
+            self.assertIsNotNone(system.data["poll"])
+            self.assertEqual(len(system.data["poll"]["options"]), 3)
+            messages = [event["text"] for event in system.data["events"]]
+            self.assertIn("Mission location reached!", messages[0])
+            self.assertIn("Mission complete:", messages[1])
+            self.assertIn("Choose our next mission!", messages[2])
+            self.assertIsNone(system.error)
 
 
 if __name__ == "__main__":

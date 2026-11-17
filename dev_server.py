@@ -34,8 +34,11 @@ def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
         previous = read_json(Path(state_dir) / "state.json")
     except (OSError, ValueError):
         previous = {}
+    active = previous.get("missions", {}).get("active") or {}
+    pending_arrival = active.get("arrival_event_id")
     seen_events = {
         event["id"] for event in previous.get("missions", {}).get("events", [])
+        if event["id"] != pending_arrival
     }
 
     def append_message(text):

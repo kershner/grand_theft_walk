@@ -29,6 +29,10 @@ class MissionTests(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
+        # Keep the small routing fixture's destinations outside the arrival area.
+        atomic_json(self.root / "mission_config.json", {
+            "radius": 3.0, "height_tolerance": 3.0,
+        })
         self.graph = graph_fixture()
         self.destinations = [
             {"name": f"Area {i}", "node": [0, i], "position": list(n.position)}
@@ -158,6 +162,72 @@ class MissionTests(unittest.TestCase):
         self.system.data["active"] = self.destinations[0]
         self.state["position"] = {"x": 0, "y": 10, "z": 0}
 
+    def test_larger_default_radius_keeps_height_check_and_custom_radius(self):
+        (self.root / "mission_config.json").unlink()
+        self.system = MissionSystem(self.root, self.graph, self.destinations)
+        self.activate()
+        self.assertEqual(self.system.config["radius"], 300)
+        self.state["position"]["x"] = 300
+        self.assertTrue(self.system.at_destination(self.state))
+        self.state["position"]["x"] = 300.1
+        self.assertFalse(self.system.at_destination(self.state))
+        self.state["position"].update(x=20, z=30)
+        self.assertTrue(self.system.at_destination(self.state))
+        self.state["position"]["z"] = 30.1
+        self.assertFalse(self.system.at_destination(self.state))
+        atomic_json(self.root / "mission_config.json", {"radius": 50})
+        self.system = MissionSystem(self.root, self.graph, self.destinations)
+        self.assertEqual(self.system.config["radius"], 50)
+
+    def test_vice_city_airport_height_difference_does_not_block_arrival(self):
+        (self.root / "mission_config.json").unlink()
+        self.system = MissionSystem(self.root, self.graph, self.destinations)
+        self.system.data["active"] = {
+            "name": "Escobar International: meeting point 36",
+            "position": [-1340.25, -434.875, 6.75],
+        }
+        self.state["position"] = {
+            "x": -1334.69873046875,
+            "y": -444.1980285644531,
+            "z": 10.95919132232666,
+        }
+        self.assertTrue(self.tick(0))
+        self.assertIn("Mission location reached!", self.system.data["events"][0]["text"])
+        self.tick(0.25)
+        self.assertEqual(self.system.standing_seconds, 0.25)
+
+    def test_arrival_announces_once_and_reannounces_after_restart_resets_hold(self):
+        self.activate()
+        self.state["position"]["x"] = 4
+        self.tick(0)
+        self.assertEqual(self.system.data["events"], [])
+        self.state["position"]["x"] = 3
+        self.state["move_state"] = 4
+        self.tick(0.1)
+        self.assertEqual(len(self.system.data["events"]), 1)
+        self.assertEqual(
+            self.system.data["events"][0]["text"],
+            "Mission location reached!  Stay inside the area for 30 seconds.",
+        )
+        self.assertEqual(self.system.standing_seconds, 0)
+        self.tick(0.2)
+        self.state["position"]["x"] = 4
+        self.tick(0.3)
+        self.state["position"]["x"] = 0
+        self.tick(0.4)
+        self.assertEqual(len(self.system.data["events"]), 1)
+        self.assertNotIn("arrival_announced", self.destinations[0])
+        self.system = MissionSystem(self.root, self.graph, self.destinations)
+        self.tick(0.5)
+        self.assertEqual(len(self.system.data["events"]), 1)
+        self.assertIn("Mission location reached!", self.system.data["events"][0]["text"])
+        self.assertEqual(self.system.standing_seconds, 0)
+        self.system.data["active"] = self.destinations[1]
+        self.state["position"] = dict(zip("xyz", self.destinations[1]["position"]))
+        self.system.config["hold_seconds"] = 5
+        self.tick(0.6)
+        self.assertIn("Stay inside the area for 5 seconds", self.system.data["events"][-1]["text"])
+
     def test_continuous_thirty_seconds_completes_once_and_starts_next_poll(self):
         self.activate()
         for i in range(300):
@@ -171,10 +241,17 @@ class MissionTests(unittest.TestCase):
             sum("Mission complete" in e["text"] for e in self.system.data["events"]), 1
         )
 
-    def test_movement_pause_loading_height_and_frame_gaps_reset_hold(self):
+    def test_moving_inside_radius_counts_toward_completion(self):
+        self.activate()
+        self.state.update(standing=False, in_air=True, move_state=4)
+        for i in range(122):
+            self.state["position"]["x"] = 2 if i % 2 else -2
+            self.tick(i / 4)
+        self.assertEqual(self.system.data["completed"], 1)
+
+    def test_leaving_radius_pause_loading_height_and_frame_gaps_reset_hold(self):
         cases = [
-            ({"move_state": 4}, True, False),
-            ({"in_air": True}, True, False),
+            ({"position": {"x": 4, "y": 10, "z": 0}}, True, False),
             ({"interior": 1}, True, False),
             ({"ready": False}, True, False),
             ({}, False, False),
@@ -199,7 +276,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(self.system.standing_seconds, 0)
         self.state["position"]["x"] = 0.5
         self.tick(10.1)
-        self.assertEqual(self.system.standing_seconds, 0)
+        self.assertAlmostEqual(self.system.standing_seconds, 0.1)
 
     def test_configurable_duration_and_invalid_config(self):
         atomic_json(self.root / "mission_config.json", {"hold_seconds": 1})

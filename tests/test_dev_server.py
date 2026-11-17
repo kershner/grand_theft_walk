@@ -509,6 +509,22 @@ class ChatIntegrationTests(unittest.TestCase):
             client.get("/chat").json["messages"], ["Choose our next mission!"]
         )
 
+    def test_server_start_delivers_pending_arrival_for_active_mission_once(self):
+        arrival = {"id": "arrival", "text": "Mission location reached!  Stay inside the area for 30 seconds."}
+        self.state["missions"] = {
+            "active": {"name": "Airport", "arrival_event_id": "arrival"},
+            "events": [
+                {"id": "old-complete", "text": "Mission complete: old destination!"},
+                arrival,
+            ],
+        }
+        self.write("state.json", self.state)
+        app = create_app(self.root, start_runtime=False, game=self.game)
+        self.addCleanup(app.extensions["gtw_bot"].close)
+        client = app.test_client()
+        self.assertEqual(client.get("/chat").json["messages"], [arrival["text"]])
+        self.assertEqual(client.get("/chat?after=1").json["messages"], [])
+
     def test_live_mission_events_wait_until_startup_messages_are_delivered(self):
         with patch("dev_server.ChatBot.start_runtime") as start:
             app = create_app(self.root, game=self.game)
