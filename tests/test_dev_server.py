@@ -257,18 +257,19 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertIn("camera: third person •", message)
 
     def test_mission_distance_updates_in_info_replies(self):
+        self.state["camera_heading"] = 0
         self.state["missions"] = {
             "active": {"name": "Market", "position": [301, 402, 10]},
             "held_seconds": 0,
             "hold_seconds": 30,
         }
         for position, expected in (
-            ({"x": 1, "y": 2, "z": 3}, "1,640 ft"),
+            ({"x": 1, "y": 2, "z": 3}, "↗ 1,640 ft"),
             ({"x": 301, "y": 402, "z": 10}, "0 ft"),
-            ({"x": 300, "y": 402, "z": 10}, "3 ft"),
-            ({"x": -699, "y": 402, "z": 10}, "3,281 ft"),
-            ({"x": 301 - 1609.344, "y": 402, "z": 10}, "1 mi"),
-            ({"x": -12199, "y": 402, "z": 10}, "7.8 mi"),
+            ({"x": 300, "y": 402, "z": 10}, "→ 3 ft"),
+            ({"x": -699, "y": 402, "z": 10}, "→ 3,281 ft"),
+            ({"x": 301 - 1609.344, "y": 402, "z": 10}, "→ 1 mi"),
+            ({"x": -12199, "y": 402, "z": 10}, "→ 7.8 mi"),
         ):
             self.state["position"] = position
             self.write("state.json", self.state)

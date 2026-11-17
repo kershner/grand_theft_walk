@@ -63,11 +63,15 @@ class MissionTests(unittest.TestCase):
         )
 
     def test_three_options_sixty_seconds_latest_vote_and_one_active(self):
+        self.state["camera_heading"] = 0
         self.tick(0)
         poll = self.system.data["poll"]
         self.assertEqual(len({d["name"] for d in poll["options"]}), 3)
         self.assertEqual(poll["closes"] - poll["opened"], 60)
         self.assertIn("ft away)", self.system.data["events"][-1]["text"])
+        self.assertEqual(self.system.data["events"][-1]["text"].count("↑"), 1)
+        self.assertEqual(self.system.data["events"][-1]["text"].count("←"), 1)
+        self.assertEqual(self.system.data["events"][-1]["text"].count("→"), 1)
         self.ballot("Alice", 1, 101)
         self.ballot("alice", 2, 102)
         self.ballot("bob", 2, 103)
@@ -86,17 +90,22 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(active, self.system.data["active"])
 
     def test_halfway_reminder_includes_options_time_and_latest_votes_once(self):
+        self.state["camera_heading"] = 0
         self.tick(0)
         poll = self.system.data["poll"]
         self.tick(29.75)
         self.assertEqual(len(self.system.data["events"]), 1)
         self.ballot("alice", 2, 129)
+        self.state["camera_heading"] = 3.141592653589793
         self.tick(30)
         reminders = [e["text"] for e in self.system.data["events"] if "halfway" in e["text"]]
         self.assertEqual(len(reminders), 1)
         self.assertIn("30 seconds remaining", reminders[0])
         self.assertIn("!vote 1/2/3", reminders[0])
         self.assertIn("1 vote)", reminders[0])
+        self.assertEqual(reminders[0].count("↓"), 1)
+        self.assertEqual(reminders[0].count("←"), 1)
+        self.assertEqual(reminders[0].count("→"), 1)
         for option in poll["options"]:
             self.assertIn(option["name"], reminders[0])
         self.tick(31)

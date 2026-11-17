@@ -44,11 +44,21 @@ def mission_distance(state, mission):
     if not state.get("ready") or not position or not target:
         return "Distance unavailable"
     meters = math.hypot(position["x"] - target[0], position["y"] - target[1])
+    direction = ""
+    facing = state.get("camera_heading")
+    if facing is None or not math.isfinite(facing):
+        facing = state.get("heading")
+    if meters > 0 and facing is not None and math.isfinite(facing):
+        # Game headings increase counterclockwise from north. Arrows are
+        # relative to the view at the time this message is produced.
+        bearing = math.atan2(-(target[0] - position["x"]), target[1] - position["y"])
+        sector = math.floor(((bearing - facing) % math.tau) / (math.pi / 4) + 0.5) % 8
+        direction = ("↑", "↖", "←", "↙", "↓", "↘", "→", "↗")[sector] + " "
     feet = round(meters / 0.3048)
     if feet < 5280:
-        return f"{feet:,} ft away"
+        return f"{direction}{feet:,} ft away"
     miles = f"{feet / 5280:,.1f}".removesuffix(".0")
-    return f"{miles} mi away"
+    return f"{direction}{miles} mi away"
 
 
 def _retry_file_access(operation, *args, **kwargs):
