@@ -44,6 +44,7 @@ DROP_KEY = 70  # F.
 JUMP_SPEED = 0.4603  # Roughly 10% less height than the previous 0.4865-speed setting.
 JUMP_ACTION = 12
 JUMP_KEY = 32  # Space; F1/F2/F3 also trigger hardcoded replay actions.
+SPRINT_ACTION = 13  # Also used by swimming and its native help messages.
 ENTITY_POOLS = (
     ("buildings", 0xB74498, 0x38),
     ("dummies", 0xB744A0, 0x38),
@@ -700,8 +701,28 @@ def apply_protection(game, changes, state):
         mem.write(state["player_info"] + 0x144, b"\0" * 4)
 
 
+def ensure_sprint_key(game, changes):
+    """Keep native swim hints from dereferencing an unbound control label."""
+    bindings = game.mem.read(CONTROL_ACTIONS, 59 * 32)
+    for column in (0, 1):
+        key, priority = struct.unpack_from("<II", bindings, SPRINT_ACTION * 32 + column * 8)
+        if 0 < key < 1056 and priority:
+            return
+    used = {
+        struct.unpack_from("<I", bindings, action * 32 + column * 8)[0]
+        for action in range(59) for column in (0, 1)
+    }
+    # Choose an unused ordinary key so repairing sprint never unbinds another action.
+    key = next((ord(letter) for letter in "RGHBNMYUIOPZXCVQETJKL" if ord(letter) not in used), None)
+    if key is None:
+        raise RuntimeError("No unused keyboard key available for sprint/swim")
+    bind_action_key(game.mem, changes, CONTROL_ACTIONS, 59, SPRINT_ACTION, key)
+    logger.info("Restored missing sprint/swim binding to %s", chr(key))
+
+
 def bind_walk_key(game, changes):
     bind_action_key(game.mem, changes, CONTROL_ACTIONS, 59, WALK_ACTION, WALK_KEY)
+    ensure_sprint_key(game, changes)
 
 
 def bind_jump_key(game, changes):
@@ -711,6 +732,7 @@ def bind_jump_key(game, changes):
     changes.patch(JUMP_CLAMP, JUMP_CLAMP_DISABLED)
     bind_action_key(game.mem, changes, CONTROL_ACTIONS, 59, JUMP_ACTION, JUMP_KEY)
     bind_action_key(game.mem, changes, CONTROL_ACTIONS, 59, DROP_ACTION, DROP_KEY)
+    ensure_sprint_key(game, changes)
 
 
 def unlock_regions(game, changes, include_barriers=True):

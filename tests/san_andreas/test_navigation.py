@@ -219,7 +219,7 @@ class MovementTests(unittest.TestCase):
                 self.movement.tick(self.state, True, "sidewalk")
             self.keys.set.assert_called_with({"walk", "forward"})
 
-    def test_circular_motion_without_goal_progress_reselects_route(self):
+    def test_motion_without_goal_progress_does_not_reselect_route(self):
         self.movement.mode = "sidewalk"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, 10, 0)):
             for now, x in ((0, 0), (3, 1), (6, -1), (9, 0)):
@@ -227,8 +227,64 @@ class MovementTests(unittest.TestCase):
                 self.state["camera_heading"] = heading_to((x, 0), (0, 10))
                 with patch("core.controller.time.monotonic", return_value=now):
                     status = self.movement.tick(self.state, True, "sidewalk")
-        self.assertIn("no route progress", status)
-        self.assertIsNone(self.movement.navigator.target)
+        self.assertNotIn("recovery", status)
+        self.assertEqual(self.movement.recoveries, 0)
+
+    def test_stuck_repeatedly_turns_right_20_then_walks_in_both_modes(self):
+        for mode in ("free", "sidewalk"):
+            with self.subTest(mode=mode):
+                self.movement = Walking(graph_fixture())
+                self.keys.reset_mock()
+                with patch("core.controller.time.monotonic", return_value=0):
+                    self.movement.tick(self.state, True, mode)
+                for attempt in range(2):
+                    start = 4.1 if attempt == 0 else end + 4.1
+                    with patch("core.controller.time.monotonic", return_value=start):
+                        self.assertIn("turning right 20", self.movement.tick(self.state, True, mode))
+                    self.keys.turn.reset_mock()
+                    with patch.object(self.movement.navigator, "waypoint", side_effect=AssertionError("route interrupted recovery")):
+                        for step in range(1, 601):
+                            end = start + step / 120
+                            with patch("core.controller.time.monotonic", return_value=end):
+                                self.movement.tick(self.state, True, mode)
+                            if self.movement.recovery_turn == 0:
+                                break
+                        else:
+                            self.fail("recovery turn never finished")
+                        turns = [call.args[0] for call in self.keys.turn.call_args_list]
+                        self.assertEqual(sum(turns), 200)
+                        self.assertTrue(all(turn > 0 for turn in turns))
+                        with patch("core.controller.time.monotonic", return_value=end + 0.01):
+                            self.movement.tick(self.state, True, mode)
+                        self.keys.set.assert_called_with({"walk", "forward"})
+                    self.assertEqual(self.movement.recoveries, attempt + 1)
+                self.assertFalse(self.movement.navigator.blocked)
+                self.assertFalse(self.movement.navigator.avoided)
+                self.assertNotIn(unittest.mock.call({"walk", "back"}), self.keys.set.call_args_list)
+                self.state["position"] = {"x": 1, "y": 0, "z": 0}
+                with patch("core.controller.time.monotonic", return_value=end + 0.02):
+                    self.movement.tick(self.state, True, mode)
+                self.assertIsNone(self.movement.recovery_turn)
+                self.state["position"] = {"x": 0, "y": 0, "z": 0}
+
+    def test_stop_pause_and_focus_loss_cancel_recovery(self):
+        for cancel in ("stop", "paused", "foreground"):
+            with self.subTest(cancel=cancel):
+                self.movement = Walking(graph_fixture())
+                state = dict(self.state)
+                with patch("core.controller.time.monotonic", return_value=0):
+                    self.movement.tick(state, True, "free")
+                with patch("core.controller.time.monotonic", return_value=5):
+                    self.movement.tick(state, True, "free")
+                self.assertIsNotNone(self.movement.recovery_turn)
+                if cancel != "stop":
+                    state[cancel] = cancel == "paused"
+                self.keys.reset_mock()
+                self.movement.tick(state, cancel != "stop", "free")
+                self.assertIsNone(self.movement.recovery_turn)
+                self.keys.turn.assert_not_called()
+                self.keys.set.assert_not_called()
+                self.keys.release.assert_called()
 
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
         self.state["camera_heading"] = 0.0
@@ -297,9 +353,9 @@ class MovementTests(unittest.TestCase):
 
     def test_switching_modes_cancels_old_recovery_and_route(self):
         self.movement.tick(self.state, True, "sidewalk")
-        self.movement.reverse_until = 99999999
+        self.movement.recovery_turn = 200
         self.movement.tick(self.state, True, "free")
-        self.assertEqual(self.movement.reverse_until, 0)
+        self.assertIsNone(self.movement.recovery_turn)
         self.assertIsNone(self.movement.navigator.target)
 
     def test_missing_network_only_blocks_sidewalk_mode(self):
@@ -392,7 +448,7 @@ class MovementTests(unittest.TestCase):
                 )
                 self.assertIsNone(self.movement.manual_direction)
 
-    def test_backing_up_covers_manual_steps_and_obstacle_recovery(self):
+    def test_backing_up_only_covers_manual_steps(self):
         with patch("core.controller.time.monotonic", return_value=10):
             self.movement.steer("back", "free", self.state, 2)
         self.assertTrue(self.movement.backing_up(10))
@@ -400,9 +456,8 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(self.movement.backing_up(12))
         self.movement.stop()
         self.assertFalse(self.movement.backing_up(10))
-        self.movement.reverse_until = 15
-        self.assertTrue(self.movement.backing_up(14))
-        self.assertFalse(self.movement.backing_up(15))
+        self.movement.recovery_turn = 200
+        self.assertFalse(self.movement.backing_up(14))
 
 
 class ControllerTests(unittest.TestCase):

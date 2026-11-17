@@ -1,7 +1,6 @@
 """Shared walking behavior, controller lifecycle, missions and command execution."""
 import logging
 import math
-import random
 import time
 import uuid
 
@@ -41,8 +40,7 @@ class Walking:
         self.walk_modifier = {"walk"} if "walk" in bindings else set()
         self.origin = None
         self.progress_at = 0.0
-        self.reverse_until = 0.0
-        self.turn_after_reverse = 0
+        self.recovery_turn = None
         self.recoveries = 0
         self.mode = None
         self.navigator = SidewalkNavigator(graph) if graph is not None else None
@@ -53,9 +51,6 @@ class Walking:
         self.manual_until = 0.0
         self.turn_direction = 0
         self.aligning = False
-        self.route_target = None
-        self.best_target_distance = None
-        self.approach_at = 0.0
 
     def steer(self, direction, mode, state, amount=1):
         if type(amount) is not int or not 1 <= amount <= 100:
@@ -73,7 +68,7 @@ class Walking:
                 (-1 if direction == "left" else 1) * amount * MOUSE_UNITS_PER_STEP
             )
         elif direction in ("forward", "back"):
-            self.reverse_until = 0.0
+            self.recovery_turn = None
             self.manual_direction = direction
             self.manual_until = time.monotonic() + amount * SECONDS_PER_STEP
         else:
@@ -83,15 +78,13 @@ class Walking:
     def stop(self):
         self.keys.release()
         self.origin = None
-        self.reverse_until = 0.0
+        self.recovery_turn = None
         self.smooth_turn.reset()
         self.manual_turn = 0
         self.manual_direction = None
         self.manual_until = 0.0
         self.turn_direction = 0
         self.aligning = False
-        self.route_target = None
-        self.best_target_distance = None
 
     def set_mode(self, mode):
         if mode != self.mode:
@@ -104,8 +97,15 @@ class Walking:
         return (
             self.manual_direction == "back"
             and now < self.manual_until
-            or now < self.reverse_until
         )
+
+    def recover(self):
+        self.keys.release()
+        self.recoveries += 1
+        self.recovery_turn = 20 * MOUSE_UNITS_PER_STEP
+        self.aligning = False
+        self.smooth_turn.reset()
+        return "obstacle recovery: turning right 20"
 
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
@@ -123,17 +123,23 @@ class Walking:
             self.stop()
             return "stopped"
         position = state["position"]
-        if self.reverse_until:
-            if now < self.reverse_until:
-                self.keys.set(self.walk_modifier | {"back"})
-                return "backing away from obstacle"
-            self.keys.release()
-            if mode == "free":
-                self.manual_turn = self.turn_after_reverse
-            elif self.navigator:
-                self.navigator.avoid_target(now)
-            self.reverse_until = 0.0
-            self.origin, self.progress_at = position, now
+        # Finish the right turn and try walking before sidewalk steering resumes.
+        if self.recovery_turn is not None:
+            if self.recovery_turn:
+                turn, self.recovery_turn = self.smooth_turn.nudge(self.recovery_turn, now)
+                if turn:
+                    self.keys.turn(turn)
+                self.keys.set(self.walk_modifier)
+                self.origin, self.progress_at = position, now
+                return "obstacle recovery: turning right 20"
+            self.keys.set(self.walk_modifier | {"forward"})
+            if distance(position, self.origin) >= 0.8:
+                self.recovery_turn = None
+                self.origin, self.progress_at = position, now
+                self.smooth_turn.reset()
+            elif now - self.progress_at > 4.0:
+                return self.recover()
+            return "obstacle recovery: walking forward"
         status = "walking freely"
         desired_turn = 0.0
         if mode == "sidewalk":
@@ -166,21 +172,6 @@ class Walking:
             desired_turn = -error * 140 if abs(error) > 0.04 else 0.0
             status = self.navigator.message
             self.aligning = abs(error) > (0.25 if self.aligning else 1.0)
-            remaining = math.hypot(
-                waypoint[0] - position["x"], waypoint[1] - position["y"]
-            )
-            if (
-                self.route_target != self.navigator.target
-                or self.best_target_distance is None
-            ):
-                self.route_target = self.navigator.target
-                self.best_target_distance, self.approach_at = remaining, now
-            elif remaining < self.best_target_distance - 0.4:
-                self.best_target_distance, self.approach_at = remaining, now
-            elif not self.aligning and now - self.approach_at > 8:
-                self.navigator.avoid_target(now)
-                self.stop()
-                return "rejoining pedestrian path after no route progress"
         if mode == "free":
             turn, self.manual_turn = self.smooth_turn.nudge(self.manual_turn, now)
         else:
@@ -195,18 +186,13 @@ class Walking:
             return "turning" if self.manual_turn else "stopped"
         if mode == "sidewalk" and self.aligning:
             self.keys.set(self.walk_modifier)
-            self.origin, self.progress_at, self.approach_at = position, now, now
+            self.origin, self.progress_at = position, now
             return "aligning with pedestrian path"
         self.keys.set(self.walk_modifier | {"forward"})
         if self.origin is None or distance(position, self.origin) >= 0.8:
             self.origin, self.progress_at = position, now
         elif now - self.progress_at > 4.0:
-            self.keys.release()
-            self.recoveries += 1
-            self.reverse_until = now + 0.9
-            self.turn_after_reverse = random.choice((-1, 1)) * random.randint(200, 550)
-            self.smooth_turn.reset()
-            return "obstacle recovery"
+            return self.recover()
         return status
 
 
@@ -430,7 +416,6 @@ class Controller:
         )
         navigation.update(
             aligning=movement.aligning,
-            best_target_distance=movement.best_target_distance,
         )
         self.report["navigation"] = navigation
         self.report["missions"] = self.missions.report()

@@ -17,9 +17,11 @@ from games.san_andreas.game import (
     DROP_KEY,
     JUMP_KEY,
     JUMP_SPEED,
+    SPRINT_ACTION,
     Game,
     RuntimeChanges,
     bind_jump_key,
+    bind_walk_key,
 )
 from core.runtime import control_request
 
@@ -219,19 +221,50 @@ class JumpBoostTests(unittest.TestCase):
         self.assertEqual(self.mem.data, before)
 
     def test_jump_binding_is_restored_on_shutdown(self):
-        # Space must be removed from sprint/other actions while jump owns it.
+        # Jump owns Space, but sprint/swim must retain a printable working key.
         other_action = CONTROL_ACTIONS + 13 * 0x20
         self.mem.write(other_action, struct.pack("<II", 32, 1))
         before = self.mem.read(CONTROL_ACTIONS, 59 * 0x20)
         changes = RuntimeChanges(self.mem)
         bind_jump_key(self.game, changes)
         self.assertEqual(self.mem.u32(CONTROL_ACTIONS + JUMP_ACTION * 0x20), JUMP_KEY)
-        self.assertEqual(self.mem.u32(other_action), 1056)
+        self.assertEqual(self.mem.u32(other_action), ord("R"))
         self.assertEqual(self.mem.read(JUMP_CLAMP, 7), JUMP_CLAMP_DISABLED)
         self.assertEqual(self.mem.u32(CONTROL_ACTIONS + DROP_ACTION * 0x20), DROP_KEY)
         changes.restore()
         self.assertEqual(self.mem.read(JUMP_CLAMP, 7), JUMP_CLAMP_ORIGINAL)
         self.assertEqual(self.mem.read(CONTROL_ACTIONS, 59 * 0x20), before)
+
+    def test_jump_preserves_existing_sprint_binding(self):
+        address = CONTROL_ACTIONS + SPRINT_ACTION * 32
+        self.mem.write(address, struct.pack("<4I", ord("G"), 1, 1056, 0))
+        original = self.mem.read(address, 32)
+        bind_jump_key(self.game, RuntimeChanges(self.mem))
+        self.assertEqual(self.mem.read(address, 32), original)
+
+    def test_sprint_fallback_does_not_steal_another_actions_key(self):
+        sprint = CONTROL_ACTIONS + SPRINT_ACTION * 32
+        other = CONTROL_ACTIONS + 5 * 32
+        self.mem.write(sprint, struct.pack("<4I", 32, 1, 1056, 0))
+        self.mem.write(other, struct.pack("<2I", ord("R"), 1))
+        changes = RuntimeChanges(self.mem)
+        bind_jump_key(self.game, changes)
+        self.assertEqual(self.mem.u32(sprint), ord("G"))
+        self.assertEqual(self.mem.u32(other), ord("R"))
+        before = dict(self.mem.data)
+        bind_jump_key(self.game, changes)
+        self.assertEqual(self.mem.data, before)
+
+    def test_normal_walk_binding_repairs_previously_unbound_sprint_and_restores_it(self):
+        sprint = CONTROL_ACTIONS + SPRINT_ACTION * 32
+        self.mem.write(sprint, struct.pack("<4I", 1056, 1, 1056, 0))
+        before = self.mem.read(CONTROL_ACTIONS, 59 * 32)
+        changes = RuntimeChanges(self.mem)
+        bind_walk_key(self.game, changes)
+        self.assertEqual(self.mem.u32(sprint), ord("R"))
+        self.assertEqual(self.mem.u32(sprint + 4), 1)
+        changes.restore()
+        self.assertEqual(self.mem.read(CONTROL_ACTIONS, 59 * 32), before)
 
 
     def test_unrecognized_clamp_is_rejected_before_any_binding_writes(self):
