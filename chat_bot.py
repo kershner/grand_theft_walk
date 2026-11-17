@@ -28,7 +28,11 @@ HELP = {
     "center": "!center • Level the view without changing direction or navigation mode.",
     "forward": "!forward [1-100] • Move forward that many one-second steps in free mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] • Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
+    "drop": "!drop • Let go of a ledge in San Andreas. Only works while climbing or hanging.",
     "jump": "!jump • High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
+    "respawn": "!respawn • Start a 60-second vote to kill the player and respawn normally. Vote !yes or !no; ties fail.",
+    "yes": "!yes • Vote yes on the active command vote.",
+    "no": "!no • Vote no on the active command vote.",
     "mode": "!mode <sidewalk|free>: Switch to sidewalk navigation or free roaming.",
     "camera": "!camera [first|third]: Toggle the camera or select a perspective.",
     "help": "!help [command] • Show commands or details for a command.",
@@ -107,6 +111,8 @@ class ChatBot:
                 try:
                     for message in self.poll_announcements():
                         send(message)
+                    for message in self.command_voting.drain_events():
+                        send(message)
                     self.announced_session = self.session
                 except (OSError, ValueError, RuntimeError):
                     logger.exception("Scheduled chat announcement failed")
@@ -164,7 +170,7 @@ class ChatBot:
                 return HELP.get(
                     target, f"Unknown command: !{target}. Type !help for commands."
                 )
-            commands = ("walk", "stop", "left", "right", "forward", "back", "jump")
+            commands = ("walk", "stop", "left", "right", "forward", "back", "jump", "drop", "respawn")
             available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
             return f"Commands: {available} • Type !more for more commands."
         if name == "more":
@@ -197,6 +203,18 @@ class ChatBot:
         if name == "info":
             return self._info_reply()
 
+        if name in {"yes", "no"}:
+            return self.command_voting.cast(viewer, name)
+        if name == "respawn":
+            session = state.get("session", state.get("pid", "controller"))
+
+            def apply_respawn(command, arguments):
+                self.control.request(command, arguments, expected_session=session)
+                return "Respawn requested."
+
+            return self.command_voting.start(
+                name, args, viewer, "Respawn the player", execute=apply_respawn, duration=60
+            )
         return self._execute(name, args)
 
     def _execute(self, name, args):

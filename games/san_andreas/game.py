@@ -14,7 +14,7 @@ from core.missions import load_destinations
 
 CAPABILITIES = Capabilities(
     protection=True, peaceful=True, unlock_map=True, walk_binding=True,
-    walking_pace=True, first_person=True, jump=True, autosave=True, view=True,
+    walking_pace=True, first_person=True, respawn=True, jump=True, ledge_drop=True, autosave=True, view=True,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,11 +34,16 @@ GANG_WARS_ACTIVE = 0x96AB90
 CONTROL_ACTIONS = 0xB70198 + 0xB70
 WALK_ACTION = 17
 WALK_KEY = 1002  # RenderWare rsF2.
+# Verified SA 1.0 player-only upward clamp: mov [esi+0x4C], 0.25f.
+JUMP_CLAMP = 0x5E91CE
+JUMP_CLAMP_ORIGINAL = bytes.fromhex("c7 46 4c 00 00 80 3e")
+JUMP_CLAMP_DISABLED = b"\x90" * len(JUMP_CLAMP_ORIGINAL)
+CLIMB_VTABLE = 0x87059C
+DROP_ACTION = 10  # VEHICLE_ENTER_EXIT also releases the native climb task.
+DROP_KEY = 70  # F.
+JUMP_SPEED = 0.4603  # Roughly 10% less height than the previous 0.4865-speed setting.
 JUMP_ACTION = 12
 JUMP_KEY = 32  # Space; F1/F2/F3 also trigger hardcoded replay actions.
-JUMP_SPEED = math.sqrt(
-    0.96
-)  # Original one-shot boost; native physics limits the height.
 ENTITY_POOLS = (
     ("buildings", 0xB74498, 0x38),
     ("dummies", 0xB744A0, 0x38),
@@ -418,6 +423,7 @@ class Game:
             "wanted_level": self.mem.u32(wanted + 0x2C) if wanted else None,
             "player_state": self.mem.byte(info + 0xDC),
             "paused": paused,
+            "cutscene": bool(self.mem.byte(0xB5F851)),
             "controls_disabled": bool(self.mem.unpack(0xB73458 + 0x10E, "H")[0]),
             "foreground": self.mem.foreground(),
             "game_time_ms": self.mem.u32(0xB7CB84),
@@ -430,6 +436,54 @@ class Game:
                 for name, index in CHEAT_IDS.items()
             },
         }
+
+    def kill_player(self, state):
+        """Set only the current living player's health; native code handles death."""
+        if not state.get("ready"):
+            return False
+        ped, info = state["ped"], state["player_info"]
+        if (self.mem.u32(info) != ped
+                or self.mem.read(ped + 0x20, 4).hex() != state["identity"]
+                or self.mem.byte(info + 0xDC) != 0):
+            return False
+        health = self.mem.unpack(ped + 0x540, "f")[0]
+        if not math.isfinite(health) or health <= 0:
+            return False
+        self.mem.write(ped + 0x540, struct.pack("<f", 0.0))
+        return True
+
+    def climb_task(self, ped):
+        """Find a native climb on the active primary-task chain, without calls."""
+        intelligence = self.mem.u32(ped + 0x47C)
+        if not 0x10000 < intelligence < 0x80000000:
+            return None
+        tasks = self.mem.unpack(intelligence + 4, "5I")
+        task = next((task for task in tasks if task), 0)
+        seen = set()
+        for _ in range(16):
+            if not 0x10000 < task < 0x80000000 or task in seen:
+                return None
+            seen.add(task)
+            vtable = self.mem.u32(task)
+            if vtable == CLIMB_VTABLE:
+                return task
+            if not 0x800000 <= vtable < 0x900000:
+                return None
+            # All simple tasks share IsSimple(); only complex tasks have +8.
+            if self.mem.u32(vtable + 12) == self.mem.u32(CLIMB_VTABLE + 12):
+                return None
+            task = self.mem.u32(task + 8)
+        return None
+
+    def can_drop(self, state):
+        if not state.get("ready") or state.get("in_vehicle"):
+            return False
+        ped = state["ped"]
+        return bool(
+            self.mem.u32(state["player_info"]) == ped
+            and self.mem.read(ped + 0x20, 4).hex() == state["identity"]
+            and self.climb_task(ped)
+        )
 
     def boost_jump(self, state):
         """Boost a real takeoff once, preserving horizontal velocity and gravity."""
@@ -651,7 +705,12 @@ def bind_walk_key(game, changes):
 
 
 def bind_jump_key(game, changes):
+    current = game.mem.read(JUMP_CLAMP, len(JUMP_CLAMP_ORIGINAL))
+    if current not in (JUMP_CLAMP_ORIGINAL, JUMP_CLAMP_DISABLED):
+        raise RuntimeError("Unsupported San Andreas upward-speed clamp")
+    changes.patch(JUMP_CLAMP, JUMP_CLAMP_DISABLED)
     bind_action_key(game.mem, changes, CONTROL_ACTIONS, 59, JUMP_ACTION, JUMP_KEY)
+    bind_action_key(game.mem, changes, CONTROL_ACTIONS, 59, DROP_ACTION, DROP_KEY)
 
 
 def unlock_regions(game, changes, include_barriers=True):

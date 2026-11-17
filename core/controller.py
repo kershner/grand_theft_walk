@@ -14,6 +14,7 @@ from core.controls import (
     can_control,
 )
 from core.missions import MissionSystem
+from core.respawn import Respawn
 from core.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
 from core.runtime import (
     DEFAULTS,
@@ -220,6 +221,7 @@ class Controller:
         self.session = uuid.uuid4().hex
         self.startup_ready = False
         self.protection = backend.RuntimeChanges(mem) if self.capabilities.protection else None
+        self.respawn = Respawn(self.game, self.protection, self.session) if self.capabilities.respawn else None
         self.world = backend.RuntimeChanges(mem) if self.capabilities.unlock_map else None
         self.peaceful = backend.RuntimeChanges(mem) if self.capabilities.peaceful else None
         self.bindings = backend.RuntimeChanges(mem) if (
@@ -280,7 +282,7 @@ class Controller:
         for name in ("protection", "peaceful", "unlock_map", "autosave", "first_person"):
             if not getattr(self.capabilities, name):
                 self.settings[name] = False
-        for name in ("jump", "view"):
+        for name in ("jump", "view", "respawn"):
             if not getattr(self.capabilities, name):
                 self.settings.pop(name, None)
 
@@ -447,7 +449,23 @@ class Controller:
         self.handle_hotkeys(state)
         if self.settings["quit"]:
             return False
-        saving = self.autosave.tick(state, now, self.settings["autosave"]) if self.autosave else False
+        respawn_request = self.settings.get("respawn")
+        respawn_pending = self.respawn and (self.respawn.active or self.respawn.requested(respawn_request))
+        saving = self.autosave.tick(state, now, self.settings["autosave"] and not respawn_pending) if self.autosave else False
+        if self.respawn and self.respawn.tick(respawn_request, state, now, saving=saving):
+            self.movement.stop()
+            if self.jump:
+                self.jump.cancel()
+                self.jump.last_request = self.settings.get("jump", {}).get("id")
+            if self.view:
+                self.view.cancel()
+                self.view.last_request = self.settings.get("view", {}).get("id")
+            if self.pace:
+                self.pace.tick(state, False)
+            if now - self.saved_at > 0.75:
+                self.write_report("respawning")
+                self.saved_at = now
+            return True
         if self.jump:
             self.jump.tick(self.settings.get("jump"), state, now, saving=saving)
         if self.view:

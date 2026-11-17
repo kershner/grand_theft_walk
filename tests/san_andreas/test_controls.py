@@ -9,6 +9,12 @@ from core.controls import HighJump, Hotkeys, Keys, ViewControl
 from games.san_andreas.game import (
     CONTROL_ACTIONS,
     JUMP_ACTION,
+    JUMP_CLAMP,
+    JUMP_CLAMP_ORIGINAL,
+    JUMP_CLAMP_DISABLED,
+    CLIMB_VTABLE,
+    DROP_ACTION,
+    DROP_KEY,
     JUMP_KEY,
     JUMP_SPEED,
     Game,
@@ -182,6 +188,7 @@ class JumpBoostTests(unittest.TestCase):
         self.mem.write(0x10000, struct.pack("<I", self.ped))
         self.mem.write(self.ped + 0x20, bytes.fromhex(self.state["identity"]))
         self.mem.write(self.ped + 0x46D, b"\x02")
+        self.mem.write(JUMP_CLAMP, JUMP_CLAMP_ORIGINAL)
         self.mem.write(self.ped + 0x44, struct.pack("<3f", 0.1, 0.2, 0.12))
         self.mem.write(self.ped + 0x98, struct.pack("<f", 0.005714286))
 
@@ -220,8 +227,39 @@ class JumpBoostTests(unittest.TestCase):
         bind_jump_key(self.game, changes)
         self.assertEqual(self.mem.u32(CONTROL_ACTIONS + JUMP_ACTION * 0x20), JUMP_KEY)
         self.assertEqual(self.mem.u32(other_action), 1056)
+        self.assertEqual(self.mem.read(JUMP_CLAMP, 7), JUMP_CLAMP_DISABLED)
+        self.assertEqual(self.mem.u32(CONTROL_ACTIONS + DROP_ACTION * 0x20), DROP_KEY)
         changes.restore()
+        self.assertEqual(self.mem.read(JUMP_CLAMP, 7), JUMP_CLAMP_ORIGINAL)
         self.assertEqual(self.mem.read(CONTROL_ACTIONS, 59 * 0x20), before)
+
+
+    def test_unrecognized_clamp_is_rejected_before_any_binding_writes(self):
+        self.mem.write(JUMP_CLAMP, b"invalid")
+        before = dict(self.mem.data)
+        with self.assertRaisesRegex(RuntimeError, "upward-speed clamp"):
+            bind_jump_key(self.game, RuntimeChanges(self.mem))
+        self.assertEqual(self.mem.data, before)
+
+    def test_drop_requires_a_live_matching_player_and_active_climb(self):
+        intelligence, root_task, climb = 0x30000, 0x40000, 0x50000
+        complex_vtable = 0x860000
+        self.mem.write(self.ped + 0x47C, struct.pack("<I", intelligence))
+        self.mem.write(intelligence + 4, struct.pack("<5I", root_task, 0, 0, 0, 0))
+        self.mem.write(root_task, struct.pack("<3I", complex_vtable, 0, climb))
+        self.mem.write(complex_vtable + 12, struct.pack("<I", 0x610000))
+        self.mem.write(CLIMB_VTABLE + 12, struct.pack("<I", 0x620000))
+        self.mem.write(climb, struct.pack("<I", CLIMB_VTABLE))
+        self.assertTrue(self.game.can_drop(self.state))
+        self.assertFalse(self.game.can_drop(dict(self.state, in_vehicle=True)))
+        self.assertFalse(self.game.can_drop(dict(self.state, identity="stale")))
+        # A simple task has no child pointer, even if +8 resembles one.
+        self.mem.write(root_task, struct.pack("<I", 0x861000))
+        self.mem.write(0x861000 + 12, struct.pack("<I", 0x620000))
+        self.assertFalse(self.game.can_drop(self.state))
+        # Cyclic complex-task chains cannot hang the controller.
+        self.mem.write(root_task, struct.pack("<3I", complex_vtable, 0, root_task))
+        self.assertFalse(self.game.can_drop(self.state))
 
 
 class HighJumpTests(unittest.TestCase):
@@ -251,7 +289,7 @@ class HighJumpTests(unittest.TestCase):
 
     def test_jump_uses_space_instead_of_hardcoded_replay_keys(self):
         self.key_factory.assert_called_once_with(
-            {"jump": "space"},
+            {"jump": "space", "drop": "f"},
             focused=self.game.mem.foreground,
         )
         self.assertEqual(JUMP_KEY, 32)
@@ -267,6 +305,34 @@ class HighJumpTests(unittest.TestCase):
         self.jump.tick(self.request, self.state, 10.3)
         self.game.boost_jump.assert_called_once_with(self.state)
         self.assertIsNone(self.jump.player)
+
+    def test_drop_releases_native_ledge_without_applying_jump_boost(self):
+        self.state.update(standing=False, in_air=True, vertical_speed=0)
+        self.game.can_drop.return_value = True
+        request = dict(self.request, direction="drop")
+        self.jump.tick(request, self.state, 10)
+        self.keys.set.assert_called_once_with({"drop"})
+        self.jump.tick(request, self.state, 10.2)
+        self.assertIsNone(self.jump.player)
+        self.game.boost_jump.assert_not_called()
+
+    def test_drop_does_not_send_vehicle_entry_input_outside_a_climb(self):
+        self.game.can_drop.return_value = False
+        self.jump.tick(dict(self.request, direction="drop"), self.state, 10)
+        self.keys.set.assert_not_called()
+        self.bind.assert_not_called()
+
+    def test_background_and_saving_do_not_send_drop_input(self):
+        self.game.can_drop.return_value = True
+        self.state['foreground'] = False
+        request = dict(self.request, direction="drop")
+        self.jump.tick(request, self.state, 10)
+        self.keys.set.assert_not_called()
+        self.state['foreground'] = True
+        self.jump.tick(request, self.state, 10.1, saving=True)
+        self.keys.set.assert_not_called()
+        self.jump.tick(request, self.state, 10.2)
+        self.keys.set.assert_called_once_with({"drop"})
 
     def test_airborne_requests_do_not_stack_boosts(self):
         self.state.update(standing=False, in_air=True, vertical_speed=0.3)

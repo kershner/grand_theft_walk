@@ -302,6 +302,83 @@ class ChatIntegrationTests(unittest.TestCase):
             self.command("jump 100")
         self.assertEqual(self.control(), expected)
 
+    def test_drop_queues_a_silent_request_and_rejects_unsupported_games(self):
+        self.write("control.json", dict(self.settings, walking=True))
+        self.command("drop")
+        request = self.control()["jump"]
+        self.assertEqual(request["direction"], "drop")
+        self.assertTrue(self.control()["walking"])
+        self.assertEqual(self.client.get("/chat").json["messages"], [])
+        before = self.control()
+        with self.assertLogs("chat_bot", level="WARNING"):
+            self.command("drop 2")
+        self.assertEqual(self.control(), before)
+        self.state["capabilities"]["ledge_drop"] = False
+        self.write("state.json", self.state)
+        self.command("drop")
+        self.assertEqual(self.control(), before)
+        self.assertIn("not available", self.client.get("/chat").json["messages"][-1].lower())
+
+    def test_unsupported_respawn_does_not_open_a_vote_or_write_controls(self):
+        self.state["capabilities"]["respawn"] = False
+        self.write("state.json", self.state)
+        before = self.control()
+        self.command("respawn")
+        self.assertFalse(self.voting.vote.active)
+        self.assertEqual(self.control(), before)
+        self.timer.assert_not_called()
+        self.assertIn("not available", self.client.get("/chat").json["messages"][-1])
+
+    def test_respawn_vote_waits_sixty_seconds_then_queues_once(self):
+        before = self.control()
+        self.command("respawn")
+        self.assertEqual(self.control(), before)
+        self.assertEqual(self.timer.call_args.args[0], 60)
+        self.assertIn("60 seconds", self.client.get("/chat").json["messages"][-1])
+        halfway = self.timer.call_args_list[-2]
+        self.assertEqual(halfway.args[0], 30)
+        with patch("core.voting.time.monotonic", return_value=self.voting.closes_at-30):
+            halfway.args[1]()
+        reminder = self.client.get("/chat").json["messages"][-1]
+        self.assertIn("Vote halfway!", reminder)
+        self.assertIn("30 seconds remaining", reminder)
+        self.assertEqual(self.control(), before)
+        other = self.app.test_client()
+        other.get("/cmd/no")
+        other.get("/cmd/yes")
+        self.command("respawn")
+        self.assertIn("Vote already in progress", self.client.get("/chat").json["messages"][-1])
+        callback = self.timer.call_args.args[1]
+        callback()
+        request = self.control()["respawn"]
+        self.assertEqual(request["session"], self.state["session"])
+        self.assertLess(abs(time.time() - request["issued"]), 2)
+        callback()
+        self.assertEqual(self.control()["respawn"], request)
+        self.assertTrue(any("Vote passed! (2-0)" in message for message in self.client.get("/chat").json["messages"]))
+
+    def test_respawn_tie_fails_and_invalid_arguments_never_start_votes(self):
+        before = self.control()
+        self.command("respawn now")
+        self.assertFalse(self.voting.vote.active)
+        self.command("respawn")
+        other = self.app.test_client()
+        other.get("/cmd/no")
+        self.timer.call_args.args[1]()
+        self.assertEqual(self.control(), before)
+        self.assertTrue(any("Vote failed! (1-1)" in message for message in self.client.get("/chat").json["messages"]))
+
+    def test_respawn_vote_rechecks_session_and_capability_when_it_passes(self):
+        for changed in ({"session": "replacement"}, {"capabilities": {}}):
+            with self.subTest(changed=changed):
+                self.write("state.json", self.state)
+                before = self.control()
+                self.command("respawn")
+                self.write("state.json", dict(self.state, **changed))
+                self.timer.call_args.args[1]()
+                self.assertEqual(self.control(), before)
+                self.assertTrue(any("Could not apply voted command" in message for message in self.client.get("/chat").json["messages"]))
+
     def test_offline_stale_and_loading_do_not_write(self):
         unavailable_states = [
             {"controller": "stopped"},
@@ -577,7 +654,7 @@ class ChatIntegrationTests(unittest.TestCase):
         for command in ("!camera", "!up", "!down", "!center"):
             self.assertNotIn(command, messages[1])
         self.assertNotIn("camera", messages[2])
-        self.assertEqual(messages[2], "Unknown command: !yes. Type !help for commands.")
+        self.assertIn("Vote yes", messages[2])
         self.state["capabilities"]["view"] = True
         self.write("state.json", self.state)
         self.command("more")

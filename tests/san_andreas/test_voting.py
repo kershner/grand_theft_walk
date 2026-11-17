@@ -49,3 +49,71 @@ class CommandVotingTests(unittest.TestCase):
         self.finish()
         self.assertIn("Controller offline", self.system.drain_events()[-1])
         self.assertFalse(self.system.vote.active)
+
+
+class HalfwayReminderTests(unittest.TestCase):
+    def setUp(self):
+        self.execute = Mock(return_value=None)
+        self.timer_factory = Mock(side_effect=lambda *args: Mock())
+        self.system = CommandVoting(self.execute, timer_factory=self.timer_factory)
+        self.addCleanup(self.system.close)
+
+    def start(self, name="respawn", duration=60):
+        self.system.start(name, [], "alice", "Respawn the player", duration=duration)
+        return [call.args[1] for call in self.timer_factory.call_args_list]
+
+    def test_every_sixty_second_command_gets_one_reminder_with_current_tally(self):
+        for name in ("respawn", "other-command"):
+            with self.subTest(command=name):
+                self.timer_factory.reset_mock()
+                halfway, finish = self.start(name)
+                self.assertEqual([call.args[0] for call in self.timer_factory.call_args_list], [30, 60])
+                self.system.cast("bob", "no")
+                self.assertEqual(self.system.drain_events(), [])
+                with patch("core.voting.time.monotonic", return_value=self.system.closes_at-30):
+                    halfway()
+                    halfway()
+                events = self.system.drain_events()
+                self.assertEqual(len(events), 1)
+                self.assertIn("Vote halfway!", events[0])
+                self.assertIn("30 seconds remaining", events[0])
+                self.assertIn("Yes: 1 | No: 1", events[0])
+                self.execute.assert_not_called()
+                finish()
+                self.system.drain_events()
+
+    def test_other_durations_retain_their_existing_behavior(self):
+        for duration in (20, 45, 120):
+            self.timer_factory.reset_mock()
+            (finish,) = self.start(duration=duration)
+            self.assertEqual(self.timer_factory.call_args.args[0], duration)
+            finish()
+            self.assertFalse(any("halfway" in event for event in self.system.drain_events()))
+
+    def test_no_late_or_cancelled_reminders(self):
+        halfway, finish = self.start()
+        with patch("core.voting.time.monotonic", return_value=self.system.closes_at):
+            halfway()
+        self.assertEqual(self.system.drain_events(), [])
+        vote = self.system.vote
+        finish()
+        vote.halfway_timer.cancel.assert_called_once()
+        self.system.drain_events()
+        halfway()
+        self.assertEqual(self.system.drain_events(), [])
+        self.timer_factory.reset_mock()
+        halfway, _ = self.start()
+        vote = self.system.vote
+        self.system.close()
+        vote.timer.cancel.assert_called_once()
+        vote.halfway_timer.cancel.assert_called_once()
+        halfway()
+        self.assertEqual(self.system.drain_events(), [])
+
+    def test_old_reminder_cannot_announce_during_a_new_vote(self):
+        halfway, finish = self.start()
+        finish()
+        self.system.drain_events()
+        self.start()
+        halfway()
+        self.assertEqual(self.system.drain_events(), [])

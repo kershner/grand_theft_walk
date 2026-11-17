@@ -9,14 +9,13 @@ from games import Capabilities
 from core.saves import Autosave as SharedAutosave
 from core.navigation import Node, PedestrianGraph
 from core.winmemory import Memory as ProcessMemory
-from core.controls import bind_action_key, can_control
+from core.controls import JUMP_SPEED, bind_action_key, can_control
 
-CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, first_person=True, jump=True, autosave=True, view=True)
+CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, first_person=True, respawn=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
 WALK_SPEED_MULTIPLIER = 1.0
 JUMP_ACTION = 11
 JUMP_KEY = 32  # Space; avoid the game's hardcoded replay shortcuts.
-JUMP_SPEED = 0.16  # Set takeoff speed even when the native jump is faster.
 
 PLAYER_INFO = 0x94AD28
 PED_POOL = 0x97F2AC
@@ -234,6 +233,21 @@ class Game:
             "game_time_ms": mem.u32(0x974B2C),
             "cutscene": bool(mem.byte(0xA10AB2)),
         }
+
+    def kill_player(self, state):
+        """Let the native death/hospital sequence handle the current player."""
+        if not state.get("ready"):
+            return False
+        ped = state["ped"]
+        if (self.mem.u32(PLAYER_INFO) != ped
+                or self.identity(ped) != state["identity"]
+                or self.mem.byte(PLAYER_INFO + 0xCC) != 0):
+            return False
+        health = self.mem.unpack(ped + 0x354, "f")[0]
+        if not math.isfinite(health) or health <= 0:
+            return False
+        self.mem.write(ped + 0x354, struct.pack("<f", 0.0))
+        return True
 
     def boost_jump(self, state):
         """Tune native takeoff once, preserving horizontal motion and gravity."""

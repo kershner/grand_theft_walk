@@ -13,6 +13,7 @@ from core.runtime import request_expired
 
 logger = logging.getLogger(__name__)
 MOUSE_UNITS_PER_STEP = 10
+JUMP_SPEED = 2.0  # Default takeoff speed; San Andreas calibrates for its own physics.
 
 
 def can_control(state):
@@ -201,9 +202,10 @@ class HighJump:
         self.game = game
         self.bindings = bindings
         self.binder = binder
-        self.keys = Keys({"jump": "space"}, focused=game.mem.foreground)
+        self.keys = Keys({"jump": "space", "drop": "f"}, focused=game.mem.foreground)
         self.last_request = None
         self.player = None
+        self.action = "jump"
         self.release_at = 0.0
         self.deadline = 0.0
 
@@ -219,7 +221,10 @@ class HighJump:
             else:
                 if now >= self.release_at:
                     self.keys.release()
-                if (
+                if self.action == "drop":
+                    if now >= self.release_at:
+                        self.cancel()
+                elif (
                     state["in_air"]
                     and not state["standing"]
                     and state["vertical_speed"] > 0
@@ -239,12 +244,20 @@ class HighJump:
         if not usable:
             return  # Allow time to return focus to the game.
         self.last_request = request.get("id")
-        if self.player is not None or not state["standing"] or state["in_air"]:
+        action = "drop" if request.get("direction") == "drop" else "jump"
+        if action == "drop":
+            self.cancel()
+            can_drop = getattr(self.game, "can_drop", None)
+            if can_drop is None or not can_drop(state):
+                logger.debug("Drop ignored: no active ledge climb")
+                return
+        elif self.player is not None or not state["standing"] or state["in_air"]:
             logger.debug("Jump ignored: already jumping or airborne")
             return
         self.binder(self.game, self.bindings)
-        self.keys.set({"jump"})
+        self.action = action
+        self.keys.set({action})
         self.player = (state["ped"], state["identity"])
         self.release_at = now + 0.12
         self.deadline = now + 2.0
-        logger.debug("Jump requested; waiting for native takeoff")
+        logger.debug("%s requested", action.capitalize())

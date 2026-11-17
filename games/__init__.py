@@ -15,7 +15,9 @@ class Capabilities:
     walk_binding: bool = False
     walking_pace: bool = False
     first_person: bool = False
+    respawn: bool = False
     jump: bool = False
+    ledge_drop: bool = False
     autosave: bool = False
     view: bool = False
 

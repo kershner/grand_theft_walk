@@ -19,9 +19,9 @@ PROTOCOL_VERSION = 1
 MODES = ("sidewalk", "free")
 DIRECTIONS = {"left", "right", "forward", "back", "up", "down"}
 VIEW_COMMANDS = {"up", "down", "center"}
-MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump", "center"}
+MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump", "drop", "center"}
 COMMAND_CAPABILITIES = {"up": "view", "down": "view", "center": "view",
-                        "jump": "jump", "camera": "first_person"}
+                        "jump": "jump", "drop": "ledge_drop", "respawn": "respawn", "camera": "first_person"}
 DEFAULTS = {
     "walking": False,
     "protection": True,
@@ -98,8 +98,8 @@ def control_request(direction=None, amount=None):
 
 
 def queue_movement(settings, direction, amount=1):
-    if direction == "jump":
-        settings["jump"] = control_request()
+    if direction in {"jump", "drop"}:
+        settings["jump"] = control_request("drop") if direction == "drop" else control_request()
         return
     field = "view" if direction in VIEW_COMMANDS else "steering"
     request = control_request(direction)
@@ -126,7 +126,7 @@ def read_controls(path, settings):
     mode = requested.get("mode")
     if mode in MODES:
         settings["mode"] = mode
-    for key in ("steering", "jump", "view"):
+    for key in ("steering", "jump", "view", "respawn"):
         if isinstance(requested.get(key), dict):
             settings[key] = requested[key]
 
@@ -184,12 +184,14 @@ class WalkerControl:
             )
         return state
 
-    def request(self, name, args):
+    def request(self, name, args, expected_session=None):
         with self.lock:
             state = self.snapshot()
             if not chat_ready(state):
                 raise RuntimeError("Game loading; please wait.")
             require_command(state, name)
+            if expected_session is not None and state.get("session", state.get("pid", "controller")) != expected_session:
+                raise RuntimeError("The game session changed; start a new vote.")
             path = self.state_dir / "control.json"
             settings = read_json(path)
             if settings.get("quit"):
@@ -200,6 +202,8 @@ class WalkerControl:
                 )
             if name in MOVEMENT_COMMANDS:
                 queue_movement(settings, name, int(args[0]) if args else 1)
+            elif name == "respawn":
+                settings["respawn"] = dict(control_request(), session=state.get("session", state.get("pid", "controller")))
             elif name == "mode":
                 settings["mode"] = args[0]
             elif name == "camera":

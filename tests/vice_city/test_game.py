@@ -61,7 +61,7 @@ class JumpTests(unittest.TestCase):
             self.assertEqual(self.mem.data, before)
 
     def test_fast_native_takeoff_is_reduced_to_the_configured_jump_speed(self):
-        self.mem.write(self.ped + 0x78, struct.pack("<f", 0.6))
+        self.mem.write(self.ped + 0x78, struct.pack("<f", JUMP_SPEED + 0.5))
         self.assertTrue(self.game.boost_jump(self.state))
         self.assertAlmostEqual(self.mem.unpack(self.ped + 0x78, "f")[0], JUMP_SPEED)
 
