@@ -1,0 +1,203 @@
+"""Managed launch behavior without starting games, OBS, or a live stream."""
+
+import asyncio
+import json
+import tempfile
+import time
+import unittest
+from contextlib import ExitStack
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+from core.config import load_parameters, select_game
+from core.obs import OBS
+from core.twitch_auth import OAuthTokens
+import start_grand_theft_walk as launcher
+from twitch_bot import TwitchBot
+
+
+class RotationTests(unittest.TestCase):
+    def setUp(self):
+        self.params = {"ROTATION": {"start_date": "2026-11-17", "timezone": "America/New_York",
+                                    "games": ["san_andreas", "vice_city"]}}
+
+    def test_calendar_day_rotation_and_same_day_restart(self):
+        for hour in (5, 12, 23):
+            self.assertEqual(select_game(self.params, datetime(2026, 11, 17, hour, tzinfo=timezone.utc)), "san_andreas")
+        self.assertEqual(select_game(self.params, datetime(2026, 11, 18, 5, tzinfo=timezone.utc)), "vice_city")
+        self.assertEqual(select_game(self.params, datetime(2026, 11, 19, 5, tzinfo=timezone.utc)), "san_andreas")
+
+    def test_eastern_midnight_and_year_boundary(self):
+        self.assertEqual(select_game(self.params, datetime(2026, 11, 18, 4, 59, tzinfo=timezone.utc)), "san_andreas")
+        self.params["ROTATION"]["start_date"] = "2026-12-31"
+        self.assertEqual(select_game(self.params, datetime(2027, 1, 1, 5, tzinfo=timezone.utc)), "vice_city")
+
+    def test_invalid_and_single_game_rotations(self):
+        for games in ([], ["gta_iii"], ["vice_city", "vice_city"], "vice_city"):
+            with self.subTest(games=games), self.assertRaises(ValueError):
+                select_game({"ROTATION": {"games": games}})
+        self.assertEqual(select_game({"ROTATION": {"games": ["vice_city"]}}), "vice_city")
+
+    def test_example_is_valid_and_no_credentials_needed_in_dev(self):
+        self.assertEqual(load_parameters(Path(__file__).resolve().parents[1] / "parameters.example.json")["MODE"], "dev")
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_old_controller_session_cannot_satisfy_startup(self):
+        process = Mock(returncode=None)
+        process.poll.return_value = None
+        control = Mock()
+        control.snapshot.side_effect = [
+            {"ready": True, "session": "old"}, {"ready": False, "session": "new"},
+            {"ready": True, "session": "new"}]
+        with patch.object(launcher.time, "sleep"):
+            self.assertEqual(launcher.wait_for_game(process, control, "old", 10)["session"], "new")
+
+    def test_chat_exit_prevents_stream_start(self):
+        with tempfile.TemporaryDirectory() as folder:
+            child = Mock()
+            child.poll.return_value = 1
+            with self.assertRaisesRegex(RuntimeError, "exited"):
+                launcher.wait_for_chat([child], Path(folder) / "ready.json")
+
+
+class SessionLifecycleTests(unittest.TestCase):
+    def run_mock_session(self, mode, chat_failure=False):
+        import core.manager
+        import core.winmemory
+
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+            root = Path(folder)
+            stack.enter_context(patch.object(launcher, "ROOT", root))
+            stack.enter_context(patch.object(core.winmemory, "process_mutex"))
+            stack.enter_context(patch.object(core.winmemory, "game_pids", return_value=[]))
+            stack.enter_context(patch.object(core.manager, "session_command", return_value=(["python", "launch.py"], root)))
+            job = stack.enter_context(patch.object(core.manager, "ProcessJob")).return_value
+            obs = stack.enter_context(patch("core.obs.OBS")).return_value
+            auth = stack.enter_context(patch("core.twitch_auth.OAuthTokens")).return_value
+            control = stack.enter_context(patch.object(launcher, "WalkerControl")).return_value
+            control.state_dir = root
+            control.snapshot.side_effect = RuntimeError("offline")
+            game, chat = Mock(returncode=0), Mock()
+            game.poll.return_value = 0
+            spawn = stack.enter_context(patch.object(launcher, "spawn", side_effect=[game, chat]))
+            stack.enter_context(patch.object(launcher, "wait_for_game"))
+            ready = stack.enter_context(patch.object(launcher, "wait_for_chat"))
+            stack.enter_context(patch.object(launcher.time, "sleep"))
+            if chat_failure:
+                ready.side_effect = RuntimeError("chat failed")
+            params = {"CLIENT_ID": "app", "CLIENT_SECRET": "secret", "TWITCH_CHANNEL": "walker", "TWITCH_BOT_LOGIN": "walker"}
+            if chat_failure:
+                with self.assertRaisesRegex(RuntimeError, "chat failed"):
+                    launcher.run_session(params, root / "parameters.json", "vice_city", mode)
+            else:
+                launcher.run_session(params, root / "parameters.json", "vice_city", mode)
+            job.close.assert_called_once()
+            self.assertIn("--game", spawn.call_args_list[1].args[1])
+            self.assertIn("vice_city", spawn.call_args_list[1].args[1])
+            return obs, auth, spawn
+
+    def test_dev_launch_never_accesses_twitch_or_obs(self):
+        obs, auth, spawn = self.run_mock_session("dev")
+        obs.prepare.assert_not_called()
+        auth.ensure_fresh.assert_not_called()
+        self.assertIn("dev_server.py", str(spawn.call_args_list[1]))
+
+    def test_prod_starts_and_stops_owned_stream(self):
+        obs, auth, spawn = self.run_mock_session("prod")
+        auth.ensure_fresh.assert_called_once()
+        obs.prepare.assert_called_once_with("vice_city")
+        obs.start_stream.assert_called_once()
+        obs.close.assert_called_once()
+        self.assertIn("twitch_bot.py", str(spawn.call_args_list[1]))
+
+    def test_chat_startup_failure_cleans_up_without_streaming(self):
+        obs, _, _ = self.run_mock_session("prod", chat_failure=True)
+        obs.start_stream.assert_not_called()
+        obs.close.assert_called_once()
+
+
+class OBSOwnershipTests(unittest.TestCase):
+    def test_existing_live_stream_is_never_stopped(self):
+        client = Mock()
+        client.get_stream_status.return_value.output_active = True
+        obs = OBS({"settle_seconds": 0})
+        with patch("core.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("core.obs.obsws_python.ReqClient", return_value=client), \
+                patch("core.obs.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(RuntimeError, "already streaming"):
+                obs.prepare("vice_city")
+            obs.close()
+        popen.assert_not_called()
+        client.stop_stream.assert_not_called()
+
+    def test_scene_selected_before_stream_and_owned_stream_stops(self):
+        client = Mock()
+        client.get_stream_status.return_value.output_active = False
+        obs = OBS({"scenes": {"vice_city": "VC"}, "settle_seconds": 0})
+        with patch("core.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("core.obs.obsws_python.ReqClient", return_value=client):
+            obs.prepare("vice_city")
+        client.set_current_program_scene.assert_called_once_with("VC")
+        client.start_stream.assert_not_called()
+        client.get_stream_status.return_value.output_active = True
+        obs.start_stream()
+        obs.close()
+        client.stop_stream.assert_called_once()
+
+
+class TokenTests(unittest.TestCase):
+    def test_missing_token_file_explains_authorization_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tokens = OAuthTokens({}, Path(folder) / "missing.json")
+            with self.assertRaisesRegex(RuntimeError, "twitch_oauth_helper.py"):
+                tokens.ensure_fresh()
+
+    def test_refresh_preserves_rotated_token_and_validates_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "oauth_tokens.json"
+            path.write_text(json.dumps({"refresh_token": "old", "expires_at": 0}))
+            tokens = OAuthTokens({"CLIENT_ID": "app", "CLIENT_SECRET": "secret", "TWITCH_BOT_LOGIN": "walker"}, path)
+            refreshed = Mock(status_code=200)
+            refreshed.json.return_value = {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}
+            validated = Mock(status_code=200)
+            validated.json.return_value = {"client_id": "app", "login": "walker", "scopes": ["chat:read", "chat:edit"]}
+            with patch("core.twitch_auth.requests.post", return_value=refreshed) as post, \
+                    patch("core.twitch_auth.requests.get", return_value=validated) as get:
+                tokens.ensure_fresh()
+                tokens.ensure_fresh()
+            self.assertEqual(json.loads(path.read_text())["refresh_token"], "new-refresh")
+            self.assertEqual(post.call_count, 1)
+            self.assertEqual(get.call_count, 1)
+
+    def test_wrong_account_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tokens.json"
+            path.write_text(json.dumps({"access_token": "access", "expires_at": time.time() + 3600}))
+            tokens = OAuthTokens({"CLIENT_ID": "app", "TWITCH_BOT_LOGIN": "walker"}, path)
+            response = Mock(status_code=200)
+            response.json.return_value = {"client_id": "app", "login": "someone_else", "scopes": ["chat:read", "chat:edit"]}
+            with patch("core.twitch_auth.requests.get", return_value=response), self.assertRaisesRegex(RuntimeError, "wrong"):
+                tokens.ensure_fresh()
+
+
+class TwitchTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_twitch_routes_viewer_identity_and_ignores_echo(self):
+        bot = Mock()
+        bot.params = {"TWITCH_CHANNEL": "walker"}
+        bot.chat.process_chat_message = AsyncMock()
+        message = SimpleNamespace(echo=False, channel=SimpleNamespace(name="Walker"),
+                                  author=SimpleNamespace(name="viewer"), content="!yes")
+        await TwitchBot.event_message(bot, message)
+        context, content = bot.chat.process_chat_message.call_args.args
+        self.assertEqual(content, "!yes")
+        self.assertEqual(context.author.name, "viewer")
+        message.echo = True
+        await TwitchBot.event_message(bot, message)
+        self.assertEqual(bot.chat.process_chat_message.call_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

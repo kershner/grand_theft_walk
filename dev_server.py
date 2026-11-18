@@ -14,6 +14,7 @@ from flask import Flask, g, jsonify, request, send_from_directory
 from games import GAMES, get_game
 from core.runtime import (
     WalkerControl,
+    atomic_json,
     configure_logging,
     read_json,
 )
@@ -116,6 +117,7 @@ def main():
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5050)
+    parser.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     profile = get_game(args.game)
     state_dir = (args.state_dir or profile.state_dir).resolve()
@@ -129,7 +131,14 @@ def main():
     )
     logger.info("Log: %s", log_path)
     try:
-        app.run(host=args.host, port=args.port, debug=False)
+        if args.ready_file is None:
+            app.run(host=args.host, port=args.port, debug=False)
+        else:
+            from werkzeug.serving import make_server
+
+            with make_server(args.host, args.port, app, threaded=True) as server:
+                atomic_json(args.ready_file, {"ready": True})
+                server.serve_forever()
     finally:
         app.extensions["gtw_bot"].close()
 

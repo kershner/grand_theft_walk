@@ -26,6 +26,8 @@ htmlcov/
 *.egg-info/
 
 # Local credentials; keep example configurations
+/parameters.json
+/oauth_tokens.json
 .env
 .env.*
 !.env.example

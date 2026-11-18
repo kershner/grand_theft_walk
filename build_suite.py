@@ -146,7 +146,9 @@ def build(keep_stage=False):
                 continue
             copy_file(path, stage / name / path.relative_to(folder))
     # The packaged regression tests also exercise the builder's validation helpers.
-    for name in ("chat_bot.py", "dev_server.py", "build_suite.py", "requirements.txt"):
+    for name in ("chat_bot.py", "dev_server.py", "twitch_bot.py", "twitch_oauth_helper.py",
+                 "start_grand_theft_walk.py", "Start Grand Theft Walk.cmd",
+                 "parameters.example.json", "build_suite.py", "requirements.txt"):
         copy_file(ROOT / name, stage / name)
     for game in GAMES:
         copy_file(ROOT / "games" / game / "profile.json", stage / "games" / game / "profile.json")
