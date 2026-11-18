@@ -90,7 +90,7 @@ class LaunchTests(unittest.TestCase):
         self.stack.enter_context(patch.object(session, "process_mutex"))
         self.pids = self.stack.enter_context(patch.object(session, "game_pids", side_effect=[[], [], [123]]))
         self.status = self.stack.enter_context(patch.object(session, "component_status", return_value={"setup_matches": True}))
-        self.digest = self.stack.enter_context(patch("core.setup.sha256"))
+        self.digest = self.stack.enter_context(patch("core.files.sha256"))
         self.process = Mock(pid=123)
         self.process.poll.return_value = None
         self.spawn = self.stack.enter_context(patch.object(session.subprocess, "Popen", return_value=self.process))

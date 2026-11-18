@@ -15,14 +15,8 @@ from core.controls import (
 from core.missions import MissionSystem
 from core.respawn import Respawn
 from core.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
-from core.runtime import (
-    DEFAULTS,
-    DIRECTIONS,
-    MODES,
-    atomic_json,
-    read_controls,
-    request_expired,
-)
+from core.files import atomic_json
+from core.runtime import DEFAULTS, DIRECTIONS, MODES, read_controls, request_expired
 
 logger = logging.getLogger(__name__)
 SECONDS_PER_STEP = 1.0

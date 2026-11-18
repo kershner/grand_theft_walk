@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.respawn import Respawn
-from core.runtime import atomic_json, control_request
+from core.files import atomic_json
+from core.runtime import control_request
 from core.controller import Controller
 from games.san_andreas import game as sa
 from games.vice_city import game as vc

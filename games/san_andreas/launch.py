@@ -12,7 +12,7 @@ if __package__ in (None, ""):
 
 from core.controls import Keys
 from core.session import StartupWait, choose_save as select_save
-from core.runtime import atomic_json, read_json
+from core.files import atomic_json, read_json
 from games.san_andreas.game import Game, MENU, SAVE_PREFIX, valid_save
 
 logger = logging.getLogger(__name__)

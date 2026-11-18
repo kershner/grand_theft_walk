@@ -6,7 +6,7 @@ from dataclasses import replace
 from unittest.mock import Mock, patch
 
 from games import get_game
-from core.manager import watch
+from core.processes import watch
 from core.winmemory import Memory as ProcessMemory
 from games.vice_city.game import CONNECTIONS, COUNTS, Memory, read_graph
 

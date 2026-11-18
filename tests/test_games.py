@@ -15,7 +15,7 @@ from core.runtime import WalkerControl
 class GameProfileTests(unittest.TestCase):
     def test_runtime_directories_are_isolated_under_the_games_folder(self):
         folders = {game.state_dir for game in GAMES.values()}
-        self.assertEqual(len(folders), 3)
+        self.assertEqual(len(folders), 2)
         self.assertEqual(get_game().state_dir.name, "runtime")
         self.assertEqual(get_game().state_dir.parent.name, "san_andreas")
         for game in GAMES.values():
@@ -27,13 +27,21 @@ class GameProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown game"):
             WalkerControl(game="unknown")
 
+    def test_synthetic_game_is_only_registered_inside_its_test_fixture(self):
+        from tests.fixtures import legacy_game_profile
+
+        self.assertNotIn("gta_iii", GAMES)
+        with legacy_game_profile():
+            self.assertEqual(get_game("gta_iii").title, "GTA III")
+        self.assertNotIn("gta_iii", GAMES)
+
     def test_only_san_andreas_accepts_legacy_untagged_state(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "state.json"
             state = {"updated": time.time(), "controller": "running", "ready": True}
             path.write_text(json.dumps(state), encoding="utf-8")
             self.assertTrue(WalkerControl(folder).snapshot()["ready"])
-            for game in ("vice_city", "gta_iii"):
+            for game in ("vice_city",):
                 with self.subTest(game=game), self.assertRaisesRegex(RuntimeError, "another game"):
                     WalkerControl(folder, game=game).snapshot()
 

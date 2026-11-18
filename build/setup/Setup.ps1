@@ -15,7 +15,7 @@ function Get-ContentSHA256([string]$Path) {
     finally { $hasher.Dispose(); $stream.Dispose() }
 }
 try {
-    $root = $PSScriptRoot
+    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
     $python = Join-Path $root 'venv\Scripts\python.exe'
     $indexPath = Join-Path $root 'bundle-index.json'
     if (Test-Path -LiteralPath $indexPath) {
@@ -36,7 +36,7 @@ try {
     } else {
         $archive = Join-Path $root 'dist\Grand-Theft-Walk-Suite.zip'
         $checksum = $archive + '.sha256'
-        if (-not (Test-Path -LiteralPath $archive) -or -not (Test-Path -LiteralPath $checksum)) { throw 'The setup archive is missing. Run build_suite.py first.' }
+        if (-not (Test-Path -LiteralPath $archive) -or -not (Test-Path -LiteralPath $checksum)) { throw 'The setup archive is missing. Run venv\Scripts\python.exe build\build_suite.py first.' }
         $expected = ((Get-Content -LiteralPath $checksum -Raw).Trim() -split '\s+')[0]
         if ((Get-ContentSHA256 $archive) -ne $expected) { throw 'The setup archive failed verification. Restore or rebuild the ZIP.' }
     }
@@ -60,7 +60,7 @@ try {
     $dependenciesMatch = $LASTEXITCODE -eq 0
     $ErrorActionPreference = 'Stop'
     if (-not $dependenciesMatch) {
-        if ($Action -ne 'Install') { throw 'Python dependencies are missing. Run Setup.cmd -Action Install first.' }
+        if ($Action -ne 'Install') { throw 'Python dependencies are missing. Run build\setup\Setup.cmd -Action Install first.' }
         Write-Host 'Installing project dependencies (internet required on first setup)...'
         & $python -m pip install -r (Join-Path $root 'requirements.txt')
         if ($LASTEXITCODE -ne 0) { throw 'Could not install project dependencies.' }
@@ -84,7 +84,7 @@ try {
         }
     }
     Set-Location -LiteralPath $root
-    $arguments = @('-B','-m','core.setup',$Action.ToLowerInvariant(),'--bundle',$root,'--game',$Game)
+    $arguments = @('-B','-m','build.setup.setup',$Action.ToLowerInvariant(),'--bundle',$root,'--game',$Game)
     if ($SanAndreasPath) { $arguments += @('--san-andreas-dir',$SanAndreasPath) }
     if ($ViceCityPath) { $arguments += @('--vice-city-dir',$ViceCityPath) }
     $logDirectory = Join-Path $root 'runtime'

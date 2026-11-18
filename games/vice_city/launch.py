@@ -11,7 +11,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.controls import Keys
-from core.runtime import atomic_json, read_json
+from core.files import atomic_json, read_json
 from core.session import StartupWait, choose_save as select_save
 from games.vice_city.game import Game, MENU, RuntimeChanges, SAVE_PREFIX, SAVE_SIZE, unlock_regions, valid_save
 

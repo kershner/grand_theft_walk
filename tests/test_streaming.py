@@ -1,6 +1,5 @@
 """Managed launch behavior without starting games, OBS, or a live stream."""
 
-import asyncio
 import json
 import tempfile
 import time
@@ -12,10 +11,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from core.config import load_parameters, select_game
-from core.obs import OBS
-from core.twitch_auth import OAuthTokens
-import start_grand_theft_walk as launcher
-from twitch_bot import TwitchBot
+from streaming.obs import OBS
+from chat.auth import OAuthTokens
+from streaming import launch as launcher
+from chat.twitch import TwitchBot
 
 
 class RotationTests(unittest.TestCase):
@@ -40,8 +39,11 @@ class RotationTests(unittest.TestCase):
                 select_game({"ROTATION": {"games": games}})
         self.assertEqual(select_game({"ROTATION": {"games": ["vice_city"]}}), "vice_city")
 
-    def test_example_is_valid_and_no_credentials_needed_in_dev(self):
-        self.assertEqual(load_parameters(Path(__file__).resolve().parents[1] / "parameters.example.json")["MODE"], "dev")
+    def test_local_dev_config_does_not_require_credentials_or_a_template(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "parameters.json"
+            path.write_text('{"MODE": "dev"}', encoding="utf-8")
+            self.assertEqual(load_parameters(path)["MODE"], "dev")
 
 
 class ReadinessTests(unittest.TestCase):
@@ -66,6 +68,7 @@ class ReadinessTests(unittest.TestCase):
 class SessionLifecycleTests(unittest.TestCase):
     def run_mock_session(self, mode, chat_failure=False):
         import core.manager
+        import core.processes
         import core.winmemory
 
         with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
@@ -74,9 +77,9 @@ class SessionLifecycleTests(unittest.TestCase):
             stack.enter_context(patch.object(core.winmemory, "process_mutex"))
             stack.enter_context(patch.object(core.winmemory, "game_pids", return_value=[]))
             stack.enter_context(patch.object(core.manager, "session_command", return_value=(["python", "launch.py"], root)))
-            job = stack.enter_context(patch.object(core.manager, "ProcessJob")).return_value
-            obs = stack.enter_context(patch("core.obs.OBS")).return_value
-            auth = stack.enter_context(patch("core.twitch_auth.OAuthTokens")).return_value
+            job = stack.enter_context(patch.object(core.processes, "ProcessJob")).return_value
+            obs = stack.enter_context(patch("streaming.obs.OBS")).return_value
+            auth = stack.enter_context(patch("chat.auth.OAuthTokens")).return_value
             control = stack.enter_context(patch.object(launcher, "WalkerControl")).return_value
             control.state_dir = root
             control.snapshot.side_effect = RuntimeError("offline")
@@ -103,7 +106,7 @@ class SessionLifecycleTests(unittest.TestCase):
         obs, auth, spawn = self.run_mock_session("dev")
         obs.prepare.assert_not_called()
         auth.ensure_fresh.assert_not_called()
-        self.assertIn("dev_server.py", str(spawn.call_args_list[1]))
+        self.assertIn("chat.dev", str(spawn.call_args_list[1]))
 
     def test_prod_starts_and_stops_owned_stream(self):
         obs, auth, spawn = self.run_mock_session("prod")
@@ -111,7 +114,7 @@ class SessionLifecycleTests(unittest.TestCase):
         obs.prepare.assert_called_once_with("vice_city")
         obs.start_stream.assert_called_once()
         obs.close.assert_called_once()
-        self.assertIn("twitch_bot.py", str(spawn.call_args_list[1]))
+        self.assertIn("chat.twitch", str(spawn.call_args_list[1]))
 
     def test_chat_startup_failure_cleans_up_without_streaming(self):
         obs, _, _ = self.run_mock_session("prod", chat_failure=True)
@@ -124,9 +127,9 @@ class OBSOwnershipTests(unittest.TestCase):
         client = Mock()
         client.get_stream_status.return_value.output_active = True
         obs = OBS({"settle_seconds": 0})
-        with patch("core.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
-                patch("core.obs.obsws_python.ReqClient", return_value=client), \
-                patch("core.obs.subprocess.Popen") as popen:
+        with patch("streaming.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("streaming.obs.obsws_python.ReqClient", return_value=client), \
+                patch("streaming.obs.subprocess.Popen") as popen:
             with self.assertRaisesRegex(RuntimeError, "already streaming"):
                 obs.prepare("vice_city")
             obs.close()
@@ -137,8 +140,8 @@ class OBSOwnershipTests(unittest.TestCase):
         client = Mock()
         client.get_stream_status.return_value.output_active = False
         obs = OBS({"scenes": {"vice_city": "VC"}, "settle_seconds": 0})
-        with patch("core.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
-                patch("core.obs.obsws_python.ReqClient", return_value=client):
+        with patch("streaming.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("streaming.obs.obsws_python.ReqClient", return_value=client):
             obs.prepare("vice_city")
         client.set_current_program_scene.assert_called_once_with("VC")
         client.start_stream.assert_not_called()
@@ -152,7 +155,7 @@ class TokenTests(unittest.TestCase):
     def test_missing_token_file_explains_authorization_step(self):
         with tempfile.TemporaryDirectory() as folder:
             tokens = OAuthTokens({}, Path(folder) / "missing.json")
-            with self.assertRaisesRegex(RuntimeError, "twitch_oauth_helper.py"):
+            with self.assertRaisesRegex(RuntimeError, "-m chat.oauth"):
                 tokens.ensure_fresh()
 
     def test_refresh_preserves_rotated_token_and_validates_identity(self):
@@ -164,8 +167,8 @@ class TokenTests(unittest.TestCase):
             refreshed.json.return_value = {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}
             validated = Mock(status_code=200)
             validated.json.return_value = {"client_id": "app", "login": "walker", "scopes": ["chat:read", "chat:edit"]}
-            with patch("core.twitch_auth.requests.post", return_value=refreshed) as post, \
-                    patch("core.twitch_auth.requests.get", return_value=validated) as get:
+            with patch("chat.auth.requests.post", return_value=refreshed) as post, \
+                    patch("chat.auth.requests.get", return_value=validated) as get:
                 tokens.ensure_fresh()
                 tokens.ensure_fresh()
             self.assertEqual(json.loads(path.read_text())["refresh_token"], "new-refresh")
@@ -179,7 +182,7 @@ class TokenTests(unittest.TestCase):
             tokens = OAuthTokens({"CLIENT_ID": "app", "TWITCH_BOT_LOGIN": "walker"}, path)
             response = Mock(status_code=200)
             response.json.return_value = {"client_id": "app", "login": "someone_else", "scopes": ["chat:read", "chat:edit"]}
-            with patch("core.twitch_auth.requests.get", return_value=response), self.assertRaisesRegex(RuntimeError, "wrong"):
+            with patch("chat.auth.requests.get", return_value=response), self.assertRaisesRegex(RuntimeError, "wrong"):
                 tokens.ensure_fresh()
 
 

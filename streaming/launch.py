@@ -12,8 +12,10 @@ import uuid
 from pathlib import Path
 
 from core.config import load_parameters, local_path, select_game, twitch_settings
-from core.runtime import WalkerControl, atomic_json, chat_ready, configure_logging, read_json
+from core.files import atomic_json, read_json
+from core.runtime import WalkerControl, chat_ready, configure_logging
 from games import ACTIVE_GAMES, ROOT, get_game
+from core.processes import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +35,6 @@ def wait_for_game(process, control, previous_session, timeout):
     raise RuntimeError("Game did not become ready before STARTUP_TIMEOUT.")
 
 
-def spawn(job, command, directory=ROOT):
-    process = subprocess.Popen(command, cwd=directory)
-    try:
-        job.add(process)
-    except BaseException:
-        process.kill()
-        process.wait(timeout=5)
-        raise
-    return process
-
-
 def wait_for_chat(processes, ready_file, timeout=60):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -56,7 +47,8 @@ def wait_for_chat(processes, ready_file, timeout=60):
 
 
 def run_session(params, parameters_path, game, mode):
-    from core.manager import ProcessJob, session_command
+    from core.manager import session_command
+    from core.processes import ProcessJob, stop_processes
     from core.winmemory import game_pids, process_mutex
 
     with process_mutex("Local\\GrandTheftWalkManager", "A managed Grand Theft Walk session is already running."):
@@ -74,8 +66,8 @@ def run_session(params, parameters_path, game, mode):
         ready_file = ROOT / "runtime" / f"chat-ready-{uuid.uuid4().hex}.json"
         try:
             if mode == "prod":
-                from core.obs import OBS
-                from core.twitch_auth import OAuthTokens
+                from streaming.obs import OBS
+                from chat.auth import OAuthTokens
 
                 twitch_settings(params)
                 OAuthTokens(params, local_path(parameters_path, params.get("TOKENS_FILE", "oauth_tokens.json"))).ensure_fresh()
@@ -87,11 +79,11 @@ def run_session(params, parameters_path, game, mode):
             processes.append(process)
             wait_for_game(process, control, previous_session, params.get("STARTUP_TIMEOUT", 600) + 30)
             if mode == "prod":
-                chat_command = [sys.executable, "-B", str(ROOT / "twitch_bot.py"),
+                chat_command = [sys.executable, "-B", "-m", "chat.twitch",
                                 "--parameters", str(parameters_path), "--game", game]
             else:
                 dev = params.get("DEV_SERVER", {})
-                chat_command = [sys.executable, "-B", str(ROOT / "dev_server.py"), "--game", game,
+                chat_command = [sys.executable, "-B", "-m", "chat.dev", "--game", game,
                                 "--host", dev.get("host", "0.0.0.0"), "--port", str(dev.get("port", 5050))]
             processes.append(spawn(job, [*chat_command, "--ready-file", str(ready_file)]))
             wait_for_chat(processes, ready_file)
@@ -121,9 +113,7 @@ def run_session(params, parameters_path, game, mode):
                 pass
             if obs is not None:
                 obs.close()
-            job.close()
-            for child in processes:
-                child.wait(timeout=10)
+            stop_processes(job, processes)
             ready_file.unlink(missing_ok=True)
 
 
@@ -155,7 +145,7 @@ def main(argv=None):
             raise RuntimeError("Administrator access was not granted.")
         from core.winmemory import elevate
 
-        elevate([str(Path(__file__).resolve()), "--parameters", str(args.parameters),
+        elevate(["-B", "-m", "streaming.launch", "--parameters", str(args.parameters),
                  "--mode", mode, "--game", game, "--elevated"], ROOT)
         return
     configure_logging(ROOT / "runtime", log_name="stream")

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from core.missions import MissionSystem
 from core.navigation import Node, PedestrianGraph, SidewalkNavigator
-from core.runtime import atomic_json
+from core.files import atomic_json
 
 
 def graph_fixture():

@@ -15,9 +15,8 @@ from core.controls import key_down
 from core.controller import Controller
 from core.manager import component_status
 from core.navigation import PedestrianGraph
-from core.runtime import (
-    DIRECTIONS, MODES, atomic_json, configure_logging, queue_movement, read_json,
-)
+from core.files import atomic_json, read_json
+from core.runtime import DIRECTIONS, MODES, configure_logging, queue_movement
 from core.winmemory import Memory, elevate, game_pids, process_mutex
 from games import ACTIVE_GAMES, ROOT, get_game
 
@@ -174,7 +173,7 @@ def launch(game, startup_type, argv=None):
         if any(list(game_pids(other)) for other in ACTIVE_GAMES):
             raise RuntimeError("Close the existing game before using the full launcher.")
         exe = args.game.resolve()
-        from core.setup import sha256
+        from core.files import sha256
 
         if sha256(exe) != profile.verified_executable:
             raise RuntimeError(f"Unsupported {profile.title} executable. Run suite setup first.")

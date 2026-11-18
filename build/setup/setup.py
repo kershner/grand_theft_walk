@@ -6,15 +6,14 @@ Original files and repair checkpoints stay on the destination computer.
 
 import argparse
 import contextlib
-import hashlib
 import json
-import os
 import shutil
-import stat
 import tempfile
 import uuid
 import zipfile
 from pathlib import Path, PureWindowsPath
+
+from core.files import sha256, component_mismatches, under, atomic_json, put_file
 
 STATE_DIR = ".gtw-suite"
 
@@ -63,80 +62,6 @@ def discover_game(install_folder, executable):
     return matches[0] if matches else candidates[0]
 
 
-def sha256(path):
-    if not path.exists():
-        return None
-    if not path.is_file():
-        raise ValueError(f"Expected a file: {path}")
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def component_mismatches(definition, directory):
-    """Use the same installed-file checks for setup and launch readiness."""
-    mismatches = []
-    expected_files = [(entry["path"], entry["sha256"]) for entry in definition["files"]]
-    expected_files += list(definition.get("required_hashes", {}).items())
-    for name, expected in expected_files:
-        actual = sha256(under(directory, name))
-        if actual != expected:
-            mismatches.append({"path": name, "expected": expected, "actual": actual})
-    for name in definition.get("required_files", []):
-        if not under(directory, name).is_file():
-            mismatches.append({"path": name, "expected": "original game data", "actual": None})
-    return mismatches
-
-
-def under(root, name):
-    """Reject traversal, drive paths, alternate streams and linked parents."""
-    root = Path(root).absolute()
-    windows = PureWindowsPath(name)
-    if (not name or windows.is_absolute() or windows.drive or ":" in name
-            or ".." in windows.parts or not windows.parts
-            or any(part.endswith((" ", ".")) for part in windows.parts)):
-        raise ValueError(f"Invalid package path: {name}")
-    path = root.joinpath(*windows.parts)
-    if not path.resolve().is_relative_to(root.resolve()) or path == root:
-        raise ValueError(f"Path escapes installation: {name}")
-    current = path
-    while current != root.parent:
-        if current.exists() or current.is_symlink():
-            attributes = current.lstat()
-            if stat.S_ISLNK(attributes.st_mode) or getattr(attributes, "st_file_attributes", 0) & 0x400:
-                raise ValueError(f"Linked paths cannot be installed over: {current}")
-        if current == root:
-            break
-        current = current.parent
-    return path
-
-
-def atomic_bytes(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    try:
-        temporary.write_bytes(data)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def atomic_json(path, value):
-    atomic_bytes(path, (json.dumps(value, indent=2) + "\n").encode("utf-8"))
-
-
-def put_file(source, target):
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
-    try:
-        shutil.copyfile(source, temporary)
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def verify_bundle(root):
     index = json.loads((root / "bundle-index.json").read_text(encoding="utf-8"))
     if index.get("format") != 1 or not isinstance(index.get("files"), dict):
@@ -160,11 +85,11 @@ def open_bundle(root):
     archive = root / "dist/Grand-Theft-Walk-Suite.zip"
     checksum = archive.with_suffix(".zip.sha256")
     if not archive.is_file() or not checksum.is_file():
-        raise ValueError("The setup archive is missing. Build it with build_suite.py first.")
+        raise ValueError("The setup archive is missing. Run venv\\Scripts\\python.exe build\\build_suite.py first.")
     if sha256(archive) != checksum.read_text(encoding="ascii").split()[0]:
         raise ValueError("The setup ZIP failed its checksum. Restore or rebuild the archive.")
-    scratch = under(root, "build")
-    scratch.mkdir(exist_ok=True)
+    scratch = under(root, "build/staging")
+    scratch.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="setup-", dir=scratch) as temporary:
             stage = Path(temporary)
@@ -376,7 +301,7 @@ class Installer:
                 previous_files = {entry["path"]: entry["after"] for entry in previous["entries"]}
                 if action == "install" and any(sha256(under(self.directory, name)) != expected
                                                 for name, expected in previous_files.items()):
-                    raise ValueError("Installed files changed. Run Setup.cmd -Action Repair to back up changes and restore the pinned setup.")
+                    raise ValueError("Installed files changed. Run build\\setup\\Setup.cmd -Action Repair to back up changes and restore the pinned setup.")
                 next_state = self.upgrade(previous) if previous["component_id"] != self.definition["component_id"] else previous
             else:
                 for name, entry in self.files.items():
@@ -447,7 +372,7 @@ def run_setup(args, bundle):
         results.append(result)
         locations[game] = str(directory.absolute())
     if not results:
-        raise ValueError("No installed games found. Supply the game paths to Setup.ps1.")
+        raise ValueError("No installed games found. Supply the game paths to build/setup/Setup.ps1.")
     if args.action in {"install", "repair"}:
         atomic_json(config, existing | locations)
     print(json.dumps(results, indent=2))
@@ -457,7 +382,7 @@ def run_setup(args, bundle):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "check", "repair", "restore"))
-    parser.add_argument("--bundle", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--bundle", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--game", choices=("all", "san_andreas", "vice_city"), default="all")
     parser.add_argument("--san-andreas-dir", type=Path)
     parser.add_argument("--vice-city-dir", type=Path)

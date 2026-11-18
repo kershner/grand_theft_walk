@@ -14,7 +14,7 @@ def load_parameters(path=ROOT / "parameters.json"):
     try:
         params = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as error:
-        raise ValueError("Copy parameters.example.json to parameters.json and edit it first.") from error
+        raise ValueError('Create a local parameters.json first; {"MODE": "dev"} is enough for development.') from error
     if not isinstance(params, dict):
         raise ValueError("parameters.json must contain an object.")
     for section in ("ROTATION", "DEV_SERVER", "OBS"):

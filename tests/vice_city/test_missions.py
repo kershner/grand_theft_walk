@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from core.missions import MissionSystem
 from core.navigation import Node, PedestrianGraph, SidewalkNavigator
-from core.runtime import atomic_json
+from core.files import atomic_json
 from games.vice_city.game import load_destinations, main_sidewalk_network
 
 

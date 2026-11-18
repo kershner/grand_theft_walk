@@ -65,8 +65,6 @@ def load_profile(game, root=ROOT):
 
 ACTIVE_GAMES = ("san_andreas", "vice_city")
 GAMES = {game: load_profile(game) for game in ACTIVE_GAMES}
-# Legacy chat-protocol fixture; excluded from managed sessions.
-GAMES["gta_iii"] = GameProfile("gta_iii", "GTA III", "gta3.exe", "Grand Theft Auto III")
 
 
 def get_game(game="san_andreas"):

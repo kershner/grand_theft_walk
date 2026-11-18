@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from games import GAMES, get_game
-from core.setup import sha256
+from core.files import sha256
 
 
 def read_game_text(path):

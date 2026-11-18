@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+from pathlib import Path
 
 from games import get_game
 from core.runtime import (
@@ -17,6 +18,7 @@ from core.runtime import (
     require_command,
 )
 from core.voting import CommandVoting
+from core.files import read_json
 
 HELP = {
     "walk": "!walk • Start autowalking. Alias: !w.",
@@ -66,6 +68,17 @@ class ChatBot:
         self.runtime_lock = threading.Lock()
         self.runtime_stop = threading.Event()
         self.runtime_thread = None
+        self.event_lock = threading.Lock()
+        self.seen_events = set()
+        state_dir = getattr(self.control, "state_dir", None)
+        if isinstance(state_dir, (str, Path)):
+            try:
+                previous = read_json(Path(state_dir) / "state.json")
+            except (OSError, ValueError):
+                previous = {}
+            missions = previous.get("missions", {})
+            pending = (missions.get("active") or {}).get("arrival_event_id")
+            self.seen_events = {event["id"] for event in missions.get("events", []) if event["id"] != pending}
 
     def ready_state(self):
         try:
@@ -102,6 +115,25 @@ class ChatBot:
             self.next_announcement_at += missed * ANNOUNCEMENT_INTERVAL
             return [reply]
 
+    def poll_events(self, *, include_announcements=True, wait_for_announcement=False, now=None):
+        """Collect announcements, vote results, and new mission events for either transport."""
+        with self.event_lock:
+            messages = self.poll_announcements(now) if include_announcements else []
+            messages.extend(self.command_voting.drain_events())
+            state = self.ready_state()
+            if state is None:
+                return messages
+            session = state.get("session", state.get("pid", "controller"))
+            if wait_for_announcement and self.announced_session != session:
+                return messages
+            events = state.get("missions", {}).get("events", [])
+            for event in events:
+                if event["id"] not in self.seen_events:
+                    messages.append(event["text"])
+                    self.seen_events.add(event["id"])
+            self.seen_events.intersection_update(event["id"] for event in events)
+            return messages
+
     def start_runtime(self, send):
         if self.runtime_thread is not None:
             return
@@ -109,9 +141,7 @@ class ChatBot:
         def run():
             while not self.runtime_stop.is_set():
                 try:
-                    for message in self.poll_announcements():
-                        send(message)
-                    for message in self.command_voting.drain_events():
+                    for message in self.poll_events():
                         send(message)
                     self.announced_session = self.session
                 except (OSError, ValueError, RuntimeError):

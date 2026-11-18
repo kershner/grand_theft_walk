@@ -4,7 +4,7 @@ import time
 
 import requests
 
-from core.runtime import atomic_json, read_json
+from core.files import atomic_json, read_json
 
 REQUIRED_SCOPES = {"chat:read", "chat:edit"}
 
@@ -21,13 +21,13 @@ class OAuthTokens:
         except FileNotFoundError:
             raise RuntimeError(
                 "Twitch authorization is missing. Run venv\\Scripts\\python.exe "
-                "twitch_oauth_helper.py (using the same --parameters file, if specified), "
+                "-m chat.oauth (using the same --parameters file, if specified), "
                 "sign in as TWITCH_BOT_LOGIN, then retry production startup."
             ) from None
         now = time.time()
         if now >= float(tokens.get("expires_at", 0)) - 60:
             if not tokens.get("refresh_token"):
-                raise RuntimeError("Run twitch_oauth_helper.py to authorize Twitch first.")
+                raise RuntimeError("Run venv\\Scripts\\python.exe -m chat.oauth to authorize Twitch first.")
             response = requests.post("https://id.twitch.tv/oauth2/token", data={
                 "client_id": self.params["CLIENT_ID"],
                 "client_secret": self.params["CLIENT_SECRET"],

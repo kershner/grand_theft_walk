@@ -2,7 +2,7 @@
 
 Uses the existing venv. No Python runtime, virtualenv, credentials or live game
 state is copied. The extracted setup may install missing pinned Python packages
-using installed Python. Run: venv/Scripts/python.exe build_suite.py
+using installed Python. Run: venv/Scripts/python.exe build/build_suite.py
 """
 
 import argparse
@@ -16,11 +16,12 @@ import uuid
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core.runtime import DEFAULTS
-from core.setup import sha256, under, verify_bundle
+from core.files import sha256, under
+from build.setup.setup import verify_bundle
 
 GAMES = ("san_andreas", "vice_city")
 
@@ -118,7 +119,7 @@ def add_component(stage, game):
 
 
 def cleanup_stage(stage):
-    build_root = (ROOT / "build").resolve()
+    build_root = (ROOT / "build/staging").resolve()
     if stage.parent.resolve() != build_root or not stage.name.startswith("suite-"):
         raise ValueError(f"Refusing to clean an unexpected build path: {stage}")
     if stage.resolve().parent != build_root:
@@ -135,10 +136,10 @@ def cleanup_stage(stage):
 
 
 def build(keep_stage=False):
-    stage = ROOT / "build" / ("suite-" + uuid.uuid4().hex)
+    stage = ROOT / "build/staging" / ("suite-" + uuid.uuid4().hex)
     stage.mkdir(parents=True)
     # Explicit inclusion lists keep runtime state and private local files out.
-    for name in ("core", "games", "tests"):
+    for name in ("core", "games", "chat", "streaming", "tests"):
         folder = ROOT / name
         for path in folder.rglob("*.py"):
             parts = path.relative_to(folder).parts
@@ -146,10 +147,12 @@ def build(keep_stage=False):
                 continue
             copy_file(path, stage / name / path.relative_to(folder))
     # The packaged regression tests also exercise the builder's validation helpers.
-    for name in ("chat_bot.py", "dev_server.py", "twitch_bot.py", "twitch_oauth_helper.py",
-                 "start_grand_theft_walk.py", "Start Grand Theft Walk.cmd",
-                 "parameters.example.json", "build_suite.py", "requirements.txt"):
+    for name in ("Start Grand Theft Walk.cmd", "requirements.txt"):
         copy_file(ROOT / name, stage / name)
+    for name in ("__init__.py", "build_suite.py", "setup/__init__.py", "setup/setup.py",
+                 "setup/Setup.cmd", "setup/Setup.ps1", "native/build.ps1",
+                 "native/save_bridge.c", "native/save_request.c", "native/save_shared.h"):
+        copy_file(ROOT / "build" / name, stage / "build" / name)
     for game in GAMES:
         copy_file(ROOT / "games" / game / "profile.json", stage / "games" / game / "profile.json")
         sources = ROOT / "games" / game / "docs/SOURCES.txt"
@@ -159,22 +162,24 @@ def build(keep_stage=False):
             path = stage / "games" / game / "docs/SOURCES.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("Component origins and hashes: ../installer/documentation/\nController is not yet ready; memory writes are disabled.\n", encoding="utf-8")
-    for path in (ROOT / "templates").rglob("*"):
+    for path in (ROOT / "chat/templates").rglob("*"):
         if path.is_file():
-            copy_file(path, stage / "templates" / path.relative_to(ROOT / "templates"))
+            copy_file(path, stage / "chat/templates" / path.relative_to(ROOT / "chat/templates"))
     native = ROOT / "core/native"
     native_manifest = json.loads((native / "manifest.json").read_text(encoding="utf-8"))
     for name, expected in native_manifest["files"].items():
         if sha256(native / name) != expected:
             raise ValueError(f"Native helper failed verification: {name}")
-    for name in ("manifest.json", "build.ps1", "save_bridge.c", "save_shared.h", "save_request.c", *native_manifest["files"]):
+    for name in ("manifest.json", *native_manifest["files"]):
         copy_file(native / name, stage / "core/native" / name)
     definitions = {game: add_component(stage, game) for game in GAMES}
     manifest = {"format": 1, "suite_version": "2026.11-sa-vc-max-distance1", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    copy_file(ROOT / "Setup.ps1", stage / "Setup.ps1")
-    copy_file(ROOT / "Setup.cmd", stage / "Setup.cmd")
-    copy_file(ROOT / "Launch Grand Theft Walk.cmd", stage / "Launch Grand Theft Walk.cmd")
+    # The distributable keeps a convenient root entry point; implementation lives in build/setup.
+    (stage / "Setup.cmd").write_text(
+        '@echo off\nsetlocal DisableDelayedExpansion\ncall "%~dp0build\\setup\\Setup.cmd" %*\n',
+        encoding="ascii",
+    )
     copy_file(ROOT / "README.md", stage / "README.md")
     files = {path.relative_to(stage).as_posix(): sha256(path) for path in sorted(stage.rglob("*")) if path.is_file()}
     bundle_id = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()

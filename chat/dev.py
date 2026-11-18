@@ -12,13 +12,9 @@ from types import SimpleNamespace
 from flask import Flask, g, jsonify, request, send_from_directory
 
 from games import GAMES, get_game
-from core.runtime import (
-    WalkerControl,
-    atomic_json,
-    configure_logging,
-    read_json,
-)
-from chat_bot import ChatBot
+from core.files import atomic_json
+from core.runtime import WalkerControl, configure_logging
+from chat.bot import ChatBot
 
 logger = logging.getLogger(__name__)
 
@@ -31,16 +27,6 @@ def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
     messages_lock = threading.Lock()
     bot = ChatBot(control=WalkerControl(state_dir, game=game))
     app.extensions["gtw_bot"] = bot
-    try:
-        previous = read_json(Path(state_dir) / "state.json")
-    except (OSError, ValueError):
-        previous = {}
-    active = previous.get("missions", {}).get("active") or {}
-    pending_arrival = active.get("arrival_event_id")
-    seen_events = {
-        event["id"] for event in previous.get("missions", {}).get("events", [])
-        if event["id"] != pending_arrival
-    }
 
     def append_message(text):
         with messages_lock:
@@ -87,23 +73,13 @@ def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
     @app.route("/chat")
     def chat():
         try:
-            state = bot.control.snapshot()
-            session = state.get("session", state.get("pid", "controller"))
-            events = state.get("missions", {}).get("events", [])
-            if start_runtime and bot.announced_session != session:
-                events = []
-        except RuntimeError:
-            events = []
-        try:
             after = max(0, int(request.args.get("after", 0)))
         except ValueError:
             after = 0
         with messages_lock:
-            messages.extend(bot.command_voting.drain_events())
-            for event in events:
-                if event["id"] not in seen_events:
-                    messages.append(event["text"])
-                    seen_events.add(event["id"])
+            messages.extend(bot.poll_events(
+                include_announcements=False, wait_for_announcement=start_runtime,
+            ))
             return jsonify({"messages": messages[after:], "cursor": len(messages)})
 
     if start_runtime:

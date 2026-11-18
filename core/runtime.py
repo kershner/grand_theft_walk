@@ -11,6 +11,7 @@ from pathlib import Path
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 from games import get_game
+from core.files import atomic_json, read_json
 
 LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2
@@ -59,33 +60,6 @@ def mission_distance(state, mission):
         return f"{direction}{feet:,} ft away"
     miles = f"{feet / 5280:,.1f}".removesuffix(".0")
     return f"{direction}{miles} mi away"
-
-
-def _retry_file_access(operation, *args, **kwargs):
-    # Windows can briefly deny access while another process replaces the file.
-    for attempt in range(6):
-        try:
-            return operation(*args, **kwargs)
-        except PermissionError:
-            if attempt == 5:
-                raise
-            time.sleep(0.005 * 2**attempt)
-
-
-def read_json(path):
-    return json.loads(_retry_file_access(path.read_text, encoding="utf-8"))
-
-
-def atomic_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        _retry_file_access(
-            temporary.write_text, json.dumps(data, indent=2), encoding="utf-8"
-        )
-        _retry_file_access(temporary.replace, path)
-    finally:
-        _retry_file_access(temporary.unlink, missing_ok=True)
 
 
 def control_request(direction=None, amount=None):

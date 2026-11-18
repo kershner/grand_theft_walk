@@ -10,7 +10,8 @@ from unittest.mock import Mock, patch
 from games import Capabilities
 from core.controller import Controller
 from core.navigation import Node, PedestrianGraph
-from core.runtime import atomic_json, control_request
+from core.files import atomic_json
+from core.runtime import control_request
 
 
 class PartialBackendTests(unittest.TestCase):

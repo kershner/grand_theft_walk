@@ -21,7 +21,10 @@ __pycache__/
 .coverage.*
 coverage.xml
 htmlcov/
-/build/
+# Build sources are versioned; generated staging directories are not.
+/build/staging/
+/build/suite-*/
+/build/setup-*/
 /dist/
 *.egg-info/
 

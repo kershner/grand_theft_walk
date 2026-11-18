@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from build_suite import validate_graphics_capacity
+from build.build_suite import validate_graphics_capacity
 
 
 class GraphicsCapacityTests(unittest.TestCase):

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import setup
+from build.setup import setup
 
 
 def digest(data):
@@ -65,7 +65,7 @@ class InstallerTests(unittest.TestCase):
         for _ in range(2):
             (self.game / "games.san_andreas.game.exe").write_bytes(b"original executable")
             self.assertFalse(self.installer.check()["ok"])
-            with self.assertRaisesRegex(ValueError, "Run Setup.cmd -Action Repair"):
+            with self.assertRaisesRegex(ValueError, r"Run build\\setup\\Setup.cmd -Action Repair"):
                 self.installer.apply("install")
             self.installer.apply("repair")
             self.assertEqual(self.record(), original)
@@ -119,7 +119,7 @@ class InstallerTests(unittest.TestCase):
                 raise OSError("simulated write failure")
             return put(source, target)
 
-        with patch("core.setup.put_file", side_effect=fail_second_write), self.assertRaises(OSError):
+        with patch("build.setup.setup.put_file", side_effect=fail_second_write), self.assertRaises(OSError):
             self.installer.apply("install")
         self.assertEqual((self.game / "games.san_andreas.game.exe").read_bytes(), b"original executable")
         self.assertFalse((self.game / "options.ini").exists())
@@ -137,7 +137,7 @@ class InstallerTests(unittest.TestCase):
                 raise KeyboardInterrupt()
             return put(source, target)
 
-        with patch("core.setup.put_file", side_effect=interrupt_second_write), self.assertRaises(KeyboardInterrupt):
+        with patch("build.setup.setup.put_file", side_effect=interrupt_second_write), self.assertRaises(KeyboardInterrupt):
             self.installer.apply("install")
 
     def test_repair_recovers_a_process_interruption_then_retries(self):
@@ -195,7 +195,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_custom_path_is_saved_and_reused_even_if_executable_is_deleted(self):
         self.index()
-        with patch("core.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
+        with patch("build.setup.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
             setup.main(["install", "--bundle", str(self.bundle), "--game", "vice_city", "--vice-city-dir", str(self.game)])
             (self.game / "games.san_andreas.game.exe").unlink()
             setup.main(["repair", "--bundle", str(self.bundle), "--game", "vice_city"])
@@ -203,7 +203,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_executable_path_installs_and_records_the_game_folder(self):
         self.index()
-        with patch("core.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
+        with patch("build.setup.setup.ensure_closed"), contextlib.redirect_stdout(io.StringIO()):
             setup.main(["install", "--bundle", str(self.bundle), "--game", "vice_city",
                         "--vice-city-dir", str(self.game / self.definition["executable"])])
         self.assertTrue(self.installer.check()["ok"])
@@ -271,7 +271,7 @@ class InstallerTests(unittest.TestCase):
             if target.name == "graphics.asi":
                 raise KeyboardInterrupt()
             return put(source, target)
-        with patch("core.setup.put_file", side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
+        with patch("build.setup.setup.put_file", side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
             upgraded.apply("install")
         self.assertTrue(upgraded.pending_path.exists())
         upgraded.recover()

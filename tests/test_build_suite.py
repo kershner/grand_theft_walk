@@ -5,7 +5,25 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import build_suite
+from build import build_suite
+
+
+class StagingCleanupTests(unittest.TestCase):
+    def test_cleanup_preserves_build_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'build/setup/setup.py'
+            source.parent.mkdir(parents=True)
+            source.write_text('installer source')
+            stage = root / 'build/staging/suite-test'
+            stage.mkdir(parents=True)
+            (stage / 'temporary.txt').write_text('temporary output')
+            with patch.object(build_suite, 'ROOT', root):
+                build_suite.cleanup_stage(stage)
+                with self.assertRaisesRegex(ValueError, 'unexpected build path'):
+                    build_suite.cleanup_stage(source.parent)
+            self.assertEqual(source.read_text(), 'installer source')
+            self.assertFalse(stage.exists())
 
 
 class RetiredComponentTests(unittest.TestCase):

@@ -9,14 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
-from core.runtime import (
-    LOG_BACKUPS,
-    LOG_MAX_BYTES,
-    atomic_json,
-    configure_logging,
-    read_controls,
-    read_json,
-)
+from core.files import atomic_json, read_json
+from core.runtime import LOG_BACKUPS, LOG_MAX_BYTES, configure_logging, read_controls
 
 
 def write_logs(folder, worker):

@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from dev_server import create_app
+from chat.dev import create_app
 from games import Capabilities, get_game
 from core.runtime import UnsupportedCommandError
-from chat_bot import ANNOUNCEMENT_INTERVAL
+from chat.bot import ANNOUNCEMENT_INTERVAL
 
 
 class ChatIntegrationTests(unittest.TestCase):
@@ -161,7 +161,7 @@ class ChatIntegrationTests(unittest.TestCase):
                     self.assertEqual(updated["mode"], mode)
         self.assertEqual(self.client.get("/chat").json["messages"], [])
         expected = self.control()
-        with self.assertLogs("chat_bot", level="WARNING"):
+        with self.assertLogs("chat.bot", level="WARNING"):
             for command in ("up 0", "down 101", "center 5", "up nope"):
                 self.command(command)
                 self.assertEqual(self.control(), expected)
@@ -298,7 +298,7 @@ class ChatIntegrationTests(unittest.TestCase):
             self.assertLess(abs(time.time() - self.control()["jump"]["issued"]), 2)
         self.assertEqual(self.client.get("/chat").json["messages"], [])
         expected = self.control()
-        with self.assertLogs("chat_bot", level="WARNING"):
+        with self.assertLogs("chat.bot", level="WARNING"):
             self.command("jump 100")
         self.assertEqual(self.control(), expected)
 
@@ -310,7 +310,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertTrue(self.control()["walking"])
         self.assertEqual(self.client.get("/chat").json["messages"], [])
         before = self.control()
-        with self.assertLogs("chat_bot", level="WARNING"):
+        with self.assertLogs("chat.bot", level="WARNING"):
             self.command("drop 2")
         self.assertEqual(self.control(), before)
         self.state["capabilities"]["ledge_drop"] = False
@@ -526,7 +526,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(client.get("/chat?after=1").json["messages"], [])
 
     def test_live_mission_events_wait_until_startup_messages_are_delivered(self):
-        with patch("dev_server.ChatBot.start_runtime") as start:
+        with patch("chat.dev.ChatBot.start_runtime") as start:
             app = create_app(self.root, game=self.game)
         bot = app.extensions["gtw_bot"]
         self.addCleanup(bot.close)
@@ -546,7 +546,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(messages[0], "Grand Theft Walk is online!")
 
     def test_invalid_movement_is_silent_and_help_remains_available(self):
-        with self.assertLogs("chat_bot", level="WARNING"):
+        with self.assertLogs("chat.bot", level="WARNING"):
             for command in (
                 "l 0",
                 "r 101",
@@ -738,6 +738,14 @@ class GTAIIIChatIntegrationTests(ChatIntegrationTests):
     """Same interaction contract with simulated GTA III controller reports."""
 
     game = "gta_iii"
+
+    def setUp(self):
+        from tests.fixtures import legacy_game_profile
+
+        fixture = legacy_game_profile()
+        fixture.start()
+        self.addCleanup(fixture.stop)
+        super().setUp()
 
 
 if __name__ == "__main__":
