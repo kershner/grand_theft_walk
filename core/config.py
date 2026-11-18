@@ -61,4 +61,6 @@ def twitch_settings(params):
         value = params[key]
         if not value.isascii() or not value.replace("_", "").isalnum():
             raise ValueError(f"{key} must be a Twitch login without # or spaces.")
+    if params["TWITCH_CHANNEL"].lower() != params["TWITCH_BOT_LOGIN"].lower():
+        raise ValueError("TWITCH_BOT_LOGIN must match TWITCH_CHANNEL to manage stream metadata. Authorize as the broadcaster.")
     return params

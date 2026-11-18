@@ -57,6 +57,22 @@ logger = logging.getLogger(__name__)
 ANNOUNCEMENT_INTERVAL = 20 * 60
 
 
+def location_text(state):
+    location = state.get("location") or {}
+    parts = []
+    if location.get("places"):
+        parts.append(", ".join(location["places"]))
+    clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
+    if clock:
+        period = location.get("period")
+        parts.append(f"{clock} ({period})" if period else clock)
+    if location.get("weather"):
+        parts.append(location["weather"])
+    if location.get("heading"):
+        parts.append(f"heading {location['heading']}")
+    return " • ".join(parts)
+
+
 class ChatBot:
     def __init__(self, control=None):
         self.control = control if control is not None else WalkerControl()
@@ -266,19 +282,11 @@ class ChatBot:
         state = self.control.snapshot() if state is None else state
         if not chat_ready(state):
             return "Game loading; please wait."
-        location = state.get("location") or {}
         game = getattr(self.control, "game", get_game())
         parts = [f"Game: {game.title}"]
-        if location.get("places"):
-            parts.append(", ".join(location["places"]))
-        clock = " ".join(filter(None, (location.get("date"), location.get("time"))))
-        if clock:
-            period = location.get("period")
-            parts.append(f"{clock} ({period})" if period else clock)
-        if location.get("weather"):
-            parts.append(location["weather"])
-        if location.get("heading"):
-            parts.append(f"heading {location['heading']}")
+        location = location_text(state)
+        if location:
+            parts.append(location)
         settings = state.get("settings", {})
         perspective = "first" if settings.get("first_person") else "third"
         parts.extend(

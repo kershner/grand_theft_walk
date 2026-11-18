@@ -15,12 +15,10 @@ import requests
 
 from core.config import load_parameters, local_path, twitch_settings
 from games import ROOT
+from chat.auth import REQUIRED_SCOPES
 
 
 REDIRECT_URI = "http://localhost:3000"
-REQUIRED_SCOPES = {
-    "chat:read", "chat:edit",
-}
 
 
 def wait_for_code(client_id, scopes):

@@ -292,6 +292,33 @@ class MissionTests(unittest.TestCase):
 
 
 class MissionRoutingTests(unittest.TestCase):
+    def test_disconnected_mission_keeps_walking_and_resumes_when_reconnected(self):
+        graph = graph_fixture()
+        graph = PedestrianGraph(list(graph.nodes.values()) + [
+            Node((1, 0), (1000, 0, 0), (((1, 1), False),)),
+            Node((1, 1), (1000, 10, 0), (((1, 0), False), ((1, 2), False))),
+            Node((1, 2), (1000, 20, 0), (((1, 1), False),)),
+        ])
+        navigator = SidewalkNavigator(graph)
+        navigator.set_destination((0, 4))
+        self.assertEqual(navigator.waypoint((1000, 0, 0), 0, 0, 0), (1000, 10, 0))
+        self.assertIn("mission unreachable", navigator.message)
+        self.assertEqual(navigator.waypoint((1000, 10, 0), 0, 0, 1), (1000, 20, 0))
+        self.assertEqual(navigator.destination, (0, 4))
+        # Returning to the connected network automatically resumes the mission.
+        self.assertEqual(navigator.waypoint((0, 0, 0), 0, 0, 2), (0, 10, 0))
+        self.assertNotIn("unreachable", navigator.message)
+        self.assertEqual(navigator.waypoint((0, 10, 0), 0, 0, 3), (0, 20, 0))
+
+    def test_temporary_route_block_waits_then_retries_without_roaming(self):
+        navigator = SidewalkNavigator(graph_fixture())
+        navigator.set_destination((0, 4))
+        navigator.blocked[((0, 1), (0, 4))] = 30
+        self.assertIsNone(navigator.waypoint((0, 0, 0), 0, 0, 0))
+        self.assertIn("waiting to retry", navigator.message)
+        self.assertNotIn("mission unreachable", navigator.message)
+        self.assertEqual(navigator.waypoint((0, 0, 0), 0, 0, 31), (0, 10, 0))
+
     def test_shortest_route_resumes_after_viewer_detour_and_mode_reset(self):
         navigator = SidewalkNavigator(graph_fixture())
         navigator.set_destination((0, 4))

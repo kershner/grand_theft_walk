@@ -203,6 +203,18 @@ class NavigatorTests(unittest.TestCase):
 
 
 class MovementTests(unittest.TestCase):
+    def test_unreachable_mission_does_not_release_forward_in_sidewalk_mode(self):
+        graph = PedestrianGraph(list(graph_fixture().nodes.values()) + [
+            Node((1, 0), (1000, 0, 0), (((1, 1), False),)),
+            Node((1, 1), (1000, 10, 0), (((1, 0), False),)),
+        ])
+        self.movement.navigator = SidewalkNavigator(graph)
+        self.movement.navigator.set_destination((1, 1))
+        self.state["heading"] = self.state["camera_heading"] = 0
+        status = self.movement.tick(self.state, True, "sidewalk")
+        self.assertIn("mission unreachable", status)
+        self.keys.set.assert_called_with({"walk", "forward"})
+
     def test_large_turn_aligns_without_walking_in_a_circle(self):
         self.movement.mode = "sidewalk"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, -3, 0)):

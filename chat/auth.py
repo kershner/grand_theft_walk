@@ -6,7 +6,7 @@ import requests
 
 from core.files import atomic_json, read_json
 
-REQUIRED_SCOPES = {"chat:read", "chat:edit"}
+REQUIRED_SCOPES = {"chat:read", "chat:edit", "channel:manage:broadcast"}
 
 
 class OAuthTokens:
@@ -53,7 +53,7 @@ class OAuthTokens:
             if (account.get("client_id") != self.params["CLIENT_ID"]
                     or account.get("login", "").lower() != self.params["TWITCH_BOT_LOGIN"].lower()
                     or not REQUIRED_SCOPES.issubset(account.get("scopes", []))):
-                raise RuntimeError("Twitch token has the wrong app, login, or chat permissions; reauthorize.")
+                raise RuntimeError("Twitch token has the wrong app, login, or permissions; run venv\\Scripts\\python.exe -m chat.oauth to reauthorize.")
             self.validated_at = now
         self.tokens = tokens
         return tokens

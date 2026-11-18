@@ -213,6 +213,7 @@ class SidewalkNavigator:
         self.blocked = {}
         self.avoided = {}
         self.destination = None
+        self.destination_costs = {}
         self.route_costs = {}
         self.route_signature = None
         self.reset()
@@ -223,10 +224,16 @@ class SidewalkNavigator:
     def update_route(self):
         signature = (self.destination, frozenset(self.blocked), frozenset(self.avoided))
         if signature != self.route_signature:
+            if self.route_signature is None or self.destination != self.route_signature[0]:
+                self.destination_costs = (
+                    self.graph.distances_to(self.destination)
+                    if self.destination in self.graph.nodes
+                    else {}
+                )
             self.route_costs = (
                 self.graph.distances_to(self.destination, self.blocked, self.avoided)
-                if self.destination in self.graph.nodes
-                else {}
+                if self.destination in self.graph.nodes and (self.blocked or self.avoided)
+                else self.destination_costs
             )
             self.route_signature = signature
 
@@ -277,6 +284,9 @@ class SidewalkNavigator:
             self.target = node.key
             self.message = "joining pedestrian path"
         node = self.graph.nodes[self.target]
+        # Respawns and free roaming can leave a saved mission on a disconnected
+        # sidewalk network. Keep exploring there instead of waiting forever.
+        mission_unreachable = self.destination is not None and node.key not in self.destination_costs
         remaining = distance(position, node.position)
         passed = False
         if self.previous is not None:
@@ -305,7 +315,7 @@ class SidewalkNavigator:
                 and key not in self.avoided
             ]
             forward = [option for option in options if option[0].key != self.previous]
-            if forward and (self.destination is None or self.turn):
+            if forward and (self.destination is None or mission_unreachable or self.turn):
                 options = forward
             if not options:
                 self.message = "pedestrian path blocked; waiting to retry"
@@ -324,7 +334,7 @@ class SidewalkNavigator:
                 else:
                     chosen = min(options, key=lambda option: abs(delta(option)))
                 self.turn = None
-            elif self.destination is not None:
+            elif self.destination is not None and not mission_unreachable:
                 reachable = [
                     option for option in options if option[0].key in self.route_costs
                 ]
@@ -354,6 +364,8 @@ class SidewalkNavigator:
                 if self.crossing
                 else "following sidewalk"
             )
+            if mission_unreachable:
+                self.message += "; mission unreachable from this path"
         return node.position
 
     def report(self):
