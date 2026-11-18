@@ -21,6 +21,8 @@ from core.runtime import DEFAULTS, DIRECTIONS, MODES, read_controls, request_exp
 logger = logging.getLogger(__name__)
 SECONDS_PER_STEP = 1.0
 WALK_SPEED_MULTIPLIER = 0.75
+RECOVERY_ESCAPE_RADIUS = 8.0
+RECOVERY_ESCALATE_AFTER = 3
 
 
 def distance(a, b):
@@ -35,6 +37,9 @@ class Walking:
         self.origin = None
         self.progress_at = 0.0
         self.recovery_turn = None
+        self.recovery_steps = 20
+        self.recovery_anchor = None
+        self.recovery_attempts = 0
         self.recoveries = 0
         self.mode = None
         self.navigator = SidewalkNavigator(graph) if graph is not None else None
@@ -73,6 +78,8 @@ class Walking:
         self.keys.release()
         self.origin = None
         self.recovery_turn = None
+        self.recovery_anchor = None
+        self.recovery_attempts = 0
         self.smooth_turn.reset()
         self.manual_turn = 0
         self.manual_direction = None
@@ -95,13 +102,24 @@ class Walking:
             and now < self.manual_until
         )
 
-    def recover(self):
+    def recover(self, position, now):
         self.keys.release()
         self.recoveries += 1
-        self.recovery_turn = 20 * MOUSE_UNITS_PER_STEP
+        if self.recovery_anchor is None:
+            self.recovery_anchor = dict(position)
+        self.recovery_attempts += 1
+        persistent = (
+            self.mode in ("mission", "sidewalk")
+            and self.recovery_attempts >= RECOVERY_ESCALATE_AFTER
+        )
+        self.recovery_steps = 50 if persistent else 20
+        self.recovery_turn = self.recovery_steps * MOUSE_UNITS_PER_STEP
+        if persistent and self.navigator:
+            self.navigator.avoid_target(now)
         self.aligning = False
+        self.turn_direction = 0
         self.smooth_turn.reset()
-        return "obstacle recovery: turning right 20"
+        return f"obstacle recovery: turning right {self.recovery_steps}"
 
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
@@ -119,6 +137,12 @@ class Walking:
             self.stop()
             return "stopped"
         position = state["position"]
+        # A short sidestep followed by returning to the same obstacle is still
+        # the same stuck episode. Reset only after actually leaving the area.
+        if (self.recovery_anchor is not None
+                and distance(position, self.recovery_anchor) >= RECOVERY_ESCAPE_RADIUS):
+            self.recovery_anchor = None
+            self.recovery_attempts = 0
         # Finish the right turn and try walking before sidewalk steering resumes.
         if self.recovery_turn is not None:
             if self.recovery_turn:
@@ -127,14 +151,15 @@ class Walking:
                     self.keys.turn(turn)
                 self.keys.set(self.walk_modifier)
                 self.origin, self.progress_at = position, now
-                return "obstacle recovery: turning right 20"
+                return f"obstacle recovery: turning right {self.recovery_steps}"
             self.keys.set(self.walk_modifier | {"forward"})
-            if distance(position, self.origin) >= 0.8:
+            escape_distance = 3.0 if self.recovery_steps == 50 else 0.8
+            if distance(position, self.origin) >= escape_distance:
                 self.recovery_turn = None
                 self.origin, self.progress_at = position, now
                 self.smooth_turn.reset()
             elif now - self.progress_at > 4.0:
-                return self.recover()
+                return self.recover(position, now)
             return "obstacle recovery: walking forward"
         status = "walking freely"
         desired_turn = 0.0
@@ -188,7 +213,7 @@ class Walking:
         if self.origin is None or distance(position, self.origin) >= 0.8:
             self.origin, self.progress_at = position, now
         elif now - self.progress_at > 4.0:
-            return self.recover()
+            return self.recover(position, now)
         return status
 
 

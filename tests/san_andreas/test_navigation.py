@@ -336,6 +336,89 @@ class MovementTests(unittest.TestCase):
                 self.keys.turn.assert_not_called()
                 self.keys.set.assert_not_called()
                 self.keys.release.assert_called()
+                self.assertIsNone(self.movement.recovery_anchor)
+                self.assertEqual(self.movement.recovery_attempts, 0)
+
+    def finish_recovery_turn(self, start):
+        self.keys.turn.reset_mock()
+        navigator = self.movement.navigator
+        with patch.object(navigator, "waypoint", side_effect=AssertionError("route interrupted recovery")):
+            for step in range(1, 1201):
+                now = start + step / 120
+                with patch("core.controller.time.monotonic", return_value=now):
+                    self.movement.tick(self.state, True, self.movement.mode)
+                if self.movement.recovery_turn == 0:
+                    return now
+        self.fail("recovery turn never finished")
+
+    def test_short_escapes_back_into_same_obstacle_escalate_in_both_sidewalk_modes(self):
+        for mode in ("mission", "sidewalk"):
+            with self.subTest(mode=mode):
+                self.movement = Walking(graph_fixture())
+                navigator = self.movement.navigator
+                self.state["position"] = {"x": 0, "y": 0, "z": 0}
+                now = 0
+                with patch.object(navigator, "waypoint", return_value=(0, 10, 0)):
+                    with patch("core.controller.time.monotonic", return_value=now):
+                        self.movement.tick(self.state, True, mode)
+                    navigator.previous, navigator.target = (0, 0), (0, 4)
+                    for amount in (20, 20, 50):
+                        now += 4.1
+                        with patch("core.controller.time.monotonic", return_value=now):
+                            self.assertEqual(
+                                self.movement.tick(self.state, True, mode),
+                                f"obstacle recovery: turning right {amount}",
+                            )
+                        now = self.finish_recovery_turn(now)
+                        self.assertEqual(
+                            sum(call.args[0] for call in self.keys.turn.call_args_list),
+                            amount * 10,
+                        )
+                        # A small escape must not erase the nearby failures.
+                        self.state["position"] = {"x": 0, "y": 1, "z": 0}
+                        now += 0.01
+                        with patch("core.controller.time.monotonic", return_value=now):
+                            self.movement.tick(self.state, True, mode)
+                        if amount == 20:
+                            self.assertIsNone(self.movement.recovery_turn)
+                            self.assertFalse(navigator.blocked)
+                            self.state["position"] = {"x": 0, "y": 0, "z": 0}
+                            now += 0.01
+                            with patch("core.controller.time.monotonic", return_value=now):
+                                self.movement.tick(self.state, True, mode)
+                        else:
+                            self.assertEqual(self.movement.recovery_turn, 0)
+                            self.assertIn(((0, 0), (0, 4)), navigator.blocked)
+                            self.assertIn((0, 4), navigator.avoided)
+                            self.assertIsNone(navigator.target)
+                    self.state["position"] = {"x": 0, "y": 3.1, "z": 0}
+                    now += 0.01
+                    with patch("core.controller.time.monotonic", return_value=now):
+                        self.movement.tick(self.state, True, mode)
+                    self.assertIsNone(self.movement.recovery_turn)
+                    # Leaving the area restores the ordinary small recovery.
+                    self.state["position"] = {"x": 0, "y": 9, "z": 0}
+                    now += 0.01
+                    with patch("core.controller.time.monotonic", return_value=now):
+                        self.movement.tick(self.state, True, mode)
+                    with patch("core.controller.time.monotonic", return_value=now + 4.1):
+                        self.assertIn("turning right 20", self.movement.tick(self.state, True, mode))
+
+    def test_stationary_retries_stay_escalated_until_leaving_the_area(self):
+        for mode in ("mission", "sidewalk"):
+            with self.subTest(mode=mode):
+                self.movement = Walking(graph_fixture())
+                self.movement.navigator.rng = random.Random(0)
+                with patch("core.controller.time.monotonic", return_value=0):
+                    self.movement.tick(self.state, True, mode)
+                now = 0
+                for amount in (20, 20, 50, 50):
+                    now += 4.1
+                    with patch("core.controller.time.monotonic", return_value=now):
+                        self.assertIn(
+                            f"turning right {amount}", self.movement.tick(self.state, True, mode)
+                        )
+                    now = self.finish_recovery_turn(now)
 
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
         self.state["camera_heading"] = 0.0
