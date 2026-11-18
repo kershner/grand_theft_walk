@@ -53,7 +53,7 @@ class Walking:
         if not usable:
             return False
         self.set_mode(mode)
-        if mode == "sidewalk":
+        if mode in ("mission", "sidewalk"):
             if self.navigator is None or direction not in ("left", "right", "forward"):
                 return False
             self.navigator.turn = direction
@@ -85,6 +85,8 @@ class Walking:
             self.stop()
             if self.navigator:
                 self.navigator.reset()
+                if mode != "mission":
+                    self.navigator.set_destination(None)
             self.mode = mode
 
     def backing_up(self, now):
@@ -136,7 +138,7 @@ class Walking:
             return "obstacle recovery: walking forward"
         status = "walking freely"
         desired_turn = 0.0
-        if mode == "sidewalk":
+        if mode in ("mission", "sidewalk"):
             if self.navigator is None:
                 self.stop()
                 return "sidewalk paths unavailable; switch to free roam: " + str(
@@ -178,7 +180,7 @@ class Walking:
                 return f"stepping {self.manual_direction}"
             self.keys.release()
             return "turning" if self.manual_turn else "stopped"
-        if mode == "sidewalk" and self.aligning:
+        if mode in ("mission", "sidewalk") and self.aligning:
             self.keys.set(self.walk_modifier)
             self.origin, self.progress_at = position, now
             return "aligning with pedestrian path"
@@ -247,7 +249,7 @@ class Controller:
         self.report = {}
         logger.info(
             "Controller ready. Return to the game.\n"
-            "%sF5 sidewalk/free | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
+            "%sF5 free/mission/sidewalk | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
             "Available features: %s",
             "F11 first-person | " if self.capabilities.first_person else "",
             ", ".join(name.replace("_", " ") for name, enabled in self.capabilities.report().items() if enabled) or "basic walking",
@@ -306,7 +308,7 @@ class Controller:
                     self.settings["first_person"] = not self.settings["first_person"]
                 elif key == "f5":
                     self.settings["mode"] = (
-                        "free" if self.settings["mode"] == "sidewalk" else "sidewalk"
+                        MODES[(MODES.index(self.settings["mode"]) + 1) % len(MODES)]
                     )
                 elif key == "f6":
                     self.settings["walking"] = not self.settings["walking"]
@@ -453,11 +455,12 @@ class Controller:
         if self.movement.navigator:
             active = self.missions.data["active"]
             self.movement.navigator.set_destination(
-                tuple(active["node"]) if active else None
+                tuple(active["node"])
+                if active and self.settings["mode"] == "mission" else None
             )
         if state.get("ready"):
             self.update_game(state, now, saving)
-            if holding and self.settings["mode"] == "sidewalk":
+            if holding and self.settings["mode"] == "mission":
                 self.movement.stop()
                 status = "staying inside mission area"
             else:

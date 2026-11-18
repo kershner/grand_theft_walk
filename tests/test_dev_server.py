@@ -104,6 +104,25 @@ class ChatIntegrationTests(unittest.TestCase):
             self.command(command)
             self.assertEqual(self.control(), expected)
 
+    def test_mission_mode_accepts_commands_and_queues_turns(self):
+        self.command("mode mission")
+        self.assertEqual(self.control()["mode"], "mission")
+        self.command("walk")
+        self.command("left")
+        self.assertEqual(self.control()["steering"]["direction"], "left")
+        self.assertEqual(
+            self.client.get("/chat").json["messages"][-1],
+            "Mission mode: direction queued for the next junction. Use !mode free for manual movement.",
+        )
+        expected = self.control()
+        self.command("back")
+        self.assertEqual(self.control(), expected)
+        self.assertEqual(
+            self.client.get("/chat").json["messages"][-1],
+            "Back is unavailable in mission mode. Use !mode free for manual movement.",
+        )
+        self.timer.assert_not_called()
+
     def test_direction_aliases_preserve_autowalk_and_send_amount(self):
         self.set_mode("free")
         for walking in (False, True):
@@ -135,8 +154,8 @@ class ChatIntegrationTests(unittest.TestCase):
             ],
         )
 
-    def test_view_commands_work_in_both_modes_without_replacing_steering(self):
-        for mode in ("free", "sidewalk"):
+    def test_view_commands_work_in_all_modes_without_replacing_steering(self):
+        for mode in ("free", "mission", "sidewalk"):
             for walking in (False, True):
                 settings = dict(
                     self.settings,

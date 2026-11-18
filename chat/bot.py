@@ -8,6 +8,7 @@ from pathlib import Path
 from games import get_game
 from core.runtime import (
     DIRECTIONS,
+    MODES,
     MOVEMENT_COMMANDS,
     NavigationModeError,
     UnsupportedCommandError,
@@ -23,19 +24,19 @@ from core.files import read_json
 HELP = {
     "walk": "!walk • Start autowalking. Alias: !w.",
     "stop": "!stop • Stop movement without exiting the controller. Alias: !s.",
-    "left": "!left [1-100] • Turn left in free mode; choose the next left in sidewalk mode. Alias: !l. Default: 1.",
-    "right": "!right [1-100] • Turn right in free mode; choose the next right in sidewalk mode. Alias: !r. Default: 1.",
-    "up": "!up [1-100] • Look up in either navigation mode. Alias: !u. Default: 1.",
-    "down": "!down [1-100] • Look down in either navigation mode. Alias: !d. Default: 1.",
+    "left": "!left [1-100] • Turn left in free mode; choose the next left in mission or sidewalk mode. Alias: !l. Default: 1.",
+    "right": "!right [1-100] • Turn right in free mode; choose the next right in mission or sidewalk mode. Alias: !r. Default: 1.",
+    "up": "!up [1-100] • Look up in any navigation mode. Alias: !u. Default: 1.",
+    "down": "!down [1-100] • Look down in any navigation mode. Alias: !d. Default: 1.",
     "center": "!center • Level the view without changing direction or navigation mode.",
-    "forward": "!forward [1-100] • Move forward that many one-second steps in free mode. Alias: !f. Default: 1.",
+    "forward": "!forward [1-100] • Move forward that many one-second steps in free mode; choose straight ahead at the next junction in mission or sidewalk mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] • Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
     "drop": "!drop • Let go of a ledge in San Andreas. Only works while climbing or hanging.",
     "jump": "!jump • High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
     "respawn": "!respawn • Start a 60-second vote to kill the player and respawn normally. Vote !yes or !no; ties fail.",
     "yes": "!yes • Vote yes on the active command vote.",
     "no": "!no • Vote no on the active command vote.",
-    "mode": "!mode <sidewalk|free>: Switch to sidewalk navigation or free roaming.",
+    "mode": "!mode <free|mission|sidewalk>: Free roaming, sidewalks toward the mission, or endless sidewalk exploration.",
     "camera": "!camera [first|third]: Toggle the camera or select a perspective.",
     "help": "!help [command] • Show commands or details for a command.",
     "more": "!more • Show the remaining commands.",
@@ -236,7 +237,7 @@ class ChatBot:
                 and 1 <= int(args[0]) <= 100
             )
         elif name == "mode":
-            valid = args in (["sidewalk"], ["free"])
+            valid = len(args) == 1 and args[0] in MODES
         elif name == "camera":
             valid = args in ([], ["first"], ["third"])
         else:
@@ -267,11 +268,11 @@ class ChatBot:
         settings = self.control.request(name, args)
         if name in {"walk", "stop"}:
             return "Autowalk toggled"
-        if name in {"left", "right", "forward"} and settings["mode"] == "sidewalk":
+        if name in {"left", "right", "forward"} and settings["mode"] in ("mission", "sidewalk"):
             hint = "Use !mode free for manual movement."
             if not settings["walking"]:
                 hint = "Use !walk to continue or !mode free for manual movement."
-            return f"Sidewalk mode: direction queued for the next junction. {hint}"
+            return f"{settings['mode'].capitalize()} mode: direction queued for the next junction. {hint}"
         if name == "mode":
             return f"Navigation mode: {settings['mode']}."
         if name == "camera":

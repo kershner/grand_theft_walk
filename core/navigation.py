@@ -3,6 +3,7 @@
 import heapq
 import logging
 import math
+import random
 import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -207,9 +208,11 @@ class PedestrianGraph:
 
 
 class SidewalkNavigator:
-    def __init__(self, graph):
+    def __init__(self, graph, rng=None):
         self.graph = graph
+        self.rng = rng if rng is not None else random.Random()
         self.visits = Counter()
+        self.edge_visits = Counter()
         self.blocked = {}
         self.avoided = {}
         self.destination = None
@@ -348,14 +351,34 @@ class SidewalkNavigator:
                         + self.route_costs[option[0].key]
                     ),
                 )
-            else:
+            elif self.destination is not None:
+                # Preserve mission mode's fallback on disconnected networks.
                 chosen = min(
                     options,
                     key=lambda option: (
                         abs(delta(option)) + min(self.visits[option[0].key], 8) * 0.8
                     ),
                 )
+            else:
+                # Always favor less-visited paths, even after hours of walking.
+                # Randomize equally explored branches, with a gentle preference
+                # for continuing ahead and for links we have used less often.
+                fewest_visits = min(self.visits[option[0].key] for option in options)
+                fresh = [
+                    option for option in options
+                    if self.visits[option[0].key] == fewest_visits
+                ]
+                chosen = self.rng.choices(
+                    fresh,
+                    weights=[
+                        1 / ((1 + abs(delta(option)))
+                             * (1 + self.edge_visits[(node.key, option[0].key)]))
+                        for option in fresh
+                    ],
+                    k=1,
+                )[0]
             self.visits[node.key] += 1
+            self.edge_visits[(node.key, chosen[0].key)] += 1
             self.previous, self.target = node.key, chosen[0].key
             self.crossing = chosen[1]
             node = chosen[0]

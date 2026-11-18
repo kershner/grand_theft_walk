@@ -17,7 +17,7 @@ LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2
 DEFAULT_STATE_DIR = get_game().state_dir
 PROTOCOL_VERSION = 1
-MODES = ("sidewalk", "free")
+MODES = ("free", "mission", "sidewalk")
 DIRECTIONS = {"left", "right", "forward", "back", "up", "down"}
 VIEW_COMMANDS = {"up", "down", "center"}
 MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump", "drop", "center"}
@@ -28,7 +28,7 @@ DEFAULTS = {
     "protection": True,
     "unlock_map": True,
     "quit": False,
-    "mode": "sidewalk",
+    "mode": "mission",
     "peaceful": True,
     "autosave": True,
     "first_person": False,
@@ -172,7 +172,7 @@ class WalkerControl:
                 raise RuntimeError("The walker controller is stopping; please wait.")
             if name == "back" and settings.get("mode") != "free":
                 raise NavigationModeError(
-                    "Back is unavailable in sidewalk mode. Use !mode free for manual movement."
+                    f"Back is unavailable in {settings.get('mode')} mode. Use !mode free for manual movement."
                 )
             if name in MOVEMENT_COMMANDS:
                 queue_movement(settings, name, int(args[0]) if args else 1)

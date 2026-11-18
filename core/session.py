@@ -262,7 +262,7 @@ def update_control(parser, args):
         settings["quit"] = True
     elif args.command == "mode":
         if args.value not in MODES:
-            parser.error("Specify sidewalk or free.")
+            parser.error("Specify free, mission or sidewalk.")
         settings["mode"] = args.value
     elif args.command == "camera":
         if args.value not in ("first", "third"):
