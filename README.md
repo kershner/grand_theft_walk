@@ -12,22 +12,21 @@ commands in PowerShell from the extracted folder. Accept the administrator promp
 ```
 
 Use `san_andreas` or `vice_city` for `<game>`. First setup needs internet for Python packages.
+From a source checkout, use `.\build\setup\Setup.cmd` instead of `.\Setup.cmd`.
 
 ## Run
 
-Launch the game:
+Launch the game and local chat controls:
 
 ```powershell
-& ".\Launch Grand Theft Walk.cmd" launch <game>
+& ".\Start Grand Theft Walk.cmd" --mode dev --game <game>
 ```
 
-Start chat controls in a second terminal:
+For Twitch chat and OBS streaming:
 
 ```powershell
-.\venv\Scripts\python.exe -B dev_server.py --game <game>
+& ".\Start Grand Theft Walk.cmd" --mode prod --game <game>
 ```
-
-Open [localhost:5050](http://localhost:5050). **F12** exits the game; **Ctrl+C** stops chat controls.
 
 ## Installed mods
 
