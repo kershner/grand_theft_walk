@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from core.background import NativeInput, WINDOW_CONFIG, configure_window
 from core.controls import can_control
 from core.controller import Controller
-from tests.san_andreas.helpers import MemoryFixture
+from tests.fixtures import MemoryFixture
 
 
 class BackgroundTests(unittest.TestCase):

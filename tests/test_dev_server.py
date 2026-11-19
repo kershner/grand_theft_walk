@@ -14,7 +14,7 @@ from core.runtime import UnsupportedCommandError
 from chat.bot import ANNOUNCEMENT_INTERVAL
 
 
-class ChatIntegrationTests(unittest.TestCase):
+class ChatFixture(unittest.TestCase):
     game = "san_andreas"
 
     def setUp(self):
@@ -70,6 +70,10 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json["ok"])
 
+
+class ChatProtocolContract:
+    """Game identity, capability discovery, and session isolation for each adapter."""
+
     def test_walk_steer_stop_reaches_existing_protocol(self):
         self.command("w")
         self.assertTrue(self.control()["walking"])
@@ -90,6 +94,67 @@ class ChatIntegrationTests(unittest.TestCase):
                 "Autowalk toggled",
             ],
         )
+
+    def test_respawn_vote_rechecks_session_and_capability_when_it_passes(self):
+        for changed in ({"session": "replacement"}, {"capabilities": {}}):
+            with self.subTest(changed=changed):
+                self.write("state.json", self.state)
+                before = self.control()
+                self.command("respawn")
+                self.write("state.json", dict(self.state, **changed))
+                self.timer.call_args.args[1]()
+                self.assertEqual(self.control(), before)
+                self.assertTrue(any("Could not apply voted command" in message for message in self.client.get("/chat").json["messages"]))
+
+    def test_other_game_state_cannot_receive_commands_or_votes(self):
+        self.state["game"] = "vice_city" if self.game == "san_andreas" else "san_andreas"
+        self.write("state.json", self.state)
+        for command in ("walk", "camera first", "vote 1"):
+            self.command(command)
+        self.assertEqual(self.control(), self.settings)
+        self.assertFalse(self.voting.vote.active)
+        self.assertFalse((self.root / "mission_votes").exists())
+
+    def test_help_lists_only_available_commands_and_updates_with_capabilities(self):
+        self.state["capabilities"].update(jump=False, first_person=False, view=False)
+        self.write("state.json", self.state)
+        self.command("help")
+        self.command("more")
+        self.command("help yes")
+        messages = self.client.get("/chat").json["messages"]
+        self.assertNotIn("!jump", messages[0])
+        for command in ("!camera", "!up", "!down", "!center"):
+            self.assertNotIn(command, messages[1])
+        self.assertNotIn("camera", messages[2])
+        self.assertIn("Vote yes", messages[2])
+        self.state["capabilities"]["view"] = True
+        self.write("state.json", self.state)
+        self.command("more")
+        self.command("help u")
+        messages = self.client.get("/chat").json["messages"]
+        for command in ("!up", "!down", "!center"):
+            self.assertIn(command, messages[-2])
+        self.assertIn("Look up", messages[-1])
+
+    def test_missing_capabilities_keep_only_original_san_andreas_compatibility(self):
+        self.state.pop("capabilities")
+        self.write("state.json", self.state)
+        control = self.app.extensions["gtw_bot"].control
+        if self.game == "san_andreas":
+            control.request("up", [])
+            self.assertEqual(self.control()["view"]["direction"], "up")
+        else:
+            with self.assertRaises(UnsupportedCommandError):
+                control.request("up", [])
+            self.assertEqual(self.control(), self.settings)
+        self.state["capabilities"] = {"view": "true"}
+        self.write("state.json", self.state)
+        with self.assertRaises(UnsupportedCommandError):
+            control.request("up", [])
+
+
+class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
+    """Shared HTTP behavior; run once against the default game."""
 
     def test_camera_and_mode_settings_validate_arguments(self):
         self.command("camera")
@@ -387,17 +452,6 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(self.control(), before)
         self.assertTrue(any("Vote failed! (1-1)" in message for message in self.client.get("/chat").json["messages"]))
 
-    def test_respawn_vote_rechecks_session_and_capability_when_it_passes(self):
-        for changed in ({"session": "replacement"}, {"capabilities": {}}):
-            with self.subTest(changed=changed):
-                self.write("state.json", self.state)
-                before = self.control()
-                self.command("respawn")
-                self.write("state.json", dict(self.state, **changed))
-                self.timer.call_args.args[1]()
-                self.assertEqual(self.control(), before)
-                self.assertTrue(any("Could not apply voted command" in message for message in self.client.get("/chat").json["messages"]))
-
     def test_offline_stale_and_loading_do_not_write(self):
         unavailable_states = [
             {"controller": "stopped"},
@@ -679,15 +733,6 @@ class ChatIntegrationTests(unittest.TestCase):
             "Camera: first person.", "Camera: third person.",
         ])
 
-    def test_other_game_state_cannot_receive_commands_or_votes(self):
-        self.state["game"] = "vice_city" if self.game == "san_andreas" else "san_andreas"
-        self.write("state.json", self.state)
-        for command in ("walk", "camera first", "vote 1"):
-            self.command(command)
-        self.assertEqual(self.control(), self.settings)
-        self.assertFalse(self.voting.vote.active)
-        self.assertFalse((self.root / "mission_votes").exists())
-
     def test_partial_backend_rejects_jump_and_camera_before_writing_or_starting_votes(self):
         self.state["capabilities"].update(jump=False, first_person=False)
         self.write("state.json", self.state)
@@ -699,27 +744,6 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertTrue(all("not available" in message for message in messages))
         self.assertFalse(self.voting.vote.active)
         self.timer.assert_not_called()
-
-    def test_help_lists_only_available_commands_and_updates_with_capabilities(self):
-        self.state["capabilities"].update(jump=False, first_person=False, view=False)
-        self.write("state.json", self.state)
-        self.command("help")
-        self.command("more")
-        self.command("help yes")
-        messages = self.client.get("/chat").json["messages"]
-        self.assertNotIn("!jump", messages[0])
-        for command in ("!camera", "!up", "!down", "!center"):
-            self.assertNotIn(command, messages[1])
-        self.assertNotIn("camera", messages[2])
-        self.assertIn("Vote yes", messages[2])
-        self.state["capabilities"]["view"] = True
-        self.write("state.json", self.state)
-        self.command("more")
-        self.command("help u")
-        messages = self.client.get("/chat").json["messages"]
-        for command in ("!up", "!down", "!center"):
-            self.assertIn(command, messages[-2])
-        self.assertIn("Look up", messages[-1])
 
     def test_unsupported_view_commands_and_aliases_receive_explicit_replies(self):
         self.state["capabilities"]["view"] = False
@@ -752,31 +776,15 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertTrue(any("!camera is not available" in message
                             for message in messages))
 
-    def test_missing_capabilities_keep_only_original_san_andreas_compatibility(self):
-        self.state.pop("capabilities")
-        self.write("state.json", self.state)
-        control = self.app.extensions["gtw_bot"].control
-        if self.game == "san_andreas":
-            control.request("up", [])
-            self.assertEqual(self.control()["view"]["direction"], "up")
-        else:
-            with self.assertRaises(UnsupportedCommandError):
-                control.request("up", [])
-            self.assertEqual(self.control(), self.settings)
-        self.state["capabilities"] = {"view": "true"}
-        self.write("state.json", self.state)
-        with self.assertRaises(UnsupportedCommandError):
-            control.request("up", [])
 
-
-class ViceCityChatIntegrationTests(ChatIntegrationTests):
-    """Same interaction contract with simulated Vice City controller reports."""
+class ViceCityChatIntegrationTests(ChatProtocolContract, ChatFixture):
+    """Backend-sensitive interaction contract with simulated Vice City controller reports."""
 
     game = "vice_city"
 
 
-class GTAIIIChatIntegrationTests(ChatIntegrationTests):
-    """Same interaction contract with simulated GTA III controller reports."""
+class GTAIIIChatIntegrationTests(ChatProtocolContract, ChatFixture):
+    """Backend-sensitive interaction contract with simulated GTA III controller reports."""
 
     game = "gta_iii"
 

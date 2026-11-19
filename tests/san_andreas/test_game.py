@@ -33,7 +33,7 @@ from games.san_andreas.game import (
     unlock_interiors,
 )
 
-from .helpers import MemoryFixture
+from tests.fixtures import MemoryFixture
 
 
 class WalkingPaceTests(unittest.TestCase):

@@ -1,21 +1,48 @@
 """Reversible map opening, native movement, and allocation reuse guards."""
 
+import hashlib
 import math
 import struct
+import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from tests.san_andreas.helpers import MemoryFixture
 from core.controls import HighJump, can_control
 from core.navigation import Node, PedestrianGraph
+from core.winmemory import Memory as ProcessMemory
+from games import get_game
 from games.vice_city.game import (
-    BARRIER_MODELS, CONNECTIONS, CONTROL_ACTIONS, COUNTS, Game, OBJECT_POOL,
-    OBJECT_SIZE, PATHS, PED_POOL, PLAYER_INFO, JUMP_ACTION, JUMP_KEY, JUMP_SPEED,
-    CAPABILITIES, RuntimeChanges, WalkingPace,
-    apply_protection, bind_jump_key, bind_walk_key, island_path_changes, load_destinations, read_graph, unlock_regions,
+    ACTIVE,
+    CAPABILITIES,
+    CONNECTIONS,
+    CONTROL_ACTIONS,
+    COUNTS,
+    FirstPersonCamera,
+    Game,
+    JUMP_ACTION,
+    JUMP_KEY,
+    JUMP_SPEED,
+    Memory,
+    OBJECT_POOL,
+    OBJECT_SIZE,
+    PATHS,
+    PED_POOL,
+    PED_ZOOM_INDICATOR,
+    PLAYER_INFO,
+    RuntimeChanges,
+    WalkingPace,
+    apply_protection,
+    bind_jump_key,
+    bind_walk_key,
+    island_path_changes,
+    load_destinations,
+    read_graph,
+    unlock_regions,
 )
+from tests.fixtures import MemoryFixture
 
 
 class JumpTests(unittest.TestCase):
@@ -328,3 +355,135 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(island_path_changes(data), {0: 0x60, 1: 0x60})
         data[20 + 17] = 1  # Never open water paths to pedestrians.
         self.assertEqual(island_path_changes(data), {0: 0x60})
+
+
+class CameraTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "FirstPerson.asi"
+        path.write_bytes(b"verified camera fixture")
+        self.module = {"base": 0x20000000, "size": ACTIVE + 1, "path": path}
+        self.mem = MemoryFixture()
+        self.mem.module = Mock(return_value=self.module)
+        self.mem.write(PED_ZOOM_INDICATOR, struct.pack("<f", 2))
+        self.state = dict(ready=True, foreground=True, paused=False,
+                          controls_disabled=False, in_vehicle=False, cutscene=False,
+                          health=100, player_state=0)
+        for target, kwargs in (
+            ("games.vice_city.game.CAMERA_MODULE_SHA256", {"new": hashlib.sha256(path.read_bytes()).hexdigest()}),
+            ("games.vice_city.game.Game.snapshot", {"side_effect": lambda: dict(self.state)}),
+        ):
+            patcher = patch(target, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.camera = FirstPersonCamera(self.mem)
+
+    def selector(self):
+        return self.mem.unpack(PED_ZOOM_INDICATOR, "f")[0]
+
+    def test_selection_uses_native_indicator_and_reports_actual_plugin_state(self):
+        self.assertTrue(self.camera.apply(True))
+        self.assertEqual(self.selector(), 3)
+        # The game applies the transition on its next frame, not in apply().
+        self.assertFalse(self.camera.report()["first_person"])
+        self.mem.write(self.module["base"] + ACTIVE, b"\x01")
+        self.assertTrue(self.camera.report()["first_person"])
+        self.assertTrue(self.camera.apply(False))
+        self.assertEqual(self.selector(), 2)
+        self.camera.apply(True, rotate_player=False)
+        self.assertEqual(self.selector(), 3)
+        self.camera.close()
+        self.assertEqual(self.selector(), 2)
+
+    def test_initial_first_person_can_switch_to_third_and_restore(self):
+        self.mem.write(PED_ZOOM_INDICATOR, struct.pack("<f", 3))
+        self.camera.apply(False)
+        self.assertEqual(self.selector(), 2)
+        self.camera.close()
+        self.assertEqual(self.selector(), 3)
+
+    def test_missing_changed_small_or_invalid_plugin_cannot_write(self):
+        for change in ("missing", "hash", "size", "flag"):
+            with self.subTest(change=change):
+                self.mem.module.return_value = None if change == "missing" else self.module
+                self.module["path"].write_bytes(b"wrong" if change == "hash" else b"verified camera fixture")
+                self.module["size"] = ACTIVE if change == "size" else ACTIVE + 1
+                self.mem.write(self.module["base"] + ACTIVE, bytes([2 if change == "flag" else 0]))
+                before = dict(self.mem.data)
+                self.assertFalse(self.camera.apply(True))
+                self.assertEqual(self.mem.data, before)
+                self.assertIsNotNone(self.camera.error)
+
+    def test_unsafe_gameplay_defers_selection_without_writes(self):
+        for update in ({"ready": False}, {"foreground": False}, {"paused": True},
+                       {"cutscene": True}, {"in_vehicle": True}, {"health": 0},
+                       {"controls_disabled": True}, {"player_state": 1}):
+            with self.subTest(update=update):
+                original = dict(self.state)
+                self.state.update(update)
+                before = dict(self.mem.data)
+                self.assertFalse(self.camera.apply(True))
+                self.assertEqual(self.mem.data, before)
+                self.state = original
+
+    def test_invalid_selector_is_rejected(self):
+        for value in (math.nan, math.inf, -1, 1.5, 5):
+            self.mem.write(PED_ZOOM_INDICATOR, struct.pack("<f", value))
+            before = dict(self.mem.data)
+            self.assertFalse(self.camera.apply(True))
+            self.assertEqual(self.mem.data, before)
+
+    def test_external_selection_and_unloaded_module_are_not_restored(self):
+        self.camera.apply(True)
+        self.mem.write(PED_ZOOM_INDICATOR, struct.pack("<f", 1))
+        self.camera.close()
+        self.assertEqual(self.selector(), 1)
+        self.camera.apply(True)
+        self.mem.module.return_value = None
+        self.camera.close()
+        self.assertEqual(self.selector(), 3)
+        self.assertFalse(self.camera.report()["available"])
+
+
+class ReadOnlyTests(unittest.TestCase):
+    def test_consolidated_adapter_preserves_pedestrian_links_and_crossings(self):
+        data = bytearray(COUNTS + 12)
+        struct.pack_into("<3I", data, COUNTS, 2, 0, 2)
+        for index in range(2):
+            at = index * 20
+            struct.pack_into("<3h", data, at + 4, index * 80, 0, 0)
+            struct.pack_into("<H", data, at + 12, index)
+            data[at + 16] = 1
+            struct.pack_into("<H", data, CONNECTIONS + index * 2, (1 - index) | 0x8000)
+        graph = read_graph(data)
+        self.assertEqual(graph.nodes[(0, 1)].position, (10, 0, 0))
+        self.assertEqual(graph.nodes[(0, 0)].links, (((0, 1), True),))
+
+    def test_vice_city_uses_the_pinned_inspected_runtime_for_controller_writes(self):
+        profile = get_game("vice_city")
+        self.assertEqual(profile.verified_executable, profile.inspection_executable)
+        self.assertIsNotNone(profile.inspection_executable)
+
+    def test_shared_api_rejects_vice_city_writes_before_opening_a_process(self):
+        with patch("core.winmemory.k32.OpenProcess") as open_process, patch(
+            "core.winmemory.get_game", return_value=replace(get_game("vice_city"), verified_executable=None)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "writes are not enabled"):
+                ProcessMemory(writable=True, pid=123, game="vice_city")
+            open_process.assert_not_called()
+
+    def test_vice_city_api_rejects_unknown_runtime_signatures_and_closes(self):
+        with patch("games.vice_city.game.ProcessMemory.__init__") as attach, patch.object(
+            Memory, "read", return_value=b"nope"
+        ), patch.object(Memory, "close") as close:
+            with self.assertRaisesRegex(RuntimeError, "signature does not match"):
+                Memory(writable=True)
+            attach.assert_called_once_with(writable=True, pid=None, game="vice_city")
+            close.assert_called_once_with()
+
+    def test_vice_city_write_method_is_disabled(self):
+        memory = Memory.__new__(Memory)
+        memory.writable = False
+        with self.assertRaisesRegex(RuntimeError, "read-only"):
+            memory.write(0x7E3D90, b"\x29\0")

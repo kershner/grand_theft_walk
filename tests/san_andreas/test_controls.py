@@ -25,7 +25,7 @@ from games.san_andreas.game import (
 )
 from core.runtime import control_request
 
-from .helpers import MemoryFixture
+from tests.fixtures import MemoryFixture
 
 
 class InputTests(unittest.TestCase):

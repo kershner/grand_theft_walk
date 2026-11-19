@@ -11,12 +11,11 @@ import time
 import uuid
 from pathlib import Path
 
-from core.config import load_parameters, local_path, rotation_seconds, twitch_settings
+from core.config import RotationProgress, load_parameters, local_path, rotation_seconds, twitch_settings
 from core.files import atomic_json, read_json
 from core.runtime import WalkerControl, chat_ready, configure_logging
 from games import ACTIVE_GAMES, ROOT, get_game
 from core.processes import spawn
-from core.rotation import RotationProgress
 
 logger = logging.getLogger(__name__)
 
