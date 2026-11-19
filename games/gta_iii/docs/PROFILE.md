@@ -50,6 +50,10 @@ isolated runtime folder. SkyGfx 3 and Project2DFX are excluded after their 1.0-o
 addresses were confirmed incompatible with this executable.
 
 The shared 0.75 walking blend cap was verified as native move-state 2 (walking).
+A GTA III turn multiplier of 4 compensates for FirstPersonIII's small degree-based
+mouse increments. It applies to left/right commands, sidewalk and mission steering,
+and obstacle recovery through both desktop and private native input. The shared
+turn smoothing and command durations remain in controller units.
 A cold launch reloaded the native autosave at exactly the saved position. OBS's
 window capture was verified while the game was foreground; an exclusive-fullscreen
 game minimizes and gives a black capture when switched to another application.

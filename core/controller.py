@@ -31,7 +31,8 @@ def distance(a, b):
 
 
 class Walking:
-    def __init__(self, graph=None, navigation_error=None, focused=None, bindings=None):
+    def __init__(self, graph=None, navigation_error=None, focused=None, bindings=None,
+                 turn_multiplier=1):
         bindings = bindings if bindings is not None else {"forward": "w", "back": "s", "walk": "f2"}
         self.keys = Keys(bindings, focused=focused)
         self.walk_modifier = {"walk"} if "walk" in bindings else set()
@@ -46,6 +47,7 @@ class Walking:
         self.navigator = SidewalkNavigator(graph) if graph is not None else None
         self.navigation_error = navigation_error
         self.smooth_turn = SmoothTurn()
+        self.turn_multiplier = turn_multiplier
         self.manual_turn = 0
         self.manual_direction = None
         self.manual_until = 0.0
@@ -149,7 +151,7 @@ class Walking:
             if self.recovery_turn:
                 turn, self.recovery_turn = self.smooth_turn.nudge(self.recovery_turn, now)
                 if turn:
-                    self.keys.turn(turn)
+                    self.keys.turn(turn * self.turn_multiplier)
                 self.keys.set(self.walk_modifier)
                 self.origin, self.progress_at = position, now
                 return f"obstacle recovery: turning right {self.recovery_steps}"
@@ -199,7 +201,7 @@ class Walking:
         else:
             turn = self.smooth_turn.step(desired_turn, now)
         if turn:
-            self.keys.turn(turn)
+            self.keys.turn(turn * self.turn_multiplier)
         if mode == "free" and (self.manual_direction or not enabled):
             if self.manual_direction:
                 self.keys.set(self.walk_modifier | {self.manual_direction})
@@ -242,7 +244,8 @@ class Controller:
         except (OSError, ValueError) as error:
             graph, self.navigation_error = None, str(error)
         self.movement = Walking(graph, self.navigation_error, focused=mem.foreground,
-                                bindings=getattr(backend, "WALK_KEYS", None))
+                                bindings=getattr(backend, "WALK_KEYS", None),
+                                turn_multiplier=getattr(backend, "TURN_MULTIPLIER", 1))
         destinations = []
         if graph:
             try:
