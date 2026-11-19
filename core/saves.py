@@ -13,6 +13,19 @@ from core.files import atomic_json, read_json
 logger = logging.getLogger(__name__)
 
 
+def seed_checkpoint(source, destination, expected_sha256, valid_save):
+    """Create an owned checkpoint exclusively; occupied slots are never replaced."""
+    source, destination = Path(source), Path(destination)
+    data = source.read_bytes()
+    if hashlib.sha256(data).hexdigest() != expected_sha256 or not valid_save(source):
+        raise ValueError("The walker seed checkpoint failed verification; run suite repair.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("xb") as output:
+        output.write(data)
+    if not valid_save(destination):
+        raise ValueError("The new walker checkpoint failed verification")
+
+
 class NativeSaveRequest:
     def __init__(self, memory):
         self.memory = memory

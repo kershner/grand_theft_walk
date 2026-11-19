@@ -1,11 +1,13 @@
 """Pinned classic Vice City layout and reversible walking/map changes."""
 
-import hashlib
 import math
 import struct
 from pathlib import Path
 
 from games import Capabilities
+from core.files import sha256
+from core.classic import SAVE_SIZE, valid_save, read_text_table, player_identity, main_sidewalk_network, load_zones as classic_zones, load_destinations as classic_destinations
+from core.changes import RuntimeChanges as SharedRuntimeChanges
 from core.saves import Autosave as SharedAutosave
 from core.navigation import Node, PedestrianGraph
 from core.winmemory import Memory as ProcessMemory
@@ -57,72 +59,15 @@ def read_game_text(path):
         if data[at:at + 8].rstrip(b"\0") == b"MAIN":
             main = struct.unpack_from("<I", data, at + 8)[0]
             break
-    if main is None or data[main:main + 4] != b"TKEY":
+    if main is None:
         raise ValueError("Vice City MAIN text table is missing")
-    size = struct.unpack_from("<I", data, main + 4)[0]
-    text_at = main + 8 + size
-    if size % 12 or data[text_at:text_at + 4] != b"TDAT":
-        raise ValueError("Invalid Vice City text chunks")
-    text_size = struct.unpack_from("<I", data, text_at + 4)[0]
-    text = data[text_at + 8:text_at + 8 + text_size]
-    if len(text) != text_size:
-        raise ValueError("Truncated Vice City text data")
-    result = {}
-    for at in range(main + 8, main + 8 + size, 12):
-        offset = struct.unpack_from("<I", data, at)[0]
-        key = data[at + 4:at + 12].rstrip(b"\0").decode("ascii")
-        if offset >= len(text) or offset % 2:
-            raise ValueError("Invalid Vice City text offset")
-        end = offset
-        while end + 1 < len(text) and text[end:end + 2] != b"\0\0":
-            end += 2
-        result[key.upper()] = text[offset:end].decode("utf-16-le")
-    return result
-
+    return read_text_table(data, main)
 
 def load_zones(game_directory, names):
-    zones = []
-    for line in (Path(game_directory) / "data/navig.zon").read_text().splitlines():
-        fields = [part.strip() for part in line.split(",")]
-        if len(fields) != 9:
-            continue
-        name = names.get(fields[0].upper())
-        if name:
-            bounds = tuple(float(value) for value in fields[2:8])
-            zones.append((name, bounds))
-    return zones
+    return classic_zones(Path(game_directory) / "data/navig.zon", names)
 
 
 SAVE_PREFIX = 0x97509C
-SAVE_SIZE = 201729
-
-
-def valid_save(path):
-    try:
-        data = Path(path).read_bytes()
-    except FileNotFoundError:
-        return False
-    # PC saves have size-prefixed, four-byte-aligned blocks and a byte checksum.
-    # Unlike San Andreas these do not have a BLOCK marker.
-    if not 200000 <= len(data) <= 4 * 1024 * 1024:
-        return False
-    if struct.unpack_from("<I", data, 68)[0] != SAVE_SIZE:
-        return False
-    end = len(data) - 4
-    at = 0
-    blocks = 0
-    while at < end:
-        if at + 4 > end:
-            return False
-        size = struct.unpack_from("<I", data, at)[0]
-        if not 0 < size <= 0x10000:
-            return False
-        at += 4 + ((size + 3) & ~3)
-        blocks += 1
-        if at > end or blocks > 40:
-            return False
-    return (at == end and blocks >= 20
-            and sum(data[:end]) & 0xFFFFFFFF == struct.unpack_from("<I", data, end)[0])
 
 
 class Autosave(SharedAutosave):
@@ -161,18 +106,7 @@ class Game:
         self.zones = load_zones(memory.exe.parent, self.names) if zones is None else zones
 
     def identity(self, ped):
-        mem = self.mem
-        pool = mem.u32(PED_POOL)
-        if not pool:
-            return None
-        objects, bitmap, count = mem.unpack(pool, "3I")
-        slot, remainder = divmod(ped - objects, PED_SIZE)
-        if remainder or not 0 <= slot < min(count, 10000):
-            return None
-        generation = mem.byte(bitmap + slot)
-        if generation & 0x80:
-            return None
-        return f"{pool:x}:{objects:x}:{slot}:{generation}:{mem.read(ped + 0x5A, 4).hex()}"
+        return player_identity(self.mem, ped, PED_POOL, PED_SIZE)
 
     def snapshot(self):
         try:
@@ -230,6 +164,7 @@ class Game:
             "paused": bool(mem.byte(0xA10B36) or mem.byte(0xA10B76)),
             "controls_disabled": bool(mem.unpack(PAD + 0xF0, "H")[0]),
             "foreground": mem.foreground(),
+            "background_control": getattr(mem, "background_control", False),
             "game_time_ms": mem.u32(0x974B2C),
             "cutscene": bool(mem.byte(0xA10AB2)),
         }
@@ -326,83 +261,12 @@ def load_graph(memory):
     return read_graph(memory.read(PATHS, COUNTS + 12))
 
 
-def main_sidewalk_network(graph):
-    """Find the largest mutually reachable network, respecting one-way links."""
-    reverse = {key: [] for key in graph.nodes}
-    for key, node in graph.nodes.items():
-        for target, _ in node.links:
-            if target in reverse:
-                reverse[target].append(key)
-    # Iterative Kosaraju avoids recursion limits on the several-thousand-node map.
-    visited, order = set(), []
-    for start in sorted(graph.nodes):
-        pending = [(start, False)]
-        while pending:
-            key, finished = pending.pop()
-            if finished:
-                order.append(key)
-            elif key not in visited:
-                visited.add(key)
-                pending.append((key, True))
-                pending.extend((target, False) for target, _ in graph.nodes[key].links
-                               if target in graph.nodes and target not in visited)
-    visited, largest = set(), set()
-    for start in reversed(order):
-        if start in visited:
-            continue
-        component, pending = set(), [start]
-        while pending:
-            key = pending.pop()
-            if key in visited:
-                continue
-            visited.add(key)
-            component.add(key)
-            pending.extend(reverse[key])
-        if len(component) > len(largest):
-            largest = component
-    return largest
-
-
 def load_destinations(game_directory, graph, read_text):
-    """Offer every distinct meeting point on the main sidewalk network."""
-    names = read_text(Path(game_directory) / "TEXT/american.gxt")
-    zones = load_zones(game_directory, names)
-    network = main_sidewalk_network(graph)
-    nodes = [graph.nodes[key] for key in sorted(network)]
-    destinations, used = [], set()
-    counts = {}
-
-    def add(name, node):
-        if node.position in used:
-            return
-        used.add(node.position)
-        counts[name] = counts.get(name, 0) + 1
-        label = name if counts[name] == 1 else f"{name}: meeting point {counts[name]}"
-        destinations.append({"name": label, "node": list(node.key), "position": list(node.position)})
-
-    # Keep the original named-area meeting points for existing sessions.
-    for name, bounds in zones:
-        candidates = [node for node in nodes
-                 if all(bounds[i] <= node.position[i] <= bounds[i + 3] for i in range(3))]
-        if not candidates:
-            continue
-        center = ((bounds[0] + bounds[3]) / 2, (bounds[1] + bounds[4]) / 2)
-        add(name, min(candidates, key=lambda candidate: math.dist(candidate.position[:2], center)))
-    # Prefer small subareas (e.g. Junk Yard) over their enclosing neighborhood.
-    zones = sorted(zones, key=lambda zone: ((zone[1][3] - zone[1][0]) * (zone[1][4] - zone[1][1]), zone[0]))
-    for node in nodes:
-        name = next((name for name, bounds in zones
-                     if all(bounds[i] <= node.position[i] <= bounds[i + 3] for i in range(3))), "Vice City")
-        add(name, node)
-    return destinations
+    return classic_destinations(game_directory, graph, read_text, load_zones, "Vice City")
 
 
-class RuntimeChanges:
+class RuntimeChanges(SharedRuntimeChanges):
     """Restore owned bits only while their object/path allocation still matches."""
-
-    def __init__(self, memory):
-        self.mem = memory
-        self.entries = {}
 
     def valid_guard(self, guard):
         if guard is None:
@@ -413,42 +277,13 @@ class RuntimeChanges:
         if kind in ("ped", "wanted"):
             ped, identity, *wanted = values
             return (self.mem.u32(PLAYER_INFO) == ped
-                    and Game(self.mem, zones=[]).identity(ped) == identity
+                    and player_identity(self.mem, ped, PED_POOL, PED_SIZE) == identity
                     and (not wanted or self.mem.u32(ped + 0x5F4) == wanted[0]))
         pool, objects, bitmap, slot, generation, identity = values
         return (self.mem.u32(OBJECT_POOL) == pool
                 and self.mem.unpack(pool, "2I") == (objects, bitmap)
                 and self.mem.byte(bitmap + slot) == generation
                 and self.mem.read(objects + slot * OBJECT_SIZE + 0x5A, 4) == identity)
-
-    def patch(self, address, after, mask=None, guard=None):
-        if not self.valid_guard(guard):
-            return
-        mask = bytes([255] * len(after)) if mask is None else mask
-        current = self.mem.read(address, len(after))
-        key = (address, len(after))
-        entry = self.entries.get(key)
-        if entry is None or entry[3] != guard:
-            self.entries[key] = (current, after, mask, guard)
-        value = bytes((old & ~bits) | (new & bits) for old, new, bits in zip(current, after, mask))
-        if value != current:
-            self.mem.write(address, value)
-
-    def restore(self):
-        failures = []
-        for (address, size), (before, after, mask, guard) in reversed(list(self.entries.items())):
-            try:
-                if not self.valid_guard(guard):
-                    continue
-                current = self.mem.read(address, size)
-                if any((now & bits) != (ours & bits) for now, ours, bits in zip(current, after, mask)):
-                    continue
-                value = bytes((now & ~bits) | (old & bits) for now, old, bits in zip(current, before, mask))
-                self.mem.write(address, value)
-            except OSError as error:
-                failures.append(str(error))
-        self.entries.clear()
-        return failures
 
 
 def apply_protection(game, changes, state):
@@ -623,7 +458,7 @@ class FirstPersonCamera:
                 raise RuntimeError("First-person mod is not installed or loaded")
             if module != self.bound:
                 if (module["size"] <= ACTIVE
-                        or hashlib.sha256(module["path"].read_bytes()).hexdigest()
+                        or sha256(module["path"])
                         != CAMERA_MODULE_SHA256):
                     raise RuntimeError("Unsupported first-person mod version")
                 self.bound = self.original = self.last_written = None

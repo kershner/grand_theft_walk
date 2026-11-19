@@ -16,6 +16,7 @@ from core.controller import Controller
 from core.manager import component_status
 from core.navigation import PedestrianGraph
 from core.files import atomic_json, read_json
+from core.background import configure_window
 from core.runtime import DIRECTIONS, MODES, configure_logging, queue_movement
 from core.winmemory import Memory, elevate, game_pids, process_mutex
 from games import ACTIVE_GAMES, ROOT, get_game
@@ -74,10 +75,11 @@ class StartupWait:
         while time.monotonic() < self.deadline:
             if not self.mem.alive():
                 raise RuntimeError("The game exited during startup.")
-            if key_down("f12"):
+            foreground = self.mem.foreground()
+            if foreground and key_down("f12"):
                 raise RuntimeError("Startup cancelled with F12.")
             now = time.monotonic()
-            if not self.mem.foreground():
+            if not foreground:
                 if background_at is None:
                     logger.info("Startup paused while the game is in the background.")
                 else:
@@ -124,6 +126,7 @@ def request_admin(args, game):
 
 
 def run(args, game, pid=None):
+    args.background = True
     backend = backend_for(game)
     try:
         memory = open_memory(game, writable=True, pid=pid)
@@ -132,7 +135,7 @@ def run(args, game, pid=None):
             return
         raise
     try:
-        name = "SanAndreas" if game == "san_andreas" else "ViceCity"
+        name = get_game(game).id
         with process_mutex(f"Local\\{name}Walker-{memory.pid}",
                            "A walker controller is already attached to this game."):
             graph_loader = (lambda mem: PedestrianGraph.load(mem.exe.parent)) if game == "san_andreas" else backend.load_graph
@@ -181,6 +184,7 @@ def launch(game, startup_type, argv=None):
             raise RuntimeError(f"{profile.title}'s mod files do not match the pinned setup. Run suite repair.")
         logger.info("Launching %s... F12 cancels startup.", profile.title)
         try:
+            configure_window(exe.parent)
             process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
         except PermissionError:
             if args.elevated:

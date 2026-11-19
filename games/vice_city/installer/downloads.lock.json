@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "archives": [
+    {
+      "file": "SkyGfx_III_VC_3.0b.zip",
+      "sha256": "c005c34ed8d6e838bcfd0c862e6ce3509473464f6eab2d32ea9a53c486b98970",
+      "url": "https://github.com/aap/skygfx_vc/releases/download/v3.0b/SkyGfx_III_VC_3.0b.zip"
+    },
+    {
+      "file": "GTAVC.WidescreenFix.zip",
+      "sha256": "955391a35ddd58e27d313b4c04a9ac5de2b23ee64b2ba922f5b2d30f8657e9a1",
+      "url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/download/gtavc/GTAVC.WidescreenFix.zip"
+    },
+    {
+      "file": "VC.Project2DFX.zip",
+      "sha256": "c81d191569abc17ac29d77df5b8e7f1c51289345e81521723f6d12d3f1fe2498",
+      "url": "https://github.com/ThirteenAG/III.VC.SA.IV.Project2DFX/releases/download/gtavc/VC.Project2DFX.zip"
+    }
+  ]
+}

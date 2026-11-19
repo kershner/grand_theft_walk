@@ -44,7 +44,7 @@ class Respawn:
         if state.get("health", 0) <= 0 or state.get("player_state") != 0:
             self.last_request = request["id"]
             return False  # An existing native death already satisfies this request.
-        if saving or not state.get("foreground") or state.get("paused") or state.get("cutscene"):
+        if saving or not (state.get("foreground") or state.get("background_control")) or state.get("paused") or state.get("cutscene"):
             return False
         self.last_request = request["id"]
         if self.protection:

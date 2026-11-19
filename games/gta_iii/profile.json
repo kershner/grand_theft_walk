@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "id": "gta_iii",
+  "title": "GTA III",
+  "executable": "gta3.exe",
+  "install_folder": "Grand Theft Auto III",
+  "verified_executable": "17e036ff18cdd805951fec9107746492f582ae1eb46ca028544e37e517e8fc1f",
+  "inspection_executable": "17e036ff18cdd805951fec9107746492f582ae1eb46ca028544e37e517e8fc1f",
+  "controller_ready": true
+}

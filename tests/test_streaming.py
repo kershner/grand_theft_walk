@@ -35,10 +35,15 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(select_game(self.params, datetime(2027, 1, 1, 5, tzinfo=timezone.utc)), "vice_city")
 
     def test_invalid_and_single_game_rotations(self):
-        for games in ([], ["gta_iii"], ["vice_city", "vice_city"], "vice_city"):
+        for games in ([], ["unknown"], ["vice_city", "vice_city"], "vice_city"):
             with self.subTest(games=games), self.assertRaises(ValueError):
                 select_game({"ROTATION": {"games": games}})
         self.assertEqual(select_game({"ROTATION": {"games": ["vice_city"]}}), "vice_city")
+
+    def test_three_game_rotation_includes_gta_iii_and_wraps(self):
+        self.params["ROTATION"]["games"].append("gta_iii")
+        for day, game in ((17, "san_andreas"), (18, "vice_city"), (19, "gta_iii"), (20, "san_andreas")):
+            self.assertEqual(select_game(self.params, datetime(2026, 11, day, 12, tzinfo=timezone.utc)), game)
 
     def test_local_dev_config_does_not_require_credentials_or_a_template(self):
         with tempfile.TemporaryDirectory() as folder:

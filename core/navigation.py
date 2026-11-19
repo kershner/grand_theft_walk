@@ -127,7 +127,9 @@ def read_area(data, area):
 
 
 class PedestrianGraph:
-    def __init__(self, nodes):
+    def __init__(self, nodes, *, max_link_distance=75, max_link_height=8):
+        if any(not math.isfinite(v) or v <= 0 for v in (max_link_distance, max_link_height)):
+            raise ValueError("Path link limits must be positive finite numbers")
         original = {node.key: node for node in nodes}
         self.nodes = {}
         self.cells = defaultdict(list)
@@ -137,8 +139,8 @@ class PedestrianGraph:
                 for target, crossing in node.links
                 if target in original
                 and target != key
-                and distance(node.position, original[target].position) <= 75
-                and abs(node.position[2] - original[target].position[2]) <= 8
+                and distance(node.position, original[target].position) <= max_link_distance
+                and abs(node.position[2] - original[target].position[2]) <= max_link_height
             )
             if links:
                 self.nodes[key] = Node(key, node.position, links)

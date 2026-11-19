@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 
 from core.files import sha256, component_mismatches, under, atomic_json, put_file
+from games import ACTIVE_GAMES, get_game
 
 STATE_DIR = ".gtw-suite"
 
@@ -70,7 +71,7 @@ def verify_bundle(root):
         if sha256(under(root, name)) != expected:
             raise ValueError(f"Archive file missing or damaged: {name}. Extract the ZIP again.")
     manifest = json.loads((root / "suite-manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("format") != 1 or not set(manifest.get("games", {})) <= {"san_andreas", "vice_city"}:
+    if manifest.get("format") != 1 or not set(manifest.get("games", {})) <= set(ACTIVE_GAMES):
         raise ValueError("Unsupported suite manifest")
     return manifest
 
@@ -338,7 +339,7 @@ def ensure_closed():
     try:
         ok = k32.Process32FirstW(snapshot, c.byref(entry))
         while ok:
-            if entry.szExeFile.casefold() in {"launcher.exe", "gta_sa.exe", "gta-sa.exe", "gta-vc.exe"}:
+            if entry.szExeFile.casefold() in {"launcher.exe", "gta-sa.exe", *(get_game(game).executable for game in ACTIVE_GAMES)}:
                 raise RuntimeError(f"Close {entry.szExeFile} before installing, repairing or restoring the suite.")
             ok = k32.Process32NextW(snapshot, c.byref(entry))
     finally:
@@ -356,7 +357,7 @@ def run_setup(args, bundle):
     for game, definition in manifest["games"].items():
         if args.game not in ("all", game):
             continue
-        configured = args.san_andreas_dir if game == "san_andreas" else args.vice_city_dir
+        configured = getattr(args, game + "_dir", None)
         directory = game_directory(
             configured or (Path(existing[game]) if existing.get(game) else None)
             or discover_game(definition["install_folder"], definition["executable"]),
@@ -383,9 +384,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "check", "repair", "restore"))
     parser.add_argument("--bundle", type=Path, default=Path(__file__).resolve().parents[2])
-    parser.add_argument("--game", choices=("all", "san_andreas", "vice_city"), default="all")
-    parser.add_argument("--san-andreas-dir", type=Path)
-    parser.add_argument("--vice-city-dir", type=Path)
+    parser.add_argument("--game", choices=("all", *ACTIVE_GAMES), default="all")
+    for game in ACTIVE_GAMES:
+        parser.add_argument("--" + game.replace("_", "-") + "-dir", type=Path)
     args = parser.parse_args(argv)
     try:
         with open_bundle(args.bundle) as bundle:

@@ -427,6 +427,7 @@ class Game:
             "cutscene": bool(self.mem.byte(0xB5F851)),
             "controls_disabled": bool(self.mem.unpack(0xB73458 + 0x10E, "H")[0]),
             "foreground": self.mem.foreground(),
+            "background_control": getattr(self.mem, "background_control", False),
             "game_time_ms": self.mem.u32(0xB7CB84),
             "cities_unlocked": self.mem.u32(CITIES_UNLOCKED),
             "map_tiles_revealed": self.mem.u32(ZONES_REVEALED),

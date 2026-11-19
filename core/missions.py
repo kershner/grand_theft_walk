@@ -24,10 +24,11 @@ POLL_INTERVAL = 0.25
 MAX_FRAME_GAP = 0.5
 
 
-def load_config(path):
+def load_config(path, defaults=None):
+    defaults = DEFAULT_CONFIG | (defaults or {})
     if not path.exists():
-        atomic_json(path, DEFAULT_CONFIG)
-    config = DEFAULT_CONFIG | read_json(path)
+        atomic_json(path, defaults)
+    config = defaults | read_json(path)
     for key in DEFAULT_CONFIG:
         value = config[key]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -73,12 +74,12 @@ def load_destinations(game_directory, graph, read_text):
 
 
 class MissionSystem:
-    def __init__(self, state_dir, graph, destinations, rng=None):
+    def __init__(self, state_dir, graph, destinations, rng=None, *, defaults=None):
         self.state_dir = Path(state_dir)
         self.graph = graph
         self.destinations = destinations
         self.rng = rng or random.Random()
-        self.config = load_config(self.state_dir / "mission_config.json")
+        self.config = load_config(self.state_dir / "mission_config.json", defaults)
         try:
             self.data = read_json(self.state_dir / "mission.json")
         except FileNotFoundError:

@@ -18,7 +18,7 @@ class WaterRecoveryTests(unittest.TestCase):
         controller.game = Mock()
         controller.backend = Mock()
         controller.movement = Mock()
-        controller.camera = controller.peaceful = controller.world = None
+        controller.camera = controller.peaceful = controller.world = controller.display = None
         controller.protection = Mock(entries={'owned': True})
         return controller
 

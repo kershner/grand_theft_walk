@@ -16,6 +16,7 @@ from core.missions import MissionSystem
 from core.respawn import Respawn
 from core.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
 from core.files import atomic_json
+from core.background import NativeInput
 from core.runtime import DEFAULTS, DIRECTIONS, MODES, read_controls, request_expired
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,7 @@ class Controller:
         self.protection = backend.RuntimeChanges(mem) if self.capabilities.protection else None
         self.respawn = Respawn(self.game, self.protection, self.session) if self.capabilities.respawn else None
         self.world = backend.RuntimeChanges(mem) if self.capabilities.unlock_map else None
+        self.display = backend.RuntimeChanges(mem) if self.capabilities.hide_hud else None
         self.peaceful = backend.RuntimeChanges(mem) if self.capabilities.peaceful else None
         self.bindings = backend.RuntimeChanges(mem) if (
             self.capabilities.walk_binding or self.capabilities.jump
@@ -247,7 +249,8 @@ class Controller:
                 destinations = backend.load_destinations(mem.exe.parent, graph, backend.read_game_text)
             except (OSError, ValueError) as error:
                 logger.warning("Mission locations unavailable: %s", error)
-        self.missions = MissionSystem(self.state_dir, graph, destinations)
+        self.missions = MissionSystem(self.state_dir, graph, destinations,
+                                      defaults=getattr(backend, "MISSION_DEFAULTS", None))
         self.pace = backend.WalkingPace(
             mem, getattr(backend, "WALK_SPEED_MULTIPLIER", WALK_SPEED_MULTIPLIER)
         ) if self.capabilities.walking_pace else None
@@ -255,6 +258,13 @@ class Controller:
         self.camera = backend.FirstPersonCamera(mem) if self.capabilities.first_person else None
         self.jump = HighJump(self.game, self.bindings, binder=backend.bind_jump_key) if self.capabilities.jump else None
         self.view = ViewControl(focused=mem.foreground) if self.capabilities.view else None
+        self.input = NativeInput(mem) if getattr(args, "background", False) else None
+        if self.input:
+            self.movement.keys = self.input.keys(self.movement.keys.bindings)
+            if self.jump:
+                self.jump.keys = self.input.keys(self.jump.keys.bindings)
+            if self.view:
+                self.view.keys = self.input.keys()
         self.hotkeys = Hotkeys(("f5", "f6", "f7", "f8", "f9", "f11", "f12"))
         self.settings = dict(DEFAULTS, walking=args.walk)
         previous = {}
@@ -273,9 +283,10 @@ class Controller:
         self.last_message = self.last_steering = None
         self.report = {}
         logger.info(
-            "Controller ready. Return to the game.\n"
+            "Controller ready. Background operation: %s.\n"
             "%sF5 free/mission/sidewalk | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
             "Available features: %s",
+            "enabled" if self.input else "disabled",
             "F11 first-person | " if self.capabilities.first_person else "",
             ", ".join(name.replace("_", " ") for name, enabled in self.capabilities.report().items() if enabled) or "basic walking",
         )
@@ -324,6 +335,8 @@ class Controller:
 
     def handle_hotkeys(self, state):
         for key in self.hotkeys.pressed():
+            if not state.get("foreground"):
+                continue  # Function keys in another application belong to it.
             if key == "f9":
                 self.stop()
             elif key == "f12":
@@ -350,6 +363,8 @@ class Controller:
     def update_game(self, state, now, saving):
         if saving:
             return
+        if self.display is not None:
+            self.backend.hide_hud(self.game, self.display)
         if self.capabilities.walk_binding and now - self.bindings_at > 0.75:
             self.backend.bind_walk_key(self.game, self.bindings)
             self.bindings_at = now
@@ -359,7 +374,7 @@ class Controller:
         )
         if (
             self.camera is not None
-            and state["foreground"]
+            and (state["foreground"] or state.get("background_control"))
             and not state["paused"]
             and (self.camera_request != requested_camera or now - self.camera_at > 0.75)
         ):
@@ -429,6 +444,7 @@ class Controller:
             capabilities=self.capabilities.report(),
             autosave=self.autosave.report() if self.autosave else {"supported": False},
             camera=self.camera.report() if self.camera else {"supported": False},
+            background=self.input.report() if self.input else {"enabled": False},
         )
         navigation = (
             movement.navigator.report()
@@ -443,6 +459,12 @@ class Controller:
         atomic_json(self.state_dir / "state.json", self.report)
 
     def tick(self, now):
+        result = self._tick(now)
+        if self.input:
+            self.input.publish()
+        return result
+
+    def _tick(self, now):
         read_controls(self.control_path, self.settings)
         self.limit_settings()
         if self.settings["quit"]:
@@ -523,6 +545,11 @@ class Controller:
                 self.movement.stop()
         finally:
             failures = []
+            if self.input:
+                try:
+                    self.input.close()
+                except OSError as error:
+                    failures.append(str(error))
             if self.autosave:
                 self.autosave.close()
             if self.mem.alive():
@@ -541,6 +568,7 @@ class Controller:
                     self.protection,
                     self.world,
                     self.peaceful,
+                    self.display,
                 ):
                     if changes is not None:
                         failures.extend(changes.restore())

@@ -8,6 +8,8 @@ static int supported_game(void) {
     const unsigned char vc_name_sig[] = {0x8b,0x44,0x24,0x04,0xc6,0x05,0x28,0x84,0x97,0x00,0x00,0x40};
     const unsigned char vc_open_sig[] = {0x8b,0x44,0x24,0x04,0x8b,0x4c,0x24,0x08,0x51,0x50};
     const unsigned char vc_close_sig[] = {0x8b,0x44,0x24,0x04,0x50,0xe8,0x96,0x46,0x1c,0x00,0x59,0xc3};
+    const unsigned char iii_save_sig[] = {0x53,0x56,0x57,0x55,0x81,0xec,0x50,0x01,0x00,0x00};
+    const unsigned char iii_name_sig[] = {0x8b,0x44,0x24,0x04,0xc6,0x05,0x70,0x2d,0x8e,0x00,0x00,0x40};
     if (GetModuleHandleA(NULL) != (HMODULE)0x400000) return 0;
     if (!GetModuleFileNameA(NULL, path, sizeof(path))) return 0;
     name = strrchr(path, '\\');
@@ -20,11 +22,31 @@ static int supported_game(void) {
         && memcmp((void *)0x61a630, vc_name_sig, sizeof(vc_name_sig)) == 0
         && memcmp((void *)0x48df90, vc_open_sig, sizeof(vc_open_sig)) == 0
         && memcmp((void *)0x48dea0, vc_close_sig, sizeof(vc_close_sig)) == 0) return 2;
+    if (lstrcmpiA(name, "gta3.exe") == 0
+        && memcmp((void *)0x58FBC0, iii_save_sig, sizeof(iii_save_sig)) == 0
+        && memcmp((void *)0x591DC0, iii_name_sig, sizeof(iii_name_sig)) == 0
+        && *(DWORD *)0x5C2130 == 0x53E58955) return 3;
     return 0;
 }
 
 static int safe_to_save(int game) {
     DWORD focus, info, ped, mission;
+    if (game == 3) {
+        int pause_menu = *(BYTE *)0x8F5B9D && *(DWORD *)0x8F5FD4 == 52;
+        if (*(BYTE *)0x8F5BA0 || *(BYTE *)0x8F5EE0
+            || (*(BYTE *)0x8F5B9D && !pause_menu)
+            || ((*(BYTE *)0x95CF34 || *(BYTE *)0x95CF69 || *(BYTE *)0x6F043F) && !pause_menu)
+            || *(BYTE *)0x95CEAD) return 0;
+        ped = *(DWORD *)0x9414A8;
+        if (ped <= 0x10000 || ped >= 0x80000000) return 0;
+        if (*(BYTE *)0x941580 || !(*(float *)(ped + 0x2C0) > 0)
+            || *(BYTE *)(ped + 0x314) || *(DWORD *)(ped + 0x224) > 1
+            || !(*(BYTE *)(ped + 0x154) & 1) || (*(BYTE *)(ped + 0x155) & 8)
+            || (*(BYTE *)(ped + 0x54) & 8) || (*(BYTE *)(ped + 0x122) & 8)) return 0;
+        mission = *(DWORD *)0x8F1C18;
+        return mission < 163840 && !(mission & 3)
+            && (!mission || (mission >= 8 && *(DWORD *)(0x74B248 + mission) != 1));
+    }
     if (game == 2) {
         int pause_menu = *(BYTE *)0x869668 && *(DWORD *)0x869728 == 32;
         if (*(BYTE *)0x869669 || *(BYTE *)0x86966c
@@ -61,6 +83,19 @@ static int safe_to_save(int game) {
 static int save_game(int game, int slot) {
     typedef void (__cdecl *NameSave)(int);
     typedef unsigned char (__cdecl *SaveGame)(int);
+    if (game == 3) {
+        typedef int (__cdecl *OpenFile)(const char *, const char *);
+        typedef int (__cdecl *CloseFile)(int);
+        int file;
+        unsigned char saved;
+        ((NameSave)0x591DC0)(slot);
+        *(DWORD *)0x8E2D14 = 0;
+        file = ((OpenFile)0x479100)((const char *)0x8E2D70, "wb");
+        if (!file) { *(DWORD *)0x8E2D14 = 1; return 0; }
+        saved = ((SaveGame)0x58FBC0)(file);
+        if (saved && ((CloseFile)0x479200)(file)) *(DWORD *)0x8E2D14 = 3;
+        return saved && *(DWORD *)0x8E2D14 == 0;
+    }
     if (game == 2) {
         typedef int (__cdecl *OpenFile)(const char *, const char *);
         typedef int (__cdecl *CloseFile)(int);

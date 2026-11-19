@@ -20,10 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core.runtime import DEFAULTS
+from games import ACTIVE_GAMES
 from core.files import sha256, under
 from build.setup.setup import verify_bundle
 
-GAMES = ("san_andreas", "vice_city")
+GAMES = ACTIVE_GAMES
 
 
 def validate_graphics_capacity(game, payload):
@@ -59,12 +60,14 @@ def add_component(stage, game):
     base = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     manifests = [(base, source / "payload")]
     camera = source / "first-person.json"
-    if game in ("san_andreas", "vice_city"):
-        manifests.append((json.loads(camera.read_text(encoding="utf-8")), source / "payload/first_person"))
+    manifests.append((json.loads(camera.read_text(encoding="utf-8")), source / "payload/first_person"))
     graphics = source / "graphics.json"
     if graphics.is_file():
         validate_graphics_capacity(game, source / "payload/graphics")
         manifests.append((json.loads(graphics.read_text(encoding="utf-8")), source / "payload/graphics"))
+    background = source / "background.json"
+    if background.is_file():
+        manifests.append((json.loads(background.read_text(encoding="utf-8")), source / "payload/background"))
     files = []
     seen = set()
     for manifest, payload in manifests:
@@ -100,7 +103,7 @@ def add_component(stage, game):
         "controller_ready": profile["controller_ready"], "files": files,
         "controller_defaults": DEFAULTS,
         "required_files": ["models/gta3.img", "anim/anim.img", "data/script/main.scm"] if game == "san_andreas" else ["models/gta3.img", "anim/ped.ifp", "data/main.scm"],
-        "required_hashes": {"data/timecycp.dat": base["ps2_timecycle_sha256"]} if game == "san_andreas" else {},
+        "required_hashes": ({"data/timecycp.dat": base["ps2_timecycle_sha256"]} if game == "san_andreas" else base.get("required_hashes", {})),
         "previous_versions": base.get("previous_versions", []),
     }
     installer = stage / "games" / game / "installer"
@@ -112,7 +115,7 @@ def add_component(stage, game):
                 copy_file(path, installer / "documentation" / path.relative_to(source / "documentation"))
     records = installer / "documentation/source-manifests"
     records.mkdir(parents=True, exist_ok=True)
-    for filename in ("manifest.json", "first-person.json", "graphics.json", "downloads.lock.json"):
+    for filename in ("manifest.json", "first-person.json", "graphics.json", "background.json", "downloads.lock.json"):
         if (source / filename).is_file():
             copy_file(source / filename, records / filename)
     return definition
@@ -147,7 +150,7 @@ def build(keep_stage=False):
                 continue
             copy_file(path, stage / name / path.relative_to(folder))
     # The packaged regression tests also exercise the builder's validation helpers.
-    for name in ("Start Grand Theft Walk.cmd", "requirements.txt"):
+    for name in ("Start Grand Theft Walk.cmd", "requirements.txt", "parameters.example.json"):
         copy_file(ROOT / name, stage / name)
     for name in ("__init__.py", "build_suite.py", "setup/__init__.py", "setup/setup.py",
                  "setup/Setup.cmd", "setup/Setup.ps1", "native/build.ps1",
@@ -155,13 +158,15 @@ def build(keep_stage=False):
         copy_file(ROOT / "build" / name, stage / "build" / name)
     for game in GAMES:
         copy_file(ROOT / "games" / game / "profile.json", stage / "games" / game / "profile.json")
+        for document in (ROOT / "games" / game / "docs").glob("*.md"):
+            copy_file(document, stage / "games" / game / "docs" / document.name)
         sources = ROOT / "games" / game / "docs/SOURCES.txt"
         if sources.exists():
             copy_file(sources, stage / "games" / game / "docs/SOURCES.txt")
         else:
             path = stage / "games" / game / "docs/SOURCES.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("Component origins and hashes: ../installer/documentation/\nController is not yet ready; memory writes are disabled.\n", encoding="utf-8")
+            path.write_text("Component origins and hashes: ../installer/documentation/\nGame adapter support and layout: ../profile.json, ../game.py and PROFILE.md.\n", encoding="utf-8")
     for path in (ROOT / "chat/templates").rglob("*"):
         if path.is_file():
             copy_file(path, stage / "chat/templates" / path.relative_to(ROOT / "chat/templates"))
@@ -172,8 +177,9 @@ def build(keep_stage=False):
             raise ValueError(f"Native helper failed verification: {name}")
     for name in ("manifest.json", *native_manifest["files"]):
         copy_file(native / name, stage / "core/native" / name)
+    copy_file(native / "background.json", stage / "core/native/background.json")
     definitions = {game: add_component(stage, game) for game in GAMES}
-    manifest = {"format": 1, "suite_version": "2026.11-sa-vc-max-distance1", "uses_existing_venv": True, "games": definitions}
+    manifest = {"format": 1, "suite_version": "2026.11-classic-trilogy-1", "uses_existing_venv": True, "games": definitions}
     (stage / "suite-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     # The distributable keeps a convenient root entry point; implementation lives in build/setup.
     (stage / "Setup.cmd").write_text(

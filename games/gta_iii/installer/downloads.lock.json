@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "archives": [
+    {
+      "file": "SilentPatchIII.zip",
+      "url": "https://github.com/CookiePLMonster/SilentPatch/releases/download/1.1-BUILD34.1-SA/SilentPatchIII.zip",
+      "sha256": "6d5ebab21126345a2b33e0aa5737a28eaa7c5822a45fa796690793c668a519f3"
+    },
+    {
+      "file": "SkyGfx.zip",
+      "url": "https://github.com/aap/skygfx_vc/releases/download/v3.0b/SkyGfx_III_VC_3.0b.zip",
+      "sha256": "c005c34ed8d6e838bcfd0c862e6ce3509473464f6eab2d32ea9a53c486b98970"
+    },
+    {
+      "file": "Widescreen.zip",
+      "url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/download/gta3/GTA3.WidescreenFix.zip",
+      "sha256": "46303a225d1b4b02354230ec507248491a99be8d09bdcaf0297c103c692f60d2"
+    },
+    {
+      "file": "Project2DFX.zip",
+      "url": "https://github.com/ThirteenAG/III.VC.SA.IV.Project2DFX/releases/download/gta3/III.Project2DFX.zip",
+      "sha256": "b50783510a8e228e9ee46a7c5cfee79be9719ca4bc567230c599040d3c633a18"
+    },
+    {
+      "file": "FirstPerson.rar",
+      "url": "https://files.gtainside.com/201907/1564503154_The%20First%20Person%20for%20III.rar",
+      "sha256": "a314dd710319dffe3d498ff88373a6681d150f81337db5f1a8180a9c41ec74d7"
+    },
+    {
+      "file": "Savegame.rar",
+      "url": "https://files.gtainside.com/201711/1510409308_100Savegame.rar",
+      "sha256": "8b31f2b306f96b8d72449ff4cffff60a3bd7aac7323552c3faa78513dd4333f4"
+    }
+  ]
+}

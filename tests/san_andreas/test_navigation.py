@@ -675,6 +675,7 @@ class ControllerTests(unittest.TestCase):
             memory, backend, autosave = Mock(), Mock(), Mock()
             backend.CAPABILITIES = CAPABILITIES
             backend.WALK_KEYS = None
+            backend.MISSION_DEFAULTS = None
             memory.profile.id = "san_andreas"
             state = {
                 "ready": True, "foreground": True, "paused": False,
@@ -717,6 +718,7 @@ class ControllerTests(unittest.TestCase):
             memory, backend, autosave = Mock(), Mock(), Mock()
             backend.CAPABILITIES = CAPABILITIES
             backend.WALK_KEYS = None
+            backend.MISSION_DEFAULTS = None
             backend.load_destinations.return_value = []
             graph = graph_fixture()
             loader = Mock(return_value=graph)
@@ -738,6 +740,8 @@ class ControllerTests(unittest.TestCase):
 
     def setUp(self):
         self.controller = Controller.__new__(Controller)
+        self.controller.input = None
+        self.controller.display = None
         self.controller.settings = dict(DEFAULTS)
         self.controller.movement = Mock()
         self.controller.jump = Mock()

@@ -87,8 +87,9 @@ class LaunchTests(unittest.TestCase):
         self.startup = Mock()
         self.startup_type = Mock(return_value=self.startup)
         self.stack.enter_context(patch.object(session, "configure_logging"))
+        self.stack.enter_context(patch.object(session, "configure_window"))
         self.stack.enter_context(patch.object(session, "process_mutex"))
-        self.pids = self.stack.enter_context(patch.object(session, "game_pids", side_effect=[[], [], [123]]))
+        self.pids = self.stack.enter_context(patch.object(session, "game_pids", side_effect=[[] for _ in ACTIVE_GAMES] + [[123]]))
         self.status = self.stack.enter_context(patch.object(session, "component_status", return_value={"setup_matches": True}))
         self.digest = self.stack.enter_context(patch("core.files.sha256"))
         self.process = Mock(pid=123)
@@ -104,7 +105,7 @@ class LaunchTests(unittest.TestCase):
     def test_both_launchers_attach_controller_to_the_started_pid(self):
         for game in ACTIVE_GAMES:
             with self.subTest(game=game):
-                self.pids.side_effect = [[], [], [123]]
+                self.pids.side_effect = [[] for _ in ACTIVE_GAMES] + [[123]]
                 self.run.reset_mock()
                 self.launch(game)
                 args, selected_game = self.run.call_args.args

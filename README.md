@@ -11,7 +11,7 @@ commands in PowerShell from the extracted folder. Accept the administrator promp
 .\Setup.cmd -Action Repair -Game <game>
 ```
 
-Use `san_andreas` or `vice_city` for `<game>`. First setup needs internet for Python packages.
+Use `san_andreas`, `gta_iii` or `vice_city` for `<game>`. First setup needs internet for Python packages.
 From a source checkout, use `.\build\setup\Setup.cmd` instead of `.\Setup.cmd`.
 
 ## Run
@@ -36,3 +36,6 @@ For Twitch chat and OBS streaming:
 - **Vice City:** SilentPatch + DDraw fix, SkyGfx (PS2 lighting/water), Widescreen Fix,
   Project2DFX + Open Limit Adjuster, D3D8-to-D3D9 wrapper, Ultimate ASI Loader,
   First Person View Mod (GenuisZ), classic 1.0 compatibility executable.
+- **GTA III:** SilentPatch + DDraw fix, Widescreen Fix, D3D8-to-D3D9 wrapper,
+  Ultimate ASI Loader, The First Person View for III (GeniusZ), classic 1.1
+  compatibility executable. SkyGfx 3 and Project2DFX require 1.0 and are excluded.

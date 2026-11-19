@@ -19,7 +19,7 @@ JUMP_SPEED = 2.0  # Default takeoff speed; San Andreas calibrates for its own ph
 def can_control(state):
     return (
         state.get("ready")
-        and state["foreground"]
+        and (state["foreground"] or state.get("background_control", False))
         and not state["paused"]
         and not state["controls_disabled"]
         and not state["in_vehicle"]

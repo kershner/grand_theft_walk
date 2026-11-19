@@ -15,7 +15,7 @@ from core.runtime import WalkerControl
 class GameProfileTests(unittest.TestCase):
     def test_runtime_directories_are_isolated_under_the_games_folder(self):
         folders = {game.state_dir for game in GAMES.values()}
-        self.assertEqual(len(folders), 2)
+        self.assertEqual(len(folders), len(GAMES))
         self.assertEqual(get_game().state_dir.name, "runtime")
         self.assertEqual(get_game().state_dir.parent.name, "san_andreas")
         for game in GAMES.values():
@@ -30,10 +30,10 @@ class GameProfileTests(unittest.TestCase):
     def test_synthetic_game_is_only_registered_inside_its_test_fixture(self):
         from tests.fixtures import legacy_game_profile
 
-        self.assertNotIn("gta_iii", GAMES)
+        self.assertNotIn("synthetic_legacy", GAMES)
         with legacy_game_profile():
-            self.assertEqual(get_game("gta_iii").title, "GTA III")
-        self.assertNotIn("gta_iii", GAMES)
+            self.assertEqual(get_game("synthetic_legacy").title, "GTA III")
+        self.assertNotIn("synthetic_legacy", GAMES)
 
     def test_only_san_andreas_accepts_legacy_untagged_state(self):
         with tempfile.TemporaryDirectory() as folder:

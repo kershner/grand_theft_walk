@@ -1,0 +1,31 @@
+{
+  "MODE": "dev",
+  "ROTATION": {
+    "games": ["san_andreas", "vice_city", "gta_iii"],
+    "timezone": "America/New_York",
+    "start_date": "2026-11-17"
+  },
+  "DEV_SERVER": {
+    "host": "127.0.0.1",
+    "port": 5050
+  },
+  "CLIENT_ID": "",
+  "CLIENT_SECRET": "",
+  "TWITCH_CHANNEL": "",
+  "TWITCH_BOT_LOGIN": "",
+  "TOKENS_FILE": "oauth_tokens.json",
+  "STARTUP_TIMEOUT": 600,
+  "OBS": {
+    "executable": "C:/Program Files/obs-studio/bin/64bit/obs64.exe",
+    "host": "127.0.0.1",
+    "port": 4455,
+    "password": "",
+    "profile": "Grand Theft Walk",
+    "scene_collection": "Grand Theft Walk",
+    "scenes": {
+      "san_andreas": "San Andreas",
+      "vice_city": "Vice City",
+      "gta_iii": "GTA III"
+    }
+  }
+}

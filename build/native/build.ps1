@@ -16,3 +16,5 @@ foreach ($name in @('save_bridge.dll', 'save_request.exe')) {
 }
 $manifest = @{format = 1; files = $files} | ConvertTo-Json
 [IO.File]::WriteAllText((Join-Path $output 'manifest.json'), $manifest)
+& (Join-Path $PSScriptRoot 'build-background.ps1') -Compiler $Compiler
+if ($LASTEXITCODE) { throw 'Background input build failed' }

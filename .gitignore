@@ -1,13 +1,19 @@
-# Local game setup and generated state
-/games/san_andreas/installer/
-/games/vice_city/installer/
-/games/gta_iii/installer/
+# Keep portable installer metadata; transfer binary payloads in the suite ZIP.
+/games/*/installer/*
+!/games/*/installer/manifest.json
+!/games/*/installer/first-person.json
+!/games/*/installer/graphics.json
+!/games/*/installer/background.json
+!/games/*/installer/downloads.lock.json
+
+# Paths, checkpoints and recovery records belong to the destination computer.
 /games/san_andreas/docs/SOURCES.txt
 /core/runtime/
 /runtime/
-/games/san_andreas/runtime/
-/games/vice_city/runtime/
-/games/gta_iii/runtime/
+/games/*/runtime/
+.gtw-suite/
+.gtw-classic-setup/
+.sa-first-person-setup/
 
 # Python environments, caches, and test output
 .venv/
@@ -17,6 +23,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 .coverage
 .coverage.*
 coverage.xml
@@ -53,8 +61,12 @@ htmlcov/
 *.tmp
 *.swp
 *.swo
+*.dmp
+*.mdmp
+.vs/
 *~
 .DS_Store
 Thumbs.db
 Desktop.ini
 SOURCES.txt
+build/native/SOURCES.md

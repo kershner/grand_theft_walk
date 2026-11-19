@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "package_id": "vc-first-person-genuisz-2017",
+  "source": "https://www.gtainside.com/en/vicecity/mods/modifications/110284-first-person-view-mod",
+  "archive_url": "https://files.gtainside.com/201709/1505777222_First%20Person%20View%20Mod%20For%20Vice%20City.rar",
+  "archive_sha256": "daeae8aa32b8a509307a8693d8d3950983a5ffc1ec21cc8b48480d1b75b1233a",
+  "supported_exe_sha256": "04e4db72629eaa786fdd182ac224f4fd6d68806f5f4fe5c1fb5f756dc4da11d7",
+  "files": [
+    {
+      "path": "FirstPerson.asi",
+      "size": 1915392,
+      "sha256": "b63145e7f5c13e893aa4e38a765d58eba3857831f4fd3a45c6f4ea80601806aa",
+      "clean_sha256": null
+    },
+    {
+      "path": "FirstPerson.cfg",
+      "size": 1320,
+      "sha256": "550c11e0e345240819cff4fc7d3a32c7ee7702f87c772594917ceec5d023af30",
+      "clean_sha256": null
+    }
+  ],
+  "disable": [],
+  "configuration": {
+    "on_foot_near_clip": 0.1,
+    "vehicle_near_clip": 0.1,
+    "binary_float_offsets": [
+      4,
+      8
+    ],
+    "reason": "Use supported maximum near clips to reduce depth fighting."
+  }
+}

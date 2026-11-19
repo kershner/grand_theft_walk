@@ -20,6 +20,7 @@ class Capabilities:
     ledge_drop: bool = False
     autosave: bool = False
     view: bool = False
+    hide_hud: bool = False
 
     def report(self):
         return asdict(self)
@@ -63,7 +64,7 @@ def load_profile(game, root=ROOT):
     return GameProfile(**data)
 
 
-ACTIVE_GAMES = ("san_andreas", "vice_city")
+ACTIVE_GAMES = ("san_andreas", "vice_city", "gta_iii")
 GAMES = {game: load_profile(game) for game in ACTIVE_GAMES}
 
 

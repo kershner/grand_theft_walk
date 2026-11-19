@@ -30,8 +30,11 @@ def definition(game, root=ROOT):
     graphics = installer / "graphics.json"
     if graphics.is_file():
         files += json.loads(graphics.read_text(encoding="utf-8"))["files"]
+    background = installer / "background.json"
+    if background.is_file():
+        files += json.loads(background.read_text(encoding="utf-8"))["files"]
     camera = installer / "first-person.json"
-    if game in ("san_andreas", "vice_city"):
+    if game in ACTIVE_GAMES:
         if not camera.is_file():
             return None
         files += json.loads(camera.read_text(encoding="utf-8"))["files"]
@@ -39,7 +42,7 @@ def definition(game, root=ROOT):
     return {
         "files": files,
         "required_files": ["data/script/main.scm", "models/gta3.img", "anim/anim.img"] if game == "san_andreas" else ["data/main.scm", "models/gta3.img", "anim/ped.ifp"],
-        "required_hashes": {"data/timecycp.dat": manifest["ps2_timecycle_sha256"]} if "ps2_timecycle_sha256" in manifest else {},
+        "required_hashes": {"data/timecycp.dat": manifest["ps2_timecycle_sha256"]} if "ps2_timecycle_sha256" in manifest else manifest.get("required_hashes", {}),
     }
 
 

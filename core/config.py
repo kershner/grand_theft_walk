@@ -44,7 +44,7 @@ def select_game(params, now=None):
     rotation = params.get("ROTATION", {})
     games = rotation.get("games", list(ACTIVE_GAMES))
     if not isinstance(games, list) or not games or any(not isinstance(g, str) or g not in ACTIVE_GAMES for g in games):
-        raise ValueError("ROTATION.games must list available games: san_andreas, vice_city.")
+        raise ValueError(f"ROTATION.games must list available games: {', '.join(ACTIVE_GAMES)}.")
     if len(set(games)) != len(games):
         raise ValueError("ROTATION.games must not contain duplicates.")
     zone = ZoneInfo(rotation.get("timezone", "America/New_York"))

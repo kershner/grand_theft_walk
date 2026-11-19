@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "package_id": "background-input-1",
+  "files": [
+    {
+      "path": "scripts/GTW.BackgroundInput.asi",
+      "sha256": "5bf229347a9dac4eca777ad0a30c80b1ef028697773351b05734201bb260e438",
+      "size": 4608,
+      "clean_sha256": null
+    },
+    {
+      "path": "scripts/III.VC.SA.WindowedMode.asi",
+      "sha256": "ef36fb8fe0a7a715a2c76377177b07047e85925d153c7b9d6cb13cda9dd65872",
+      "size": 3788376,
+      "clean_sha256": null
+    }
+  ]
+}

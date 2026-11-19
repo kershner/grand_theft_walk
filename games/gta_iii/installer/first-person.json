@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "package_id": "iii-first-person-geniusz-2019",
+  "source": "https://github.com/GenisZ/FirstPerssonIII",
+  "files": [
+    {
+      "path": "anim/fps.ifp",
+      "sha256": "1b026cc36b8847abfcbbb301666a601fb9e35a708a9611ae434f698b300b40dc",
+      "size": 38876,
+      "clean_sha256": null
+    },
+    {
+      "path": "FirstPersonIII.asi",
+      "sha256": "95e4297221206e8be734f9defa074522fd441ce25df57cfd9e519835d5039327",
+      "size": 3373568,
+      "clean_sha256": null
+    }
+  ]
+}

@@ -110,6 +110,7 @@ class ControllerRespawnTests(unittest.TestCase):
             memory.profile.id = 'san_andreas'
             backend.CAPABILITIES = sa.CAPABILITIES
             backend.WALK_KEYS = None
+            backend.MISSION_DEFAULTS = None
             backend.RuntimeChanges.return_value.restore.return_value = []
             game = backend.Game.return_value
             state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,

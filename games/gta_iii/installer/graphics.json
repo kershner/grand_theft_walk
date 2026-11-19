@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "package_id": "iii-classic-1.1-graphics-1",
+  "files": [
+    {
+      "path": "d3d8.dll",
+      "sha256": "58b9b73859f107183e4146c2b854f929397892058d46de3691129722a6f29d92",
+      "size": 279040,
+      "clean_sha256": null
+    },
+    {
+      "path": "scripts/GTA3.WidescreenFix.asi",
+      "sha256": "214e332085d516cb8b154b52f673ad0e2c02423dd0b7019a51cd33fde7497b42",
+      "size": 4870520,
+      "clean_sha256": null
+    },
+    {
+      "path": "scripts/GTA3.WidescreenFix.ini",
+      "sha256": "369c92f3ebf731c7ce5fff4cbc81c9c613f6382b16b952615a57d2b79e680df5",
+      "size": 2144,
+      "clean_sha256": null
+    },
+    {
+      "path": "SilentPatchIII.asi",
+      "sha256": "97d162081032f048958c3de0a5d92eb08d15512fc972bb9ce24562e4d35c3c5c",
+      "size": 236032,
+      "clean_sha256": null
+    },
+    {
+      "path": "SilentPatchIII.ini",
+      "sha256": "0036239d0c6385f270f782abc1e4153a1ee96acb4641907b9e3c4987b35e2e36",
+      "size": 2735,
+      "clean_sha256": null
+    }
+  ]
+}

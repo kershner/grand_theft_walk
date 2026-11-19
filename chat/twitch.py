@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 CATEGORIES = {
     "san_andreas": "Grand Theft Auto: San Andreas",
     "vice_city": "Grand Theft Auto: Vice City",
+    "gta_iii": "Grand Theft Auto III",
 }
 STREAM_TAGS = [
     "Exploration", "Automation", "Chill", "Cozy", "Comfy",

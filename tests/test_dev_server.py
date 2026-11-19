@@ -758,13 +758,6 @@ class GTAIIIChatIntegrationTests(ChatIntegrationTests):
 
     game = "gta_iii"
 
-    def setUp(self):
-        from tests.fixtures import legacy_game_profile
-
-        fixture = legacy_game_profile()
-        fixture.start()
-        self.addCleanup(fixture.stop)
-        super().setUp()
 
 
 if __name__ == "__main__":

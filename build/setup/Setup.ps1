@@ -1,9 +1,10 @@
 param(
     [ValidateSet('Install','Check','Repair','Restore')][string]$Action = 'Install',
-    [ValidateSet('all','san_andreas','vice_city')][string]$Game = 'all',
+    [ValidateSet('all','san_andreas','vice_city','gta_iii')][string]$Game = 'all',
     # Each path may name the game folder or the classic Rockstar game EXE.
     [string]$SanAndreasPath = '',
     [string]$ViceCityPath = '',
+    [string]$GtaIIIPath = '',
     [switch]$Elevated
 )
 $ErrorActionPreference = 'Stop'
@@ -73,6 +74,7 @@ try {
             $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Action ' + $Action + ' -Game ' + $Game + ' -Elevated'
             if ($SanAndreasPath) { $arguments += ' -SanAndreasPath "' + $SanAndreasPath + '"' }
             if ($ViceCityPath) { $arguments += ' -ViceCityPath "' + $ViceCityPath + '"' }
+            if ($GtaIIIPath) { $arguments += ' -GtaIIIPath "' + $GtaIIIPath + '"' }
             # PowerShell 7 and the Codex runtime use pwsh.exe; $PSHOME need not
             # contain powershell.exe. Elevate with the Windows system copy.
             $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -87,6 +89,7 @@ try {
     $arguments = @('-B','-m','build.setup.setup',$Action.ToLowerInvariant(),'--bundle',$root,'--game',$Game)
     if ($SanAndreasPath) { $arguments += @('--san-andreas-dir',$SanAndreasPath) }
     if ($ViceCityPath) { $arguments += @('--vice-city-dir',$ViceCityPath) }
+    if ($GtaIIIPath) { $arguments += @('--gta-iii-dir',$GtaIIIPath) }
     $logDirectory = Join-Path $root 'runtime'
     [IO.Directory]::CreateDirectory($logDirectory) | Out-Null
     # Native stderr is part of the saved result, including ordinary check failures.
