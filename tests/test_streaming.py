@@ -5,7 +5,6 @@ import tempfile
 import time
 import unittest
 from contextlib import ExitStack
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -30,16 +29,14 @@ class RotationTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "interval_hours"):
                 rotation_seconds({"ROTATION": {"interval_hours": value}})
 
-    def test_calendar_day_rotation_and_same_day_restart(self):
-        for hour in (5, 12, 23):
-            self.assertEqual(select_game(self.params, datetime(2026, 11, 17, hour, tzinfo=timezone.utc)), "san_andreas")
-        self.assertEqual(select_game(self.params, datetime(2026, 11, 18, 5, tzinfo=timezone.utc)), "vice_city")
-        self.assertEqual(select_game(self.params, datetime(2026, 11, 19, 5, tzinfo=timezone.utc)), "san_andreas")
+    def test_unfinished_game_resumes_and_completed_game_advances(self):
+        for elapsed in (0, 2400, 7199):
+            self.assertEqual(select_game(self.params, {"game": "vice_city", "elapsed_seconds": elapsed}), "vice_city")
+        self.assertEqual(select_game(self.params, {"game": "san_andreas", "elapsed_seconds": 7200}), "vice_city")
 
-    def test_eastern_midnight_and_year_boundary(self):
-        self.assertEqual(select_game(self.params, datetime(2026, 11, 18, 4, 59, tzinfo=timezone.utc)), "san_andreas")
-        self.params["ROTATION"]["start_date"] = "2026-12-31"
-        self.assertEqual(select_game(self.params, datetime(2027, 1, 1, 5, tzinfo=timezone.utc)), "vice_city")
+    def test_legacy_calendar_settings_do_not_affect_selection(self):
+        self.params["ROTATION"].update(start_date="unused", timezone="unused")
+        self.assertEqual(select_game(self.params), "san_andreas")
 
     def test_invalid_and_single_game_rotations(self):
         for games in ([], ["unknown"], ["vice_city", "vice_city"], "vice_city"):
@@ -49,8 +46,8 @@ class RotationTests(unittest.TestCase):
 
     def test_three_game_rotation_includes_gta_iii_and_wraps(self):
         self.params["ROTATION"]["games"].append("gta_iii")
-        for day, game in ((17, "san_andreas"), (18, "vice_city"), (19, "gta_iii"), (20, "san_andreas")):
-            self.assertEqual(select_game(self.params, datetime(2026, 11, day, 12, tzinfo=timezone.utc)), game)
+        for current, game in (("san_andreas", "vice_city"), ("vice_city", "gta_iii"), ("gta_iii", "san_andreas")):
+            self.assertEqual(select_game(self.params, {"game": current, "elapsed_seconds": 7200}), game)
 
     def test_local_dev_config_does_not_require_credentials_or_a_template(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -140,9 +137,14 @@ class TimedRotationTests(unittest.TestCase):
         import core.manager
         import core.processes
 
-        for current, expected in (("san_andreas", "vice_city"), ("gta_iii", "san_andreas")):
+        for current, expected, elapsed in (("san_andreas", "vice_city", 0),
+                                           ("gta_iii", "san_andreas", 0),
+                                           ("gta_iii", "san_andreas", 2400)):
             with self.subTest(current=current), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
                 root = Path(folder)
+                (root / "runtime").mkdir()
+                (root / "runtime/rotation-progress-dev.json").write_text(json.dumps(
+                    {"version": 1, "game": current, "elapsed_seconds": elapsed}))
                 stack.enter_context(patch.object(launcher, "ROOT", root))
                 command = stack.enter_context(patch.object(core.manager, "session_command", return_value=(["python"], root)))
                 job = stack.enter_context(patch.object(core.processes, "ProcessJob")).return_value
@@ -160,17 +162,19 @@ class TimedRotationTests(unittest.TestCase):
                     cli = spawn.call_args.args[1]
                     reports.append(json.loads(Path(cli[cli.index("--rotation-file") + 1]).read_text()))
                 stack.enter_context(patch.object(launcher, "wait_for_chat", side_effect=ready))
-                stack.enter_context(patch.object(launcher.time, "monotonic", side_effect=[100, 7299, 7300]))
+                stack.enter_context(patch.object(launcher.time, "monotonic", side_effect=[100, 7299 - elapsed, 7300 - elapsed, 7300 - elapsed]))
                 stack.enter_context(patch.object(launcher.time, "time", return_value=1000))
                 sleep = stack.enter_context(patch.object(launcher.time, "sleep"))
                 self.assertEqual(launcher.run_game_session({}, root / "params.json", current, "dev"), expected)
-                self.assertEqual(reports[0]["next_switch_at"], 8200)
+                self.assertEqual(reports[0]["next_switch_at"], 8200 - elapsed)
                 self.assertEqual([call.args[0] for call in command.call_args_list], [current, expected])
                 sleep.assert_called_once_with(0.5)
                 self.assertTrue(json.loads((root / "control.json").read_text())["quit"])
                 game.wait.assert_any_call(timeout=10)
                 job.close.assert_called_once()
-                self.assertEqual(list((root / "runtime").glob("*.json")), [])
+                self.assertEqual([p.name for p in (root / "runtime").glob("*.json")], ["rotation-progress-dev.json"])
+                progress = json.loads((root / "runtime/rotation-progress-dev.json").read_text())
+                self.assertEqual(select_game({}, progress), expected)
 
     def test_rotation_keeps_one_live_obs_stream_and_changes_scene(self):
         with (

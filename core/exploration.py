@@ -131,6 +131,10 @@ class ExploreNavigator(PedestrianNavigator):
         if not self.breadcrumbs or distance(position, self.breadcrumbs[-1]) >= 3:
             self.breadcrumbs.append(position)
             self.breadcrumbs = self.breadcrumbs[-100:]
+            if self.excursion_anchor is not None and not self.returning:
+                # Long successful excursions can outgrow the recovery window.
+                # Return only over retained, observed ground after a failure.
+                self.excursion_anchor = self.breadcrumbs[0]
         self.last_position = position
         self.save_memory(now)
 
@@ -251,16 +255,18 @@ class ExploreNavigator(PedestrianNavigator):
                 if failures >= 2:
                     continue
                 cell = self.coverage_cell(target)
-                novelty = self.coverage[cell]
-                nearby = sum(self.coverage[(cell[0] + x, cell[1] + y, cell[2])]
+                # Coverage breaks ties between useful approaches; it should not
+                # pull a successful walk sideways or backward at cell borders.
+                novelty = min(self.coverage[cell], 3)
+                nearby = sum(min(self.coverage[(cell[0] + x, cell[1] + y, cell[2])], 3)
                              for x, y in ((-1, 0), (1, 0), (0, -1), (0, 1)))
-                bias = (abs(angle_delta(bearing, heading)) * .15
-                        + abs(angle_delta(bearing, heading_to(position, self.open_goal))) * .4)
+                bias = (abs(angle_delta(bearing, heading)) * .5
+                        + abs(angle_delta(bearing, heading_to(position, self.open_goal))) * 3)
                 if self.turn:
                     desired = heading + {'left': math.pi / 2, 'right': -math.pi / 2,
                                          'forward': 0}[self.turn]
                     bias += abs(angle_delta(bearing, desired)) * 4
-                options.append((failures * 20 + novelty * 4 + nearby * .2 + bias,
+                options.append((failures * 20 + novelty * .5 + nearby * .05 + bias,
                                 self.rng.random(), target))
             if not options:
                 self.message = 'exploring: local approaches blocked; waiting for a new position'
@@ -312,8 +318,8 @@ class ExploreNavigator(PedestrianNavigator):
             if distance(position, point) <= 8 and abs(position[2] - point[2]) <= 3:
                 nearby = self.graph.nodes[self.target]
         if self.excursion_anchor is not None:
-            if self.excursion_travel >= 60 or self.returning:
-                self.returning = True
+            # Successful movement has no distance budget. Obstacles, steep
+            # steps and the progress watchdog still trigger observed recovery.
             if self.returning and distance(position, self.excursion_anchor) <= 3:
                 self.excursion_anchor = None
                 self.returning = False

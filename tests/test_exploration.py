@@ -1,6 +1,7 @@
 """Exercise exploration coverage, routing, memory, and observed-ground recovery."""
 
 import json
+import math
 import random
 import tempfile
 import unittest
@@ -37,11 +38,14 @@ class ExplorationTests(unittest.TestCase):
         self.assertEqual(navigator.goal, (0, 2))
         self.assertIsNone(navigator.destination)
 
-    def test_simulated_walk_covers_reachable_branches_and_returns_from_excursion(self):
+    def test_simulated_walk_covers_branches_and_returns_after_failed_excursion(self):
         navigator = self.navigator(network())
         position, heading = (0, 0, 0), 0
-        reached, excursion, returned = set(), False, False
+        reached, excursion, returned, failed = set(), False, False, False
         for now in range(350):
+            if navigator.excursion_travel > 80 and not failed:
+                navigator.avoid_target(now)
+                failed = True
             target = navigator.waypoint(position, heading, 0, now)
             self.assertIsNotNone(target)
             reached.add(position)
@@ -52,7 +56,55 @@ class ExplorationTests(unittest.TestCase):
             position = target
         self.assertTrue({(0, 0, 0), (0, 10, 0), (-10, 10, 0), (10, 10, 0)} <= reached)
         self.assertTrue(excursion)
+        self.assertTrue(failed)
         self.assertTrue(returned)
+
+    def test_successful_excursion_continues_past_old_limit_and_can_recover(self):
+        navigator = self.navigator(network())
+        position, heading = (0, 0, 0), 0
+        navigator.travel = 400
+        # More than 100 breadcrumbs exercises the bounded recovery window too.
+        for now in range(150):
+            target = navigator.waypoint(position, heading, 0, now)
+            self.assertIsNotNone(target)
+            self.assertFalse(navigator.returning)
+            heading = heading_to(position, target)
+            position = target
+        self.assertGreater(navigator.excursion_travel, 1000)
+        self.assertGreater(distance(position, (0, 0, 0)), 100)
+        self.assertEqual(len(navigator.breadcrumbs), 100)
+        self.assertEqual(navigator.excursion_anchor, navigator.breadcrumbs[0])
+        # The next obstacle still retraces the retained route and finishes.
+        navigator.avoid_target(150)
+        for now in range(150, 260):
+            target = navigator.waypoint(position, heading, 0, now)
+            self.assertIsNotNone(target)
+            if not navigator.returning:
+                break
+            heading = heading_to(position, target)
+            position = target
+        self.assertFalse(navigator.returning)
+        self.assertIsNone(navigator.excursion_anchor)
+
+    def test_open_goal_outweighs_heavily_visited_forward_cells(self):
+        navigator = self.navigator()
+        position = (6, 6, 0)
+        navigator.open_goal = (6, 106, 0)
+        navigator.coverage[(0, 1, 0)] = 100
+        navigator.coverage[(0, 2, 0)] = 100
+        # Face sideways: the established goal should also outweigh current facing.
+        target = navigator.waypoint(position, math.pi / 2, 0, 1)
+        self.assertAlmostEqual(target[0], 6)
+        self.assertAlmostEqual(target[1], 16)
+
+    def test_open_goal_still_avoids_a_known_failed_step(self):
+        navigator = self.navigator()
+        position = (6, 6, 0)
+        navigator.open_goal = (6, 106, 0)
+        forward = (6, 16, 0)
+        navigator.failures[navigator.connection(position, forward)] = 1
+        target = navigator.waypoint(position, 0, 0, 1)
+        self.assertGreater(distance(target, forward), 1)
 
     def test_long_link_midpoint_stays_on_pedestrian_route(self):
         graph = PedestrianGraph([

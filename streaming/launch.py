@@ -11,11 +11,12 @@ import time
 import uuid
 from pathlib import Path
 
-from core.config import load_parameters, local_path, select_game, rotation_seconds, twitch_settings
+from core.config import load_parameters, local_path, rotation_seconds, twitch_settings
 from core.files import atomic_json, read_json
 from core.runtime import WalkerControl, chat_ready, configure_logging
 from games import ACTIVE_GAMES, ROOT, get_game
 from core.processes import spawn
+from core.rotation import RotationProgress
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +90,16 @@ def run_game_session(params, parameters_path, game, mode, obs=None, switched_fro
     processes = []
     rotation_file = ROOT / "runtime" / f"rotation-{uuid.uuid4().hex}.json"
     ready_file = ROOT / "runtime" / f"chat-ready-{uuid.uuid4().hex}.json"
+    progress = RotationProgress(params, ROOT / "runtime" / f"rotation-progress-{mode}.json")
     try:
         logger.info("Launching %s...", get_game(game).title)
         process = spawn(job, [*command, "--timeout", str(params.get("STARTUP_TIMEOUT", 600))], directory)
         processes.append(process)
         wait_for_game(process, control, previous_session, params.get("STARTUP_TIMEOUT", 600) + 30)
-        interval = rotation_seconds(params)
+        interval = progress.remaining(game) or rotation_seconds(params)
         games = params.get("ROTATION", {}).get("games", list(ACTIVE_GAMES))
         next_game = games[(games.index(game) + 1) % len(games)] if game in games else games[0]
         rotating = next_game != game
-        deadline = time.monotonic() + interval
         atomic_json(rotation_file, {"game": game, "switched_from": switched_from,
                                    "next_switch_at": time.time() + interval if rotating else None})
         if mode == "prod":
@@ -113,11 +114,15 @@ def run_game_session(params, parameters_path, game, mode, obs=None, switched_fro
         wait_for_chat(processes, ready_file)
         if obs is not None and switched_from is None:
             obs.start_stream()
+        progress.start(game)
+        atomic_json(rotation_file, {"game": game, "switched_from": switched_from,
+                                   "next_switch_at": time.time() + interval if rotating else None})
         logger.info("Session ready: %s (%s). F12 exits the game; Ctrl+C stops the session.", game, mode)
         while process.poll() is None:
+            progress.checkpoint()
             if processes[1].poll() is not None:
                 raise RuntimeError("Chat process exited; stopping the managed session.")
-            if rotating and time.monotonic() >= deadline:
+            if rotating and progress.remaining(game) <= 0:
                 # Validate the incoming installation before ending this game.
                 session_command(next_game)
                 logger.info("Rotating from %s to %s.", game, next_game)
@@ -126,6 +131,12 @@ def run_game_session(params, parameters_path, game, mode, obs=None, switched_fro
         if process.returncode:
             raise RuntimeError(f"Game controller exited with code {process.returncode}.")
     finally:
+        # Save before cleanup; time with the launcher stopped never counts.
+        # Cleanup must still run if a progress write fails.
+        try:
+            progress.checkpoint(force=True)
+        except OSError:
+            logger.exception("Could not save rotation progress")
         # Give the controller a chance to save/restore its state before killing our tree.
         try:
             state = control.snapshot()
@@ -162,7 +173,8 @@ def main(argv=None):
     timeout = params.get("STARTUP_TIMEOUT", 600)
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 10 <= timeout <= 600:
         raise ValueError("STARTUP_TIMEOUT must be between 10 and 600 seconds.")
-    game = args.game or select_game(params)
+    game = args.game or RotationProgress(
+        params, ROOT / "runtime" / f"rotation-progress-{mode}.json").select()
     if args.dry_run:
         print(json.dumps({"mode": mode, "game": game, "title": get_game(game).title,
                           "parameters": str(args.parameters)}, indent=2))

@@ -2,9 +2,7 @@
 
 import json
 import math
-from datetime import date, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from games import ACTIVE_GAMES, ROOT
 
@@ -47,7 +45,7 @@ def rotation_seconds(params):
     return hours * 3600
 
 
-def select_game(params, now=None):
+def select_game(params, progress=None):
     rotation_seconds(params)
     rotation = params.get("ROTATION", {})
     games = rotation.get("games", list(ACTIVE_GAMES))
@@ -55,10 +53,12 @@ def select_game(params, now=None):
         raise ValueError(f"ROTATION.games must list available games: {', '.join(ACTIVE_GAMES)}.")
     if len(set(games)) != len(games):
         raise ValueError("ROTATION.games must not contain duplicates.")
-    zone = ZoneInfo(rotation.get("timezone", "America/New_York"))
-    current = datetime.now(zone) if now is None else now.astimezone(zone)
-    anchor = date.fromisoformat(rotation.get("start_date", "2026-11-17"))
-    return games[(current.date() - anchor).days % len(games)]
+    if progress and progress.get("game") in games:
+        game = progress["game"]
+        if progress["elapsed_seconds"] >= rotation_seconds(params):
+            return games[(games.index(game) + 1) % len(games)]
+        return game
+    return games[0]
 
 
 def twitch_settings(params):

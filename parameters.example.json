@@ -2,9 +2,7 @@
   "MODE": "dev",
   "ROTATION": {
     "interval_hours": 2,
-    "games": ["san_andreas", "vice_city", "gta_iii"],
-    "timezone": "America/New_York",
-    "start_date": "2026-11-17"
+    "games": ["san_andreas", "vice_city", "gta_iii"]
   },
   "DEV_SERVER": {
     "host": "127.0.0.1",
