@@ -53,11 +53,14 @@ class OBS:
             self.client.set_current_profile(settings["profile"])
         if settings.get("scene_collection"):
             self.client.set_current_scene_collection(settings["scene_collection"])
-        scene = settings.get("scenes", {}).get(game)
+        self.select_game(game)
+
+    def select_game(self, game):
+        scene = self.settings.get("scenes", {}).get(game)
         if scene:
             self.client.set_current_program_scene(scene)
-        # OBS attaches its capture hook before the game creates its DirectX context.
-        time.sleep(float(settings.get("settle_seconds", 10)))
+        # Attach capture before the next game creates its DirectX context.
+        time.sleep(float(self.settings.get("settle_seconds", 10)))
 
     def start_stream(self):
         # Set ownership first: a timed-out request may still have started the stream.

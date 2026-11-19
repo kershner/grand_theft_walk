@@ -1,4 +1,4 @@
-"""Start OBS, today's game, and Twitch chat (or the local dev chat server)."""
+"""Start OBS, rotating games, and Twitch chat (or the local dev chat server)."""
 
 import argparse
 import ctypes
@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from core.config import load_parameters, local_path, select_game, twitch_settings
+from core.config import load_parameters, local_path, select_game, rotation_seconds, twitch_settings
 from core.files import atomic_json, read_json
 from core.runtime import WalkerControl, chat_ready, configure_logging
 from games import ACTIVE_GAMES, ROOT, get_game
@@ -47,23 +47,13 @@ def wait_for_chat(processes, ready_file, timeout=60):
 
 
 def run_session(params, parameters_path, game, mode):
-    from core.manager import session_command
-    from core.processes import ProcessJob, stop_processes
     from core.winmemory import game_pids, process_mutex
 
     with process_mutex("Local\\GrandTheftWalkManager", "A managed Grand Theft Walk session is already running."):
         if any(list(game_pids(other)) for other in ACTIVE_GAMES):
             raise RuntimeError("Close the existing game before starting a managed session.")
-        command, directory = session_command(game)
-        control = WalkerControl(game=game)
-        try:
-            previous_session = read_json(control.state_dir / "state.json").get("session")
-        except (OSError, ValueError):
-            previous_session = None
         obs = None
-        job = ProcessJob()
-        processes = []
-        ready_file = ROOT / "runtime" / f"chat-ready-{uuid.uuid4().hex}.json"
+        previous_game = None
         try:
             if mode == "prod":
                 from streaming.obs import OBS
@@ -72,56 +62,94 @@ def run_session(params, parameters_path, game, mode):
                 twitch_settings(params)
                 OAuthTokens(params, local_path(parameters_path, params.get("TOKENS_FILE", "oauth_tokens.json"))).ensure_fresh()
                 obs = OBS(params.get("OBS", {}))
-                logger.info("Preparing OBS capture before launching the game...")
                 obs.prepare(game)
-            logger.info("Launching %s...", get_game(game).title)
-            process = spawn(job, [*command, "--timeout", str(params.get("STARTUP_TIMEOUT", 600))], directory)
-            processes.append(process)
-            wait_for_game(process, control, previous_session, params.get("STARTUP_TIMEOUT", 600) + 30)
-            if mode == "prod":
-                chat_command = [sys.executable, "-B", "-m", "chat.twitch",
-                                "--parameters", str(parameters_path), "--game", game]
-            else:
-                dev = params.get("DEV_SERVER", {})
-                chat_command = [sys.executable, "-B", "-m", "chat.dev", "--game", game,
-                                "--host", dev.get("host", "0.0.0.0"), "--port", str(dev.get("port", 5050))]
-            processes.append(spawn(job, [*chat_command, "--ready-file", str(ready_file)]))
-            wait_for_chat(processes, ready_file)
-            if obs is not None:
-                obs.start_stream()
-            logger.info("Session ready: %s (%s). F12 exits the game; Ctrl+C stops the session.", game, mode)
-            while process.poll() is None:
-                if processes[1].poll() is not None:
-                    raise RuntimeError("Chat process exited; stopping the managed session.")
-                time.sleep(0.5)
-            if process.returncode:
-                raise RuntimeError(f"Game controller exited with code {process.returncode}.")
+            while True:
+                if obs is not None and previous_game is not None:
+                    obs.select_game(game)
+                next_game = run_game_session(params, parameters_path, game, mode, obs, previous_game)
+                if next_game is None:
+                    return
+                previous_game, game = game, next_game
         finally:
-            # Give the controller a chance to save/restore its state before killing our tree.
-            try:
-                state = control.snapshot()
-                if state.get("session") != previous_session:
-                    path = control.state_dir / "control.json"
-                    settings = read_json(path)
-                    atomic_json(path, dict(settings, quit=True))
-                    if processes:
-                        try:
-                            processes[0].wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            pass
-            except (OSError, ValueError, RuntimeError):
-                pass
             if obs is not None:
                 obs.close()
-            stop_processes(job, processes)
-            ready_file.unlink(missing_ok=True)
+
+
+def run_game_session(params, parameters_path, game, mode, obs=None, switched_from=None):
+    from core.manager import session_command
+    from core.processes import ProcessJob, stop_processes
+
+    command, directory = session_command(game)
+    control = WalkerControl(game=game)
+    try:
+        previous_session = read_json(control.state_dir / "state.json").get("session")
+    except (OSError, ValueError):
+        previous_session = None
+    job = ProcessJob()
+    processes = []
+    rotation_file = ROOT / "runtime" / f"rotation-{uuid.uuid4().hex}.json"
+    ready_file = ROOT / "runtime" / f"chat-ready-{uuid.uuid4().hex}.json"
+    try:
+        logger.info("Launching %s...", get_game(game).title)
+        process = spawn(job, [*command, "--timeout", str(params.get("STARTUP_TIMEOUT", 600))], directory)
+        processes.append(process)
+        wait_for_game(process, control, previous_session, params.get("STARTUP_TIMEOUT", 600) + 30)
+        interval = rotation_seconds(params)
+        games = params.get("ROTATION", {}).get("games", list(ACTIVE_GAMES))
+        next_game = games[(games.index(game) + 1) % len(games)] if game in games else games[0]
+        rotating = next_game != game
+        deadline = time.monotonic() + interval
+        atomic_json(rotation_file, {"game": game, "switched_from": switched_from,
+                                   "next_switch_at": time.time() + interval if rotating else None})
+        if mode == "prod":
+            chat_command = [sys.executable, "-B", "-m", "chat.twitch",
+                            "--parameters", str(parameters_path), "--game", game]
+        else:
+            dev = params.get("DEV_SERVER", {})
+            chat_command = [sys.executable, "-B", "-m", "chat.dev", "--game", game,
+                            "--host", dev.get("host", "0.0.0.0"), "--port", str(dev.get("port", 5050))]
+        processes.append(spawn(job, [*chat_command, "--ready-file", str(ready_file),
+                                     "--rotation-file", str(rotation_file)]))
+        wait_for_chat(processes, ready_file)
+        if obs is not None and switched_from is None:
+            obs.start_stream()
+        logger.info("Session ready: %s (%s). F12 exits the game; Ctrl+C stops the session.", game, mode)
+        while process.poll() is None:
+            if processes[1].poll() is not None:
+                raise RuntimeError("Chat process exited; stopping the managed session.")
+            if rotating and time.monotonic() >= deadline:
+                # Validate the incoming installation before ending this game.
+                session_command(next_game)
+                logger.info("Rotating from %s to %s.", game, next_game)
+                return next_game
+            time.sleep(0.5)
+        if process.returncode:
+            raise RuntimeError(f"Game controller exited with code {process.returncode}.")
+    finally:
+        # Give the controller a chance to save/restore its state before killing our tree.
+        try:
+            state = control.snapshot()
+            if state.get("session") != previous_session:
+                path = control.state_dir / "control.json"
+                settings = read_json(path)
+                atomic_json(path, dict(settings, quit=True))
+                if processes:
+                    try:
+                        processes[0].wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+        except (OSError, ValueError, RuntimeError):
+            pass
+        stop_processes(job, processes)
+        ready_file.unlink(missing_ok=True)
+        rotation_file.unlink(missing_ok=True)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parameters", type=Path, default=ROOT / "parameters.json")
     parser.add_argument("--mode", choices=("dev", "prod", "twitch"))
-    parser.add_argument("--game", choices=ACTIVE_GAMES, help="Override today's rotation for this launch")
+    parser.add_argument("--game", choices=ACTIVE_GAMES, help="Choose the first game in the rotation")
     parser.add_argument("--dry-run", action="store_true", help="Show selection without starting apps or accessing Twitch")
     parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)

@@ -42,13 +42,13 @@ class TurningTests(unittest.TestCase):
                 self.assertLessEqual(max(abs(c.args[0]) for c in self.keys.turn.call_args_list), 8)
                 self.keys.set.assert_not_called()
 
-    def test_sidewalk_and_mission_align_with_a_right_angle_within_six_seconds(self):
-        for mode in ("sidewalk", "mission"):
+    def test_explore_and_mission_align_with_a_right_angle_within_six_seconds(self):
+        for mode in ("explore", "mission"):
             with self.subTest(mode=mode):
                 self.walking.stop()
                 self.walking.navigator = Mock()
                 self.walking.navigator.waypoint.return_value = (-10, 0, 0)
-                self.walking.navigator.message = "following sidewalk"
+                self.walking.navigator.message = "following pedestrian path"
                 self.state["heading"] = self.state["camera_heading"] = 0
                 for step in range(720):
                     self.tick(step / 120, True, mode)

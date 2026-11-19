@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from core.navigation import (
     Node,
     PedestrianGraph,
-    SidewalkNavigator,
+    PedestrianNavigator,
     SmoothTurn,
     angle_delta,
     heading_to,
@@ -123,7 +123,7 @@ class NavigatorTests(unittest.TestCase):
                         Node((0, 1), (20, 0, rise), (((0, 0), False),)),
                     ]
                 )
-                navigator = SidewalkNavigator(graph)
+                navigator = PedestrianNavigator(graph)
                 navigator.set_destination((0, 1))
                 for step, x in enumerate((0, 2, 5, 10, 15, 18, 20)):
                     self.assertEqual(
@@ -142,7 +142,7 @@ class NavigatorTests(unittest.TestCase):
                 Node((0, 1), (70, 0, 0), (((0, 0), False),)),
             ]
         )
-        navigator = SidewalkNavigator(graph)
+        navigator = PedestrianNavigator(graph)
         navigator.set_destination((0, 1))
         for step, x in enumerate((0, 2, 5, 10, 20, 40, 60, 70)):
             self.assertEqual(
@@ -168,7 +168,7 @@ class NavigatorTests(unittest.TestCase):
         self.assertEqual(self.navigator.waypoint((5, 1, 0), 0, 0, 0), (0, 0, 0))
 
     def setUp(self):
-        self.navigator = SidewalkNavigator(graph_fixture(), rng=random.Random(0))
+        self.navigator = PedestrianNavigator(graph_fixture(), rng=random.Random(0))
         self.navigator.target, self.navigator.previous = (0, 0), (0, 1)
 
     def test_continues_forward_without_reversing_at_junction(self):
@@ -201,7 +201,7 @@ class NavigatorTests(unittest.TestCase):
     def test_equally_explored_junctions_allow_random_turns(self):
         targets = set()
         for seed in range(30):
-            navigator = SidewalkNavigator(graph_fixture(), rng=random.Random(seed))
+            navigator = PedestrianNavigator(graph_fixture(), rng=random.Random(seed))
             navigator.target, navigator.previous = (0, 0), (0, 1)
             navigator.waypoint((0, 0, 0), 0, 0, 0)
             targets.add(navigator.target)
@@ -209,7 +209,7 @@ class NavigatorTests(unittest.TestCase):
 
     def test_endless_stroll_explores_all_branches_and_keeps_walking(self):
         graph = graph_fixture()
-        navigator = SidewalkNavigator(graph, rng=random.Random(9))
+        navigator = PedestrianNavigator(graph, rng=random.Random(9))
         position, heading = (0, 0, 0), 0
         previous = None
         reached = set()
@@ -246,7 +246,7 @@ class MovementTests(unittest.TestCase):
             Node((1, 0), (1000, 0, 0), (((1, 1), False),)),
             Node((1, 1), (1000, 10, 0), (((1, 0), False),)),
         ])
-        self.movement.navigator = SidewalkNavigator(graph)
+        self.movement.navigator = PedestrianNavigator(graph)
         self.movement.navigator.set_destination((1, 1))
         self.state["heading"] = self.state["camera_heading"] = 0
         status = self.movement.tick(self.state, True, "mission")
@@ -254,37 +254,38 @@ class MovementTests(unittest.TestCase):
         self.keys.set.assert_called_with({"walk", "forward"})
 
     def test_large_turn_aligns_without_walking_in_a_circle(self):
-        self.movement.mode = "sidewalk"
+        self.movement.mode = "explore"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, -3, 0)):
             self.state["camera_heading"] = 0
             for now in (0, 1, 3, 5):
                 with patch("core.controller.time.monotonic", return_value=now):
                     self.assertIn(
-                        "aligning", self.movement.tick(self.state, True, "sidewalk")
+                        "aligning", self.movement.tick(self.state, True, "explore")
                     )
                 self.keys.set.assert_called_with({"walk"})
             self.assertEqual(self.movement.recoveries, 0)
             self.state["camera_heading"] = math.pi - 0.1
             with patch("core.controller.time.monotonic", return_value=6):
-                self.movement.tick(self.state, True, "sidewalk")
+                self.movement.tick(self.state, True, "explore")
             self.keys.set.assert_called_with({"walk", "forward"})
 
     def test_motion_without_goal_progress_does_not_reselect_route(self):
-        self.movement.mode = "sidewalk"
+        self.movement.mode = "explore"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, 10, 0)):
             for now, x in ((0, 0), (3, 1), (6, -1), (9, 0)):
                 self.state["position"] = {"x": x, "y": 0, "z": 0}
                 self.state["camera_heading"] = heading_to((x, 0), (0, 10))
                 with patch("core.controller.time.monotonic", return_value=now):
-                    status = self.movement.tick(self.state, True, "sidewalk")
+                    status = self.movement.tick(self.state, True, "explore")
         self.assertNotIn("recovery", status)
         self.assertEqual(self.movement.recoveries, 0)
 
     def test_stuck_repeatedly_turns_right_20_then_walks_in_all_modes(self):
-        for mode in ("free", "mission", "sidewalk"):
+        for mode in ("free", "mission", "explore"):
             with self.subTest(mode=mode):
                 self.movement = Walking(graph_fixture())
                 self.movement.navigator.rng = random.Random(0)
+                self.movement.navigator.waypoint = Mock(return_value=(0, 10, 0))
                 self.keys.reset_mock()
                 with patch("core.controller.time.monotonic", return_value=0):
                     self.movement.tick(self.state, True, mode)
@@ -351,8 +352,8 @@ class MovementTests(unittest.TestCase):
                     return now
         self.fail("recovery turn never finished")
 
-    def test_short_escapes_back_into_same_obstacle_escalate_in_both_sidewalk_modes(self):
-        for mode in ("mission", "sidewalk"):
+    def test_short_escapes_back_into_same_obstacle_escalate_in_both_explore_modes(self):
+        for mode in ("mission", "explore"):
             with self.subTest(mode=mode):
                 self.movement = Walking(graph_fixture())
                 navigator = self.movement.navigator
@@ -405,10 +406,11 @@ class MovementTests(unittest.TestCase):
                         self.assertIn("turning right 20", self.movement.tick(self.state, True, mode))
 
     def test_stationary_retries_stay_escalated_until_leaving_the_area(self):
-        for mode in ("mission", "sidewalk"):
+        for mode in ("mission", "explore"):
             with self.subTest(mode=mode):
                 self.movement = Walking(graph_fixture())
                 self.movement.navigator.rng = random.Random(0)
+                self.movement.navigator.waypoint = Mock(return_value=(0, 10, 0))
                 with patch("core.controller.time.monotonic", return_value=0):
                     self.movement.tick(self.state, True, mode)
                 now = 0
@@ -423,23 +425,23 @@ class MovementTests(unittest.TestCase):
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
         self.state["camera_heading"] = 0.0
         self.state["heading"] = -math.pi / 2
-        self.movement.mode = "sidewalk"
+        self.movement.mode = "explore"
         with patch.object(self.movement.navigator, "waypoint", return_value=(0, 10, 0)):
-            self.movement.tick(self.state, True, "sidewalk")
+            self.movement.tick(self.state, True, "explore")
         self.keys.turn.assert_not_called()
 
     def test_large_turn_does_not_flip_at_angle_wrap(self):
-        self.movement.mode = "sidewalk"
+        self.movement.mode = "explore"
         with patch.object(
             self.movement.navigator, "waypoint", return_value=(0, -10, 0)
         ):
             self.state["camera_heading"] = -0.01
             with patch("core.controller.time.monotonic", return_value=0):
-                self.movement.tick(self.state, True, "sidewalk")
+                self.movement.tick(self.state, True, "explore")
             first = self.movement.turn_direction
             self.state["camera_heading"] = 0.01
             with patch("core.controller.time.monotonic", return_value=0.05):
-                self.movement.tick(self.state, True, "sidewalk")
+                self.movement.tick(self.state, True, "explore")
         self.assertEqual(self.movement.turn_direction, first)
 
     def setUp(self):
@@ -463,7 +465,7 @@ class MovementTests(unittest.TestCase):
 
     def test_background_releases_keys_and_never_steers(self):
         self.state["foreground"] = False
-        self.movement.tick(self.state, True, "sidewalk")
+        self.movement.tick(self.state, True, "explore")
         self.keys.set.assert_not_called()
         self.keys.turn.assert_not_called()
         self.keys.release.assert_called()
@@ -480,26 +482,26 @@ class MovementTests(unittest.TestCase):
             )
         self.keys.set.assert_called_with({"walk", "forward"})
 
-    def test_sidewalk_mode_without_a_path_stops_instead_of_roaming(self):
+    def test_explore_mode_without_a_path_explores_open_ground(self):
         self.state["position"] = {"x": 1000, "y": 1000, "z": 0}
-        self.assertIn("no nearby", self.movement.tick(self.state, True, "sidewalk"))
-        self.keys.set.assert_not_called()
+        self.assertIn("exploring open ground", self.movement.tick(self.state, True, "explore"))
+        self.keys.set.assert_called_with({"walk", "forward"})
 
     def test_switching_modes_cancels_old_recovery_and_route(self):
-        self.movement.tick(self.state, True, "sidewalk")
+        self.movement.tick(self.state, True, "explore")
         self.movement.recovery_turn = 200
         self.movement.tick(self.state, True, "free")
         self.assertIsNone(self.movement.recovery_turn)
         self.assertIsNone(self.movement.navigator.target)
 
-    def test_switching_from_mission_to_sidewalk_discards_goal_and_keeps_exploring(self):
+    def test_switching_from_mission_to_explore_discards_goal_and_keeps_exploring(self):
         self.movement.set_mode("mission")
         navigator = self.movement.navigator
         navigator.set_destination((0, 4))
         navigator.visits[(0, 3)] = 20
         self.movement.tick(self.state, True, "mission")
         self.state["position"] = {"x": 0, "y": 6, "z": 0}
-        self.movement.tick(self.state, True, "sidewalk")
+        self.movement.tick(self.state, True, "explore")
         self.assertIsNone(navigator.destination)
         self.assertEqual(navigator.target, (0, 0))
         self.assertNotIn("mission", navigator.message)
@@ -512,9 +514,9 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(self.movement.steer("back", "mission", self.state))
         self.assertIsNone(self.movement.manual_direction)
 
-    def test_missing_network_only_blocks_sidewalk_mode(self):
+    def test_missing_network_only_blocks_mission_mode(self):
         movement = Walking(navigation_error="missing files")
-        self.assertIn("unavailable", movement.tick(self.state, True, "sidewalk"))
+        self.assertIn("exploring open ground", movement.tick(self.state, True, "explore"))
         self.assertIn("unavailable", movement.tick(self.state, True, "mission"))
         self.assertEqual(movement.tick(self.state, True, "free"), "walking freely")
 
@@ -633,14 +635,14 @@ class ControllerTests(unittest.TestCase):
             controller.missions = Mock()
             controller.missions.data = {"active": {"node": [0, 4]}}
             controller.missions.tick.return_value = True
-            controller.movement.tick.return_value = "following sidewalk"
+            controller.movement.tick.return_value = "following pedestrian path"
             controller.limit_settings = Mock()
             controller.handle_steering = controller.handle_hotkeys = Mock()
             controller.update_game = Mock()
             controller.write_report = Mock()
             controller.last_message = None
             controller.saved_at = 0
-            for mode in ("mission", "sidewalk", "free", "mission"):
+            for mode in ("mission", "explore", "free", "mission"):
                 with self.subTest(mode=mode):
                     controller.settings["mode"] = mode
                     controller.movement.reset_mock()
@@ -663,7 +665,7 @@ class ControllerTests(unittest.TestCase):
             controller.hotkeys = Mock()
             controller.hotkeys.pressed.return_value = ["f5"]
             controller.settings["mode"] = "free"
-            for expected in ("mission", "sidewalk", "free"):
+            for expected in ("explore", "mission", "free"):
                 controller.handle_hotkeys({"ready": True, "foreground": True, "paused": False})
                 self.assertEqual(controller.settings["mode"], expected)
                 saved = json.loads(controller.control_path.read_text())

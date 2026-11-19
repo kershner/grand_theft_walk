@@ -40,7 +40,15 @@ def local_path(params_path, value):
     return path if path.is_absolute() else Path(params_path).resolve().parent / path
 
 
+def rotation_seconds(params):
+    hours = params.get("ROTATION", {}).get("interval_hours", 2)
+    if type(hours) not in (int, float) or not math.isfinite(hours) or not 0 < hours <= 8760:
+        raise ValueError("ROTATION.interval_hours must be greater than 0 and at most 8760.")
+    return hours * 3600
+
+
 def select_game(params, now=None):
+    rotation_seconds(params)
     rotation = params.get("ROTATION", {})
     games = rotation.get("games", list(ACTIVE_GAMES))
     if not isinstance(games, list) or not games or any(not isinstance(g, str) or g not in ACTIVE_GAMES for g in games):

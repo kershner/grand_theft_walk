@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 from core.files import sha256
 from core.saves import seed_checkpoint
-from core.classic import main_sidewalk_network
+from core.classic import main_pedestrian_network
 from core.navigation import Node, PedestrianGraph
 from games.gta_iii import game as iii
 from tests.san_andreas.helpers import MemoryFixture
@@ -124,7 +124,7 @@ class PathTests(unittest.TestCase):
         graph = iii.read_graph(self.graph_data())
         self.assertEqual(graph.nodes[(0, 1)].position, (5, 10, 2))
         self.assertEqual(graph.nodes[(0, 1)].links, (((0, 2), True),))
-        self.assertEqual(main_sidewalk_network(graph), {(0, 1), (0, 2)})
+        self.assertEqual(main_pedestrian_network(graph), {(0, 1), (0, 2)})
 
     def test_corrupt_graph_cannot_drive_navigation(self):
         data = self.graph_data()

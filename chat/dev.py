@@ -19,13 +19,13 @@ from chat.bot import ChatBot
 logger = logging.getLogger(__name__)
 
 
-def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
+def create_app(state_dir=None, start_runtime=True, game="san_andreas", rotation_file=None):
     profile = get_game(game)
     state_dir = Path(state_dir) if state_dir is not None else profile.state_dir
     app = Flask(__name__)
     messages = []
     messages_lock = threading.Lock()
-    bot = ChatBot(control=WalkerControl(state_dir, game=game))
+    bot = ChatBot(control=WalkerControl(state_dir, game=game), rotation_file=rotation_file)
     app.extensions["gtw_bot"] = bot
 
     def append_message(text):
@@ -82,6 +82,16 @@ def create_app(state_dir=None, start_runtime=True, game="san_andreas"):
             ))
             return jsonify({"messages": messages[after:], "cursor": len(messages)})
 
+    @app.route("/navigation")
+    def navigation():
+        try:
+            state = bot.control.snapshot()
+        except (OSError, ValueError, RuntimeError) as error:
+            return jsonify({"error": str(error)}), 503
+        return jsonify({"position": state.get("position"),
+                        "mode": state.get("settings", {}).get("mode"),
+                        "navigation": state.get("navigation", {})})
+
     if start_runtime:
         bot.start_runtime(append_message)
     return app
@@ -94,11 +104,12 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5050)
     parser.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--rotation-file", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     profile = get_game(args.game)
     state_dir = (args.state_dir or profile.state_dir).resolve()
     log_path = configure_logging(state_dir, log_name=profile.id)
-    app = create_app(state_dir, game=profile.id)
+    app = create_app(state_dir, game=profile.id, rotation_file=args.rotation_file)
     ip = socket.gethostbyname(socket.gethostname())
     logger.info(
         f"\n  Grand Theft Walk Dev Server running\n"

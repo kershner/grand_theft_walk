@@ -1,6 +1,7 @@
 """Chat command parsing, voting and walker status replies."""
 
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -24,23 +25,26 @@ from core.files import read_json
 HELP = {
     "walk": "!walk • Start autowalking. Alias: !w.",
     "stop": "!stop • Stop movement without exiting the controller. Alias: !s.",
-    "left": "!left [1-100] • Turn left in free mode; choose the next left in mission or sidewalk mode. Alias: !l. Default: 1.",
-    "right": "!right [1-100] • Turn right in free mode; choose the next right in mission or sidewalk mode. Alias: !r. Default: 1.",
+    "left": "!left [1-100] • Turn left in free mode; choose the next left in mission or explore mode. Alias: !l. Default: 1.",
+    "right": "!right [1-100] • Turn right in free mode; choose the next right in mission or explore mode. Alias: !r. Default: 1.",
     "up": "!up [1-100] • Look up in any navigation mode. Alias: !u. Default: 1.",
     "down": "!down [1-100] • Look down in any navigation mode. Alias: !d. Default: 1.",
     "center": "!center • Level the view without changing direction or navigation mode.",
-    "forward": "!forward [1-100] • Move forward that many one-second steps in free mode; choose straight ahead at the next junction in mission or sidewalk mode. Alias: !f. Default: 1.",
+    "forward": "!forward [1-100] • Move forward that many one-second steps in free mode; choose straight ahead at the next junction in mission or explore mode. Alias: !f. Default: 1.",
     "back": "!back [1-100] • Move backward that many one-second steps in free mode. Alias: !b. Default: 1.",
     "drop": "!drop • Let go of a ledge in San Andreas. Only works while climbing or hanging.",
     "jump": "!jump • High jump to clear buildings. Requires being on foot and on the ground. Alias: !j.",
     "respawn": "!respawn • Start a 60-second vote to kill the player and respawn normally. Vote !yes or !no; ties fail.",
     "yes": "!yes • Vote yes on the active command vote.",
     "no": "!no • Vote no on the active command vote.",
-    "mode": "!mode <free|mission|sidewalk>: Free roaming, sidewalks toward the mission, or endless sidewalk exploration.",
+    "mode": "!mode <free|explore|mission> • Choose manual roaming, city and wilderness exploration, or mission navigation.",
+    "free": "!free • Switch to manual roaming.",
+    "explore": "!explore • Explore pedestrian paths and open ground, remembering covered areas.",
+    "mission": "!mission • Navigate toward the current mission.",
     "camera": "!camera [first|third]: Toggle the camera or select a perspective.",
     "help": "!help [command] • Show commands or details for a command.",
     "more": "!more • Show the remaining commands.",
-    "info": "!info • Show the current area, game time, weather, navigation mode, camera, and mission.",
+    "info": "!info • Show the current area, game time, weather, navigation mode, camera, mission, and next game countdown.",
     "vote": "!vote <1|2|3> • Vote for the next mission. Your latest vote counts.",
 }
 ALIASES = {
@@ -75,7 +79,8 @@ def location_text(state):
 
 
 class ChatBot:
-    def __init__(self, control=None):
+    def __init__(self, control=None, rotation_file=None):
+        self.rotation_file = Path(rotation_file) if rotation_file is not None else None
         self.control = control if control is not None else WalkerControl()
         self.command_voting = CommandVoting(self._execute)
         self.session = None
@@ -116,7 +121,7 @@ class ChatBot:
                 self.announcement_index = 0
                 self.next_announcement_at = now + ANNOUNCEMENT_INTERVAL
                 return [
-                    "Grand Theft Walk is online!",
+                    self._session_announcement(),
                     self._reply("help", []),
                     self._info_reply(state),
                 ]
@@ -206,6 +211,10 @@ class ChatBot:
             await ctx.send(reply)
 
     def _reply(self, name, args, viewer=""):
+        if name in MODES and not args:
+            return self._reply("mode", [name], viewer)
+        if name in MODES:
+            return HELP[name]
         if name not in HELP:
             return
         state = self.control.snapshot()
@@ -221,7 +230,7 @@ class ChatBot:
             available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
             return f"Commands: {available} • Type !more for more commands."
         if name == "more":
-            commands = ("up", "down", "center", "mode", "camera", "help", "info")
+            commands = ("up", "down", "center", "free", "explore", "mission", "camera", "help", "info")
             available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
             return f"More: {available} • Type !help <cmd> for details."
         require_command(state, name)
@@ -268,7 +277,7 @@ class ChatBot:
         settings = self.control.request(name, args)
         if name in {"walk", "stop"}:
             return "Autowalk toggled"
-        if name in {"left", "right", "forward"} and settings["mode"] in ("mission", "sidewalk"):
+        if name in {"left", "right", "forward"} and settings["mode"] in ("mission", "explore"):
             hint = "Use !mode free for manual movement."
             if not settings["walking"]:
                 hint = "Use !walk to continue or !mode free for manual movement."
@@ -278,6 +287,21 @@ class ChatBot:
         if name == "camera":
             perspective = "first" if settings["first_person"] else "third"
             return f"Camera: {perspective} person."
+
+    def _rotation(self):
+        if self.rotation_file is None:
+            return {}
+        try:
+            rotation = read_json(self.rotation_file)
+        except (OSError, ValueError):
+            return {}
+        game = getattr(self.control, "game", None)
+        return rotation if game is not None and rotation.get("game") == game.id else {}
+
+    def _session_announcement(self):
+        if self._rotation().get("switched_from"):
+            return f"Switched to {self.control.game.title}!"
+        return "Grand Theft Walk is online!"
 
     def _info_reply(self, state=None):
         state = self.control.snapshot() if state is None else state
@@ -304,4 +328,9 @@ class ChatBot:
                     mission_distance(state, mission),
                 )
             )
+        rotation = self._rotation()
+        if rotation.get("next_switch_at") is not None:
+            minutes = max(0, math.ceil((rotation["next_switch_at"] - time.time()) / 60))
+            hours, minutes = divmod(minutes, 60)
+            parts.append(f"Next game in: {hours}h{minutes:02d}m")
         return " • ".join(parts)

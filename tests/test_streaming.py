@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from core.config import load_parameters, select_game, twitch_settings
+from core.config import load_parameters, select_game, rotation_seconds, twitch_settings
 from streaming.obs import OBS
 from chat.auth import OAuthTokens, REQUIRED_SCOPES
 from chat.oauth import REQUIRED_SCOPES as OAUTH_SCOPES
@@ -22,6 +22,13 @@ class RotationTests(unittest.TestCase):
     def setUp(self):
         self.params = {"ROTATION": {"start_date": "2026-11-17", "timezone": "America/New_York",
                                     "games": ["san_andreas", "vice_city"]}}
+
+    def test_rotation_interval_defaults_and_fractional_configuration(self):
+        self.assertEqual(rotation_seconds({}), 7200)
+        self.assertEqual(rotation_seconds({"ROTATION": {"interval_hours": 0.5}}), 1800)
+        for value in (0, -1, True, "2", None, float("nan"), float("inf"), 8761):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "interval_hours"):
+                rotation_seconds({"ROTATION": {"interval_hours": value}})
 
     def test_calendar_day_rotation_and_same_day_restart(self):
         for hour in (5, 12, 23):
@@ -126,6 +133,60 @@ class SessionLifecycleTests(unittest.TestCase):
         obs, _, _ = self.run_mock_session("prod", chat_failure=True)
         obs.start_stream.assert_not_called()
         obs.close.assert_called_once()
+
+
+class TimedRotationTests(unittest.TestCase):
+    def test_deadline_rotates_in_order_and_requests_controller_cleanup(self):
+        import core.manager
+        import core.processes
+
+        for current, expected in (("san_andreas", "vice_city"), ("gta_iii", "san_andreas")):
+            with self.subTest(current=current), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                root = Path(folder)
+                stack.enter_context(patch.object(launcher, "ROOT", root))
+                command = stack.enter_context(patch.object(core.manager, "session_command", return_value=(["python"], root)))
+                job = stack.enter_context(patch.object(core.processes, "ProcessJob")).return_value
+                control = stack.enter_context(patch.object(launcher, "WalkerControl")).return_value
+                control.state_dir = root
+                control.snapshot.return_value = {"session": "new"}
+                (root / "state.json").write_text('{"session": "old"}')
+                (root / "control.json").write_text('{"walking": true}')
+                game, chat = Mock(returncode=None), Mock()
+                game.poll.return_value = chat.poll.return_value = None
+                spawn = stack.enter_context(patch.object(launcher, "spawn", side_effect=[game, chat]))
+                stack.enter_context(patch.object(launcher, "wait_for_game"))
+                reports = []
+                def ready(*args):
+                    cli = spawn.call_args.args[1]
+                    reports.append(json.loads(Path(cli[cli.index("--rotation-file") + 1]).read_text()))
+                stack.enter_context(patch.object(launcher, "wait_for_chat", side_effect=ready))
+                stack.enter_context(patch.object(launcher.time, "monotonic", side_effect=[100, 7299, 7300]))
+                stack.enter_context(patch.object(launcher.time, "time", return_value=1000))
+                sleep = stack.enter_context(patch.object(launcher.time, "sleep"))
+                self.assertEqual(launcher.run_game_session({}, root / "params.json", current, "dev"), expected)
+                self.assertEqual(reports[0]["next_switch_at"], 8200)
+                self.assertEqual([call.args[0] for call in command.call_args_list], [current, expected])
+                sleep.assert_called_once_with(0.5)
+                self.assertTrue(json.loads((root / "control.json").read_text())["quit"])
+                game.wait.assert_any_call(timeout=10)
+                job.close.assert_called_once()
+                self.assertEqual(list((root / "runtime").glob("*.json")), [])
+
+    def test_rotation_keeps_one_live_obs_stream_and_changes_scene(self):
+        with (
+            patch("core.winmemory.process_mutex"),
+            patch("core.winmemory.game_pids", return_value=[]),
+            patch("chat.auth.OAuthTokens"),
+            patch("streaming.obs.OBS") as factory,
+            patch.object(launcher, "run_game_session", side_effect=["gta_iii", "san_andreas", None]) as run,
+        ):
+            params = {"CLIENT_ID": "app", "CLIENT_SECRET": "secret", "TWITCH_CHANNEL": "walker", "TWITCH_BOT_LOGIN": "walker"}
+            launcher.run_session(params, Path("params.json"), "vice_city", "prod")
+        obs = factory.return_value
+        obs.prepare.assert_called_once_with("vice_city")
+        self.assertEqual([call.args[0] for call in obs.select_game.call_args_list], ["gta_iii", "san_andreas"])
+        obs.close.assert_called_once()
+        self.assertEqual([call.args[5] for call in run.call_args_list], [None, "vice_city", "gta_iii"])
 
 
 class OBSOwnershipTests(unittest.TestCase):

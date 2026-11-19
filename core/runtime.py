@@ -17,7 +17,7 @@ LOG_MAX_BYTES = 1024 * 1024
 LOG_BACKUPS = 2
 DEFAULT_STATE_DIR = get_game().state_dir
 PROTOCOL_VERSION = 1
-MODES = ("free", "mission", "sidewalk")
+MODES = ("free", "explore", "mission")
 DIRECTIONS = {"left", "right", "forward", "back", "up", "down"}
 VIEW_COMMANDS = {"up", "down", "center"}
 MOVEMENT_COMMANDS = DIRECTIONS | {"walk", "stop", "jump", "drop", "center"}
@@ -98,6 +98,8 @@ def read_controls(path, settings):
         if isinstance(default, bool) and isinstance(requested.get(key), bool):
             settings[key] = requested[key]
     mode = requested.get("mode")
+    if mode == "sidewalk":  # Migrate settings saved before Explore was introduced.
+        mode = "explore"
     if mode in MODES:
         settings["mode"] = mode
     for key in ("steering", "jump", "view", "respawn"):
@@ -168,6 +170,8 @@ class WalkerControl:
                 raise RuntimeError("The game session changed; start a new vote.")
             path = self.state_dir / "control.json"
             settings = read_json(path)
+            if settings.get("mode") == "sidewalk":
+                settings["mode"] = "explore"
             if settings.get("quit"):
                 raise RuntimeError("The walker controller is stopping; please wait.")
             if name == "back" and settings.get("mode") != "free":

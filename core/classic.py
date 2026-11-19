@@ -83,7 +83,7 @@ def valid_save(path):
             and sum(data[:end]) & 0xFFFFFFFF == struct.unpack_from("<I", data, end)[0])
 
 
-def main_sidewalk_network(graph):
+def main_pedestrian_network(graph):
     """Find the largest mutually reachable network, respecting one-way links."""
     reverse = {key: [] for key in graph.nodes}
     for key, node in graph.nodes.items():
@@ -124,7 +124,7 @@ def load_destinations(game_directory, graph, read_text, load_zones, default_name
     """Offer every distinct meeting point on the main sidewalk network."""
     names = read_text(Path(game_directory) / "TEXT/american.gxt")
     zones = load_zones(game_directory, names)
-    network = main_sidewalk_network(graph) if network is None else network
+    network = main_pedestrian_network(graph) if network is None else network
     nodes = [graph.nodes[key] for key in sorted(network)]
     destinations, used = [], set()
     counts = {}

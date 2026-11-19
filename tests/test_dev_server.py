@@ -22,7 +22,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.root = Path(self.folder.name)
         self.settings = {
             "walking": False,
-            "mode": "sidewalk",
+            "mode": "explore",
             "first_person": False,
             "protection": True,
             "autosave": True,
@@ -86,7 +86,7 @@ class ChatIntegrationTests(unittest.TestCase):
             self.client.get("/chat").json["messages"],
             [
                 "Autowalk toggled",
-                "Sidewalk mode: direction queued for the next junction. Use !mode free for manual movement.",
+                "Explore mode: direction queued for the next junction. Use !mode free for manual movement.",
                 "Autowalk toggled",
             ],
         )
@@ -150,12 +150,12 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(
             self.client.get("/chat").json["messages"],
             [
-                "Back is unavailable in sidewalk mode. Use !mode free for manual movement."
+                "Back is unavailable in explore mode. Use !mode free for manual movement."
             ],
         )
 
     def test_view_commands_work_in_all_modes_without_replacing_steering(self):
-        for mode in ("free", "mission", "sidewalk"):
+        for mode in ("free", "mission", "explore"):
             for walking in (False, True):
                 settings = dict(
                     self.settings,
@@ -185,7 +185,7 @@ class ChatIntegrationTests(unittest.TestCase):
                 self.command(command)
                 self.assertEqual(self.control(), expected)
 
-    def test_stopped_sidewalk_directions_explain_how_to_move(self):
+    def test_stopped_explore_directions_explain_how_to_move(self):
         for command, direction in (
             ("l 10", "left"),
             ("r 10", "right"),
@@ -199,7 +199,7 @@ class ChatIntegrationTests(unittest.TestCase):
             messages,
             [
                 (
-                    "Sidewalk mode: direction queued for the next junction. "
+                    "Explore mode: direction queued for the next junction. "
                     "Use !walk to continue or !mode free for manual movement."
                 )
             ]
@@ -208,10 +208,10 @@ class ChatIntegrationTests(unittest.TestCase):
 
     def test_mode_command_uses_singular_name(self):
         self.command("mode free")
-        self.command("mode sidewalk")
-        self.assertEqual(self.control()["mode"], "sidewalk")
+        self.command("mode explore")
+        self.assertEqual(self.control()["mode"], "explore")
         self.assertEqual(
-            self.client.get("/chat").json["messages"][-1], "Navigation mode: sidewalk."
+            self.client.get("/chat").json["messages"][-1], "Navigation mode: explore."
         )
 
     def test_camera_and_mode_apply_immediately_without_ballots(self):
@@ -272,7 +272,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.command("info")
         message = self.client.get("/chat").json["messages"][-1]
         self.assertIn("Current mission: Travel to Market", message)
-        self.assertIn("mode: sidewalk", message)
+        self.assertIn("mode: explore", message)
         self.assertIn("camera: third person •", message)
 
     def test_mission_distance_updates_in_info_replies(self):
@@ -589,7 +589,7 @@ class ChatIntegrationTests(unittest.TestCase):
         messages = self.client.get(f"/chat?after={cursor}").json["messages"]
         self.assertEqual(len(messages), 1)
         self.assertEqual(
-            messages[0], f"Game: {get_game(self.game).title} • mode: sidewalk • camera: third person"
+            messages[0], f"Game: {get_game(self.game).title} • mode: explore • camera: third person"
         )
         self.assertEqual(self.client.get("/chat?after=invalid").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=-1").json["cursor"], 2)
@@ -618,7 +618,7 @@ class ChatIntegrationTests(unittest.TestCase):
         expected = (
             f"Game: {get_game(self.game).title} • "
             "Las Colinas, Los Santos • Jul 14 4:32 PM (afternoon) • rain, strong wind • "
-            "heading northwest • mode: sidewalk • camera: third person • "
+            "heading northwest • mode: explore • camera: third person • "
             "Current mission: Travel to Market • 1.2 mi away"
         )
         self.assertEqual(self.client.get("/chat").json["messages"], [expected])
@@ -632,18 +632,40 @@ class ChatIntegrationTests(unittest.TestCase):
             response.close()
         self.assertEqual(self.client.get("/cmd/%20").status_code, 400)
         self.command("unknown")
-        self.command("mission")
+        self.command("unknown-mode")
         self.assertEqual(self.client.get("/chat").json["messages"], [])
         self.command("more")
         self.assertEqual(
             self.client.get("/chat").json["messages"][-1],
-            "More: !up • !down • !center • !mode • !camera • !help • !info • Type !help <cmd> for details.",
+            "More: !up • !down • !center • !free • !explore • !mission • !camera • !help • !info • Type !help <cmd> for details.",
         )
         self.command("help mission")
         self.assertEqual(
             self.client.get("/chat").json["messages"][-1],
-            "Unknown command: !mission. Type !help for commands.",
+            "!mission • Navigate toward the current mission.",
         )
+
+    def test_direct_mode_commands_preserve_walk_setting(self):
+        for walking in (False, True):
+            settings = self.control()
+            settings['walking'] = walking
+            self.write('control.json', settings)
+            for mode in ('free', 'explore', 'mission'):
+                self.command(mode)
+                self.assertEqual(self.control()['mode'], mode)
+                self.assertEqual(self.control()['walking'], walking)
+                self.assertEqual(self.client.get('/chat').json['messages'][-1],
+                                 f'Navigation mode: {mode}.')
+
+    def test_navigation_endpoint_exposes_map_without_control_mutations(self):
+        self.state['navigation'] = {'exploration': {'visited_cells': 7}}
+        self.write('state.json', self.state)
+        before = self.control()
+        response = self.client.get('/navigation')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['navigation']['exploration']['visited_cells'], 7)
+        self.assertEqual(response.json['mode'], 'explore')
+        self.assertEqual(self.control(), before)
 
     def test_camera_command_has_no_delayed_effect_in_replacement_session(self):
         self.command("camera first")

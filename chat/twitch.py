@@ -83,11 +83,11 @@ class StreamMetadata:
 
 
 class TwitchBot(commands.Bot):
-    def __init__(self, params, tokens, game, ready_file=None):
+    def __init__(self, params, tokens, game, ready_file=None, rotation_file=None):
         self.params, self.tokens = params, tokens
         self.access = tokens.ensure_fresh()["access_token"]
         super().__init__(token=self.access, prefix="!", initial_channels=[params["TWITCH_CHANNEL"]])
-        self.chat = ChatBot(WalkerControl(game=game))
+        self.chat = ChatBot(WalkerControl(game=game), rotation_file=rotation_file)
         self.metadata = StreamMetadata(params, tokens, game)
         self.next_metadata_poll = 0
         self.runtime_task = None
@@ -175,13 +175,14 @@ def main():
     parser.add_argument("--parameters", type=Path, default=ROOT / "parameters.json")
     parser.add_argument("--game", choices=ACTIVE_GAMES, required=True)
     parser.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--rotation-file", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     configure_logging(get_game(args.game).state_dir, log_name="twitch")
     # TwitchIO 2.10 can log the raw access token on failed IRC login.
     logging.getLogger("twitchio").setLevel(logging.CRITICAL)
     params = twitch_settings(load_parameters(args.parameters))
     tokens = OAuthTokens(params, local_path(args.parameters, params.get("TOKENS_FILE", "oauth_tokens.json")))
-    TwitchBot(params, tokens, args.game, args.ready_file).run()
+    TwitchBot(params, tokens, args.game, args.ready_file, args.rotation_file).run()
 
 
 if __name__ == "__main__":

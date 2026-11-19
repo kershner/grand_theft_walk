@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from core.missions import MissionSystem
-from core.navigation import Node, PedestrianGraph, SidewalkNavigator
+from core.navigation import Node, PedestrianGraph, PedestrianNavigator
 from core.files import atomic_json
 
 
@@ -299,7 +299,7 @@ class MissionRoutingTests(unittest.TestCase):
             Node((1, 1), (1000, 10, 0), (((1, 0), False), ((1, 2), False))),
             Node((1, 2), (1000, 20, 0), (((1, 1), False),)),
         ])
-        navigator = SidewalkNavigator(graph)
+        navigator = PedestrianNavigator(graph)
         navigator.set_destination((0, 4))
         self.assertEqual(navigator.waypoint((1000, 0, 0), 0, 0, 0), (1000, 10, 0))
         self.assertIn("mission unreachable", navigator.message)
@@ -311,7 +311,7 @@ class MissionRoutingTests(unittest.TestCase):
         self.assertEqual(navigator.waypoint((0, 10, 0), 0, 0, 3), (0, 20, 0))
 
     def test_temporary_route_block_waits_then_retries_without_roaming(self):
-        navigator = SidewalkNavigator(graph_fixture())
+        navigator = PedestrianNavigator(graph_fixture())
         navigator.set_destination((0, 4))
         navigator.blocked[((0, 1), (0, 4))] = 30
         self.assertIsNone(navigator.waypoint((0, 0, 0), 0, 0, 0))
@@ -320,7 +320,7 @@ class MissionRoutingTests(unittest.TestCase):
         self.assertEqual(navigator.waypoint((0, 0, 0), 0, 0, 31), (0, 10, 0))
 
     def test_shortest_route_resumes_after_viewer_detour_and_mode_reset(self):
-        navigator = SidewalkNavigator(graph_fixture())
+        navigator = PedestrianNavigator(graph_fixture())
         navigator.set_destination((0, 4))
         navigator.turn = "right"
         self.assertEqual(navigator.waypoint((0, 0, 0), 0, 0, 0), (10, 0, 0))

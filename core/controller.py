@@ -14,7 +14,8 @@ from core.controls import (
 )
 from core.missions import MissionSystem
 from core.respawn import Respawn
-from core.navigation import SidewalkNavigator, SmoothTurn, angle_delta, heading_to
+from core.navigation import SmoothTurn, angle_delta, heading_to
+from core.exploration import ExploreNavigator
 from core.files import atomic_json
 from core.background import NativeInput
 from core.runtime import DEFAULTS, DIRECTIONS, MODES, read_controls, request_expired
@@ -32,7 +33,7 @@ def distance(a, b):
 
 class Walking:
     def __init__(self, graph=None, navigation_error=None, focused=None, bindings=None,
-                 turn_multiplier=1):
+                 turn_multiplier=1, exploration_path=None):
         bindings = bindings if bindings is not None else {"forward": "w", "back": "s", "walk": "f2"}
         self.keys = Keys(bindings, focused=focused)
         self.walk_modifier = {"walk"} if "walk" in bindings else set()
@@ -44,7 +45,7 @@ class Walking:
         self.recovery_attempts = 0
         self.recoveries = 0
         self.mode = None
-        self.navigator = SidewalkNavigator(graph) if graph is not None else None
+        self.navigator = ExploreNavigator(graph, memory_path=exploration_path)
         self.navigation_error = navigation_error
         self.smooth_turn = SmoothTurn()
         self.turn_multiplier = turn_multiplier
@@ -61,7 +62,7 @@ class Walking:
         if not usable:
             return False
         self.set_mode(mode)
-        if mode in ("mission", "sidewalk"):
+        if mode in ("mission", "explore"):
             if self.navigator is None or direction not in ("left", "right", "forward"):
                 return False
             self.navigator.turn = direction
@@ -95,6 +96,7 @@ class Walking:
             self.stop()
             if self.navigator:
                 self.navigator.reset()
+                self.navigator.exploring = mode == "explore"
                 if mode != "mission":
                     self.navigator.set_destination(None)
             self.mode = mode
@@ -111,8 +113,15 @@ class Walking:
         if self.recovery_anchor is None:
             self.recovery_anchor = dict(position)
         self.recovery_attempts += 1
+        if self.mode == "explore" and (self.navigator.local_target is not None or self.navigator.returning):
+            self.navigator.avoid_target(now)
+            self.recovery_turn = None
+            self.origin = None
+            self.aligning = False
+            self.smooth_turn.reset()
+            return "exploring: obstacle recorded; backtracking before another approach"
         persistent = (
-            self.mode in ("mission", "sidewalk")
+            self.mode in ("mission", "explore")
             and self.recovery_attempts >= RECOVERY_ESCALATE_AFTER
         )
         self.recovery_steps = 50 if persistent else 20
@@ -126,6 +135,11 @@ class Walking:
 
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
+        if mode == "explore" and state.get("in_water"):
+            if self.navigator.local_target is not None or self.navigator.target is not None:
+                self.navigator.avoid_target(time.monotonic())
+            self.stop()
+            return "exploration paused in water; waiting for dry ground"
         usable = can_control(state) and state["ped_state"] in (0, 1)
         if not usable:
             self.stop()
@@ -146,7 +160,7 @@ class Walking:
                 and distance(position, self.recovery_anchor) >= RECOVERY_ESCAPE_RADIUS):
             self.recovery_anchor = None
             self.recovery_attempts = 0
-        # Finish the right turn and try walking before sidewalk steering resumes.
+        # Finish the right turn and try walking before pedestrian steering resumes.
         if self.recovery_turn is not None:
             if self.recovery_turn:
                 turn, self.recovery_turn = self.smooth_turn.nudge(self.recovery_turn, now)
@@ -166,10 +180,10 @@ class Walking:
             return "obstacle recovery: walking forward"
         status = "walking freely"
         desired_turn = 0.0
-        if mode in ("mission", "sidewalk"):
-            if self.navigator is None:
+        if mode in ("mission", "explore"):
+            if self.navigator is None or (mode == "mission" and not self.navigator.graph.nodes):
                 self.stop()
-                return "sidewalk paths unavailable; switch to free roam: " + str(
+                return "pedestrian paths unavailable; switch to free roam: " + str(
                     self.navigation_error
                 )
             waypoint = self.navigator.waypoint(
@@ -208,7 +222,7 @@ class Walking:
                 return f"stepping {self.manual_direction}"
             self.keys.release()
             return "turning" if self.manual_turn else "stopped"
-        if mode in ("mission", "sidewalk") and self.aligning:
+        if mode in ("mission", "explore") and self.aligning:
             self.keys.set(self.walk_modifier)
             self.origin, self.progress_at = position, now
             return "aligning with pedestrian path"
@@ -245,7 +259,8 @@ class Controller:
             graph, self.navigation_error = None, str(error)
         self.movement = Walking(graph, self.navigation_error, focused=mem.foreground,
                                 bindings=getattr(backend, "WALK_KEYS", None),
-                                turn_multiplier=getattr(backend, "TURN_MULTIPLIER", 1))
+                                turn_multiplier=getattr(backend, "TURN_MULTIPLIER", 1),
+                                exploration_path=self.state_dir / "exploration.json")
         destinations = []
         if graph:
             try:
@@ -287,7 +302,7 @@ class Controller:
         self.report = {}
         logger.info(
             "Controller ready. Background operation: %s.\n"
-            "%sF5 free/mission/sidewalk | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
+            "%sF5 free/explore/mission | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
             "Available features: %s",
             "enabled" if self.input else "disabled",
             "F11 first-person | " if self.capabilities.first_person else "",
@@ -538,6 +553,8 @@ class Controller:
         return True
 
     def close(self):
+        if self.movement.navigator:
+            self.movement.navigator.save_memory(time.monotonic(), force=True)
         if self.view:
             self.view.cancel()
         try:

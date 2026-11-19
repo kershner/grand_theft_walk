@@ -167,6 +167,14 @@
   <span class="subtitle">dev mode</span>
 </header>
 
+<details style="padding: 8px 16px; border-bottom: 1px solid var(--border)">
+  <summary>Explore progress</summary>
+  <div id="explore-status" role="status" style="padding: 8px 0">Waiting for navigation data</div>
+  <canvas id="explore-map" width="620" height="210" style="width: 100%; max-height: 210px"
+          aria-label="Local exploration map: covered ground, recent route, destination, and failed connections"></canvas>
+  <small>Blue: covered ground · White: recent route · Green: destination · Red: failed connections</small>
+</details>
+
 <div id="log">
   <div class="log-empty" id="empty-msg">no commands sent yet</div>
 </div>
@@ -188,6 +196,46 @@ const empty  = document.getElementById('empty-msg');
 
 let chatCursor = 0;
 let polling = false;
+let navigationPolling = false;
+
+async function pollNavigation() {
+  const canvas = document.getElementById('explore-map');
+  if (!canvas.closest('details').open || navigationPolling) return;
+  navigationPolling = true;
+  const label = document.getElementById('explore-status');
+  try {
+    const response = await fetch('/navigation');
+    const data = await response.json();
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!response.ok) { label.textContent = data.error || 'Navigation unavailable'; return; }
+    const info = data.navigation.exploration;
+    if (!info || !data.position) { label.textContent = 'Waiting for Explore coverage'; return; }
+    label.textContent = `${data.mode} · ${info.visited_cells} areas · ${info.visited_nodes}/${info.total_nodes} path nodes · ${info.blocked_connections} failed connections`;
+    const p = data.position;
+    const point = q => [canvas.width / 2 + (q[0] - p.x) * 1.5,
+                        canvas.height / 2 - (q[1] - p.y) * 1.5];
+    const line = (a, b, color) => {
+      ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(...point(a)); ctx.lineTo(...point(b)); ctx.stroke();
+    };
+    ctx.fillStyle = '#244f78';
+    (info.covered_cells || []).forEach(c => {
+      if (Math.abs((c[2] + .5) * 6 - p.z) > 6) return;
+      const [x, y] = point([c[0] * 12, (c[1] + 1) * 12]);
+      ctx.fillRect(x, y, 18, 18);
+    });
+    const route = info.recent_route || [];
+    route.slice(1).forEach((q, i) => line(route[i], q, '#eeeeee'));
+    (info.failed_edges || []).forEach(([a,b]) => line(a,b,'#f06a6a'));
+    (info.failed_steps || []).forEach(s => line([(s[0]+.5)*12,(s[1]+.5)*12], [(s[3]+.5)*12,(s[4]+.5)*12], '#f06a6a'));
+    if (info.goal_position) {
+      const [x, y] = point(info.goal_position);
+      ctx.fillStyle = '#7ee787'; ctx.fillRect(x - 4, y - 4, 8, 8);
+    }
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, 4, 0, Math.PI*2); ctx.fill();
+  } catch (error) { label.textContent = 'Navigation unavailable'; }
+  finally { navigationPolling = false; }
+}
 
 function appendResult(text, error = false) {
   if (empty && empty.isConnected) empty.remove();
@@ -239,6 +287,8 @@ async function sendCommand() {
 submit.addEventListener('click', sendCommand);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendCommand(); });
 setInterval(pollChat, 500);
+setInterval(pollNavigation, 1000);
+document.querySelector('details').addEventListener('toggle', pollNavigation);
 pollChat();
 </script>
 </body>

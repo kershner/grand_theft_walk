@@ -209,7 +209,7 @@ class PedestrianGraph:
         return costs
 
 
-class SidewalkNavigator:
+class PedestrianNavigator:
     def __init__(self, graph, rng=None):
         self.graph = graph
         self.rng = rng if rng is not None else random.Random()
@@ -259,7 +259,7 @@ class SidewalkNavigator:
     def waypoint(self, position, heading, interior, now):
         if interior:
             self.reset()
-            self.message = "no sidewalk route indoors; switch to free roam"
+            self.message = "no pedestrian route indoors; switch to free roam"
             return None
         self.avoided = {k: t for k, t in self.avoided.items() if t > now}
         self.blocked = {k: t for k, t in self.blocked.items() if t > now}
@@ -387,7 +387,7 @@ class SidewalkNavigator:
             self.message = (
                 "following pedestrian crossing"
                 if self.crossing
-                else "following sidewalk"
+                else "following pedestrian path"
             )
             if mission_unreachable:
                 self.message += "; mission unreachable from this path"

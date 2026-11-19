@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from chat.bot import ChatBot
 from core.files import atomic_json
@@ -51,3 +52,34 @@ class ChatEventTests(unittest.TestCase):
             messages = bot.poll_events(now=1)
             self.assertEqual(messages[0], "Grand Theft Walk is online!")
             self.assertEqual(messages[-1], "New mission")
+
+
+class RotationChatTests(unittest.TestCase):
+    def test_switch_announces_info_and_countdown_and_clamps_at_zero(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = {"game": "vice_city", "protocol": 1, "controller": "running",
+                     "ready": True, "updated": time.time(), "session": "new", "settings": {}}
+            atomic_json(Path(folder) / "state.json", state)
+            rotation = Path(folder) / "rotation.json"
+            atomic_json(rotation, {"game": "vice_city", "switched_from": "san_andreas", "next_switch_at": 10000})
+            bot = ChatBot(WalkerControl(folder, game="vice_city"), rotation_file=rotation)
+            self.addCleanup(bot.close)
+            with patch("chat.bot.time.time", return_value=5320), patch.object(bot.control, "snapshot", return_value=state):
+                messages = bot.poll_events(now=0)
+                self.assertIn("Switched to", messages[0])
+                self.assertIn("Next game in: 1h18m", messages[2])
+                self.assertIn("Next game in: 1h18m", bot._reply("info", []))
+                self.assertEqual(bot.poll_events(now=1), [])
+            with patch("chat.bot.time.time", return_value=10001):
+                self.assertIn("Next game in: 0h00m", bot._info_reply(state))
+
+    def test_single_game_and_unmanaged_chat_omit_countdown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = {"ready": True, "settings": {}}
+            rotation = Path(folder) / "rotation.json"
+            atomic_json(rotation, {"game": "vice_city", "next_switch_at": None})
+            bot = ChatBot(WalkerControl(folder, game="vice_city"), rotation_file=rotation)
+            self.addCleanup(bot.close)
+            self.assertNotIn("Next game in:", bot._info_reply(state))
+            rotation.unlink()
+            self.assertNotIn("Next game in:", bot._info_reply(state))

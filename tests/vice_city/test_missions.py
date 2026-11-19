@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core.missions import MissionSystem
-from core.navigation import Node, PedestrianGraph, SidewalkNavigator
+from core.navigation import Node, PedestrianGraph, PedestrianNavigator
 from core.files import atomic_json
-from games.vice_city.game import load_destinations, main_sidewalk_network
+from games.vice_city.game import load_destinations, main_pedestrian_network
 
 
 def graph_fixture():
@@ -42,7 +42,7 @@ class ViceCityMissionTests(unittest.TestCase):
     def test_every_distinct_main_network_point_is_available_and_routable(self):
         graph = graph_fixture()
         catalog = destinations(graph)
-        self.assertEqual(main_sidewalk_network(graph), {(0, i) for i in range(7)})
+        self.assertEqual(main_pedestrian_network(graph), {(0, i) for i in range(7)})
         self.assertEqual(len(catalog), 6)
         self.assertEqual(len({tuple(d["position"]) for d in catalog}), 6)
         self.assertEqual(len({d["name"] for d in catalog}), 6)
@@ -77,7 +77,7 @@ class ViceCityMissionTests(unittest.TestCase):
             system.tick(state, 1, True, wall=101)
             selected = poll["options"][1]
             self.assertEqual(system.data["active"], selected)
-            navigator = SidewalkNavigator(graph)
+            navigator = PedestrianNavigator(graph)
             navigator.set_destination(tuple(selected["node"]))
             navigator.update_route()
             self.assertIn((0, 0), navigator.route_costs)
@@ -98,7 +98,7 @@ class ViceCityMissionTests(unittest.TestCase):
             state = {"interior": 0, "position": {"x": 120, "y": 0, "z": 10}}
             self.assertEqual(system.eligible(state), [])
 
-    def test_completion_off_sidewalk_opens_next_vote_with_large_arrival_area(self):
+    def test_completion_off_explore_opens_next_vote_with_large_arrival_area(self):
         graph = PedestrianGraph([
             Node((0, i), (i * 20, 0, 6.75),
                  tuple(((0, j), False) for j in (i - 1, i + 1) if 0 <= j < 100))

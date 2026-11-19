@@ -6,7 +6,7 @@ from pathlib import Path
 
 from games import Capabilities
 from core.files import sha256
-from core.classic import SAVE_SIZE, valid_save, read_text_table, player_identity, main_sidewalk_network, load_zones as classic_zones, load_destinations as classic_destinations
+from core.classic import SAVE_SIZE, valid_save, read_text_table, player_identity, main_pedestrian_network, load_zones as classic_zones, load_destinations as classic_destinations
 from core.changes import RuntimeChanges as SharedRuntimeChanges
 from core.saves import Autosave as SharedAutosave
 from core.navigation import Node, PedestrianGraph
