@@ -351,6 +351,7 @@ class HighJumpTests(unittest.TestCase):
 
     def test_normal_jump_is_boosted_once_after_takeoff(self):
         self.jump.tick(self.request, self.state, 10)
+        self.assertEqual(self.jump.result, 'accepted')
         self.keys.set.assert_called_once_with({"jump"})
         self.game.boost_jump.assert_not_called()
         self.jump.tick(self.request, self.state, 10.15)
@@ -359,6 +360,7 @@ class HighJumpTests(unittest.TestCase):
         self.jump.tick(self.request, self.state, 10.2)
         self.jump.tick(self.request, self.state, 10.3)
         self.game.boost_jump.assert_called_once_with(self.state)
+        self.assertEqual(self.jump.result, 'airborne')
         self.assertIsNone(self.jump.player)
 
     def test_drop_releases_native_ledge_without_applying_jump_boost(self):
@@ -392,6 +394,7 @@ class HighJumpTests(unittest.TestCase):
     def test_airborne_requests_do_not_stack_boosts(self):
         self.state.update(standing=False, in_air=True, vertical_speed=0.3)
         self.jump.tick(self.request, self.state, 10)
+        self.assertEqual(self.jump.result, 'rejected')
         self.keys.set.assert_not_called()
         self.game.boost_jump.assert_not_called()
 
@@ -422,6 +425,7 @@ class HighJumpTests(unittest.TestCase):
         self.jump.tick(self.request, self.state, 10)
         with self.assertLogs("core.controls", level="WARNING"):
             self.jump.tick(self.request, self.state, 12)
+        self.assertEqual(self.jump.result, 'failed')
         self.assertIsNone(self.jump.player)
         self.game.boost_jump.assert_not_called()
 

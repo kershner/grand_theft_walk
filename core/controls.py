@@ -215,6 +215,7 @@ class HighJump:
         self.action = "jump"
         self.release_at = 0.0
         self.deadline = 0.0
+        self.result = None
 
     def cancel(self):
         self.keys.release()
@@ -224,6 +225,7 @@ class HighJump:
         usable = can_control(state) and not saving
         if self.player is not None:
             if not usable or self.player != (state["ped"], state["identity"]):
+                self.result = "cancelled"
                 self.cancel()
             else:
                 if now >= self.release_at:
@@ -238,19 +240,23 @@ class HighJump:
                 ):
                     if self.game.boost_jump(state):
                         logger.info("Jump takeoff adjusted")
+                    self.result = "airborne"
                     self.cancel()
                 elif now >= self.deadline:
                     logger.warning("Jump did not take off; boost cancelled")
+                    self.result = "failed"
                     self.cancel()
 
         if not isinstance(request, dict) or request.get("id") == self.last_request:
             return
         if request_expired(request):
             self.last_request = request.get("id")
+            self.result = "rejected"
             return
         if not usable:
             return  # Allow time to return focus to the game.
         self.last_request = request.get("id")
+        self.result = "rejected"
         action = "drop" if request.get("direction") == "drop" else "jump"
         if action == "drop":
             self.cancel()
@@ -267,6 +273,7 @@ class HighJump:
         self.player = (state["ped"], state["identity"])
         self.release_at = now + 0.12
         self.deadline = now + 2.0
+        self.result = "accepted"
         logger.debug("%s requested", action.capitalize())
 
 

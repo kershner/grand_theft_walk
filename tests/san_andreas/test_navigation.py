@@ -280,8 +280,8 @@ class MovementTests(unittest.TestCase):
         self.assertNotIn("recovery", status)
         self.assertEqual(self.movement.recoveries, 0)
 
-    def test_stuck_repeatedly_turns_right_20_then_walks_in_all_modes(self):
-        for mode in ("free", "mission", "explore"):
+    def test_stuck_repeatedly_turns_right_20_then_walks_in_free_and_mission_modes(self):
+        for mode in ("free", "mission"):
             with self.subTest(mode=mode):
                 self.movement = Walking(graph_fixture())
                 self.movement.navigator.rng = random.Random(0)
@@ -341,7 +341,7 @@ class MovementTests(unittest.TestCase):
                 self.assertEqual(self.movement.recovery_attempts, 0)
 
     def test_recovery_turns_right_20_then_jumps_and_keeps_attempts_while_airborne(self):
-        for mode in ('free', 'mission', 'explore'):
+        for mode in ('free', 'mission'):
             with self.subTest(mode=mode):
                 movement = Walking(graph_fixture())
                 movement.set_mode(mode)
@@ -428,8 +428,8 @@ class MovementTests(unittest.TestCase):
                     return now
         self.fail("recovery turn never finished")
 
-    def test_short_escapes_back_into_same_obstacle_escalate_in_both_explore_modes(self):
-        for mode in ("mission", "explore"):
+    def test_short_escapes_back_into_same_obstacle_escalate_in_mission_mode(self):
+        for mode in ("mission",):
             with self.subTest(mode=mode):
                 self.movement = Walking(graph_fixture())
                 navigator = self.movement.navigator
@@ -482,7 +482,7 @@ class MovementTests(unittest.TestCase):
                         self.assertIn("turning right 20", self.movement.tick(self.state, True, mode))
 
     def test_stationary_retries_stay_escalated_until_leaving_the_area(self):
-        for mode in ("mission", "explore"):
+        for mode in ("mission",):
             with self.subTest(mode=mode):
                 self.movement = Walking(graph_fixture())
                 self.movement.navigator.rng = random.Random(0)
@@ -499,7 +499,7 @@ class MovementTests(unittest.TestCase):
                     now = self.finish_recovery_turn(now)
 
     def test_stationary_recovery_eventually_abandons_route_and_resumes_planning(self):
-        for mode in ('mission', 'explore'):
+        for mode in ('mission',):
             for jumping in (False, True):
                 with self.subTest(mode=mode, jumping=jumping):
                     movement = self.movement = Walking(graph_fixture())
