@@ -256,6 +256,15 @@ class PedestrianNavigator:
             self.avoided[self.target] = now + 15
         self.target = self.previous = None
 
+    def link_options(self, node):
+        return [
+            (self.graph.nodes[key], crossing)
+            for key, crossing in node.links
+            if key in self.graph.nodes
+            and (node.key, key) not in self.blocked
+            and key not in self.avoided
+        ]
+
     def waypoint(self, position, heading, interior, now):
         if interior:
             self.reset()
@@ -312,13 +321,7 @@ class PedestrianNavigator:
             if node.key == self.destination:
                 self.message = "at mission destination"
                 return node.position
-            options = [
-                (self.graph.nodes[key], crossing)
-                for key, crossing in node.links
-                if key in self.graph.nodes
-                and (node.key, key) not in self.blocked
-                and key not in self.avoided
-            ]
+            options = self.link_options(node)
             forward = [option for option in options if option[0].key != self.previous]
             if forward and (self.destination is None or mission_unreachable or self.turn):
                 options = forward

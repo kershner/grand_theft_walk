@@ -3,13 +3,14 @@
 import heapq
 import logging
 import math
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 
 from core.files import atomic_json, read_json
 from core.navigation import PedestrianGraph, PedestrianNavigator, angle_delta, closest_point_on_segment, distance, heading_to
 
 logger = logging.getLogger(__name__)
+JOURNEY_RECONSIDER_DISTANCE = 1500.0
 
 
 class ExploreNavigator(PedestrianNavigator):
@@ -20,21 +21,24 @@ class ExploreNavigator(PedestrianNavigator):
     Mission routing continues to use the original pedestrian navigator.
     """
 
-    def __init__(self, graph=None, memory_path=None, rng=None):
+    def __init__(self, graph=None, memory_path=None, rng=None, *, open_terrain_chance=.65):
         super().__init__(graph if graph is not None else PedestrianGraph([]), rng)
+        self.open_terrain_chance = open_terrain_chance
         self.exploring = False
         self.memory_path = Path(memory_path) if memory_path is not None else None
         self.coverage = Counter()
         self.failures = Counter()
         self.edge_failures = Counter()
+        self.ground_visits = Counter()
+        self.recent_edges = deque(maxlen=64)
+        self.recent_ground = deque(maxlen=100)
+        self.goal_steps = {}
         self.goal = None
-        self.goal_at = 0
         self.progress_target = None
         self.best_remaining = math.inf
         self.progress_at = 0
         self.local_target = None
         self.open_goal = None
-        self.open_goal_at = 0
         self.local_origin = None
         self.breadcrumbs = []
         self.last_position = None
@@ -60,7 +64,7 @@ class ExploreNavigator(PedestrianNavigator):
             if not isinstance(data, dict) or data.get('version') != 1:
                 return
             counters = {}
-            for name, width in (('coverage', 3), ('failures', 6), ('visits', 2),
+            for name, width in (('coverage', 3), ('failures', 6), ('ground_visits', 6), ('visits', 2),
                                 ('edge_visits', 4), ('edge_failures', 4)):
                 entries = data.get(name, [])
                 if not isinstance(entries, list) or len(entries) > 500000:
@@ -80,8 +84,24 @@ class ExploreNavigator(PedestrianNavigator):
                         continue
                     counter[key] = entry[-1]
                 counters[name] = counter
+            recent = data.get('recent_edges', [])
+            if (not isinstance(recent, list) or len(recent) > 64
+                    or any(not isinstance(edge, list) or len(edge) != 4
+                           or any(type(v) is not int for v in edge) for edge in recent)):
+                raise ValueError('Invalid recent exploration route')
+            ground = data.get('recent_ground', [])
+            if (not isinstance(ground, list) or len(ground) > 100
+                    or any(not isinstance(point, list) or len(point) != 3
+                           or any(type(v) not in (int, float) or not -1e7 <= v <= 1e7
+                                  for v in point) for point in ground)):
+                raise ValueError('Invalid recent exploration ground')
             for name, counter in counters.items():
                 setattr(self, name, counter)
+            self.recent_edges = deque(
+                ((tuple(edge[:2]), tuple(edge[2:])) for edge in recent
+                 if tuple(edge[:2]) in self.graph.nodes and tuple(edge[2:]) in self.graph.nodes),
+                maxlen=64)
+            self.recent_ground = deque(map(tuple, ground), maxlen=100)
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError) as error:
@@ -90,8 +110,9 @@ class ExploreNavigator(PedestrianNavigator):
     def save_memory(self, now, force=False):
         if self.memory_path is None or not self.dirty or (not force and now - self.saved_at < 30):
             return
-        data = {'version': 1}
-        for name in ('coverage', 'failures', 'visits', 'edge_visits', 'edge_failures'):
+        data = {'version': 1, 'recent_edges': [list(a + b) for a, b in self.recent_edges],
+                'recent_ground': list(self.recent_ground)}
+        for name in ('coverage', 'failures', 'ground_visits', 'visits', 'edge_visits', 'edge_failures'):
             counter = getattr(self, name)
             data[name] = [list(key[0] + key[1] if name.startswith('edge_') else key) + [count]
                           for key, count in counter.items()]
@@ -113,6 +134,9 @@ class ExploreNavigator(PedestrianNavigator):
         self.progress_target = None
         self.best_remaining = math.inf
         self.travel = self.excursion_travel = 0.0
+        self.goal_steps = {}
+        self.next_departure_at = 0.0
+        self.recovery_requested = False
 
     def observe(self, position, now):
         if self.last_position is not None:
@@ -120,11 +144,15 @@ class ExploreNavigator(PedestrianNavigator):
             if moved > 50 or abs(position[2] - self.last_position[2]) > 15:
                 # Respawn/teleport: do not invent a traversable connection.
                 self.reset()
+                self.recent_ground.clear()
             elif moved <= 20:
                 self.travel += moved
                 self.excursion_travel += moved if self.excursion_anchor is not None else 0
         cell = self.coverage_cell(position)
         if cell != self.last_cell:
+            if self.last_cell is not None:
+                self.ground_visits[self.last_cell + cell] += 1
+                self.ground_visits[cell + self.last_cell] += 1
             self.coverage[cell] += 1
             self.last_cell = cell
             self.dirty = True
@@ -135,15 +163,77 @@ class ExploreNavigator(PedestrianNavigator):
                 # Long successful excursions can outgrow the recovery window.
                 # Return only over retained, observed ground after a failure.
                 self.excursion_anchor = self.breadcrumbs[0]
+        if not self.recent_ground or distance(position, self.recent_ground[-1]) >= 3:
+            self.recent_ground.append(position)
+            self.dirty = True
         self.last_position = position
         self.save_memory(now)
 
     def connection(self, origin, target):
         return self.coverage_cell(origin) + self.coverage_cell(target)
 
+    def repeats_ground(self, origin, target):
+        """Check the entire short approach, including intermediate cell borders."""
+        recent = list(self.recent_ground)
+        if any(distance(target, point := closest_point_on_segment(target, a, b)) < 6
+               and abs(target[2] - point[2]) <= 3
+               for a, b in zip(recent, recent[1:])):
+            return True
+        previous = self.coverage_cell(origin)
+        steps = max(1, math.ceil(distance(origin, target) / 2))
+        for step in range(1, steps + 1):
+            point = tuple(a + (b - a) * step / steps for a, b in zip(origin, target))
+            cell = self.coverage_cell(point)
+            if cell != previous and self.ground_visits[previous + cell]:
+                return True
+            previous = cell
+        return False
+
+    def try_open_departure(self, node, position, heading):
+        """Commit to a long journey instead of rerolling the choice at each node."""
+        if self.travel < self.next_departure_at:
+            return None
+        self.next_departure_at = self.travel + JOURNEY_RECONSIDER_DISTANCE
+        if not self.open_terrain_chance or self.turn or self.rng.random() >= self.open_terrain_chance:
+            return None
+        paths = [heading_to(node.position, self.graph.nodes[key].position)
+                 for key, _ in node.links if key in self.graph.nodes]
+        options = []
+        for step in range(8):
+            bearing = heading + step * math.tau / 8
+            if any(abs(angle_delta(bearing, path)) < math.pi / 6 for path in paths):
+                continue
+            target = (position[0] - math.sin(bearing) * 10,
+                      position[1] + math.cos(bearing) * 10, position[2])
+            if self.failures[self.connection(position, target)] or self.repeats_ground(position, target):
+                continue
+            options.append((self.coverage[self.coverage_cell(target)],
+                            abs(angle_delta(bearing, heading)), self.rng.random(), target))
+        if not options:
+            return None
+        target = min(options)[3]
+        bearing = heading_to(position, target)
+        if self.previous is not None and self.target == node.key:
+            self.recent_edges.append((self.previous, node.key))
+        self.goal = self.target = self.previous = None
+        self.goal_steps = {}
+        self.local_origin = self.excursion_anchor = position
+        self.breadcrumbs = [position]
+        self.excursion_travel = 0
+        self.local_target = target
+        self.open_goal = (position[0] - math.sin(bearing) * 100,
+                          position[1] + math.cos(bearing) * 100, position[2])
+        self.crossing = False
+        self.dirty = True
+        self.message = 'exploring fresh ground beyond pedestrian paths'
+        return target
+
     def avoid_target(self, now):
         if not self.exploring:
             return super().avoid_target(now)
+        # An actual failed approach permits a new travel decision after recovery.
+        self.next_departure_at = 0.0
+        self.recovery_requested = False
         if self.returning and self.breadcrumbs and self.last_position is not None:
             self.failures[self.connection(self.last_position, self.breadcrumbs[-1])] += 1
             # Observed ground can become blocked too. Try fresh approaches here.
@@ -156,8 +246,15 @@ class ExploreNavigator(PedestrianNavigator):
             origin = self.local_origin or self.last_position
             self.failures[self.connection(origin, self.local_target)] += 1
             self.local_target = None
-            self.open_goal = None
-            # Retrace observed ground before attempting a different heading.
+            # Retreat a few observed steps, rather than undoing a long walk
+            # because its latest ten-metre approach hit an obstacle.
+            self.excursion_anchor = self.last_position
+            retreat = 0.0
+            for point in reversed(self.breadcrumbs):
+                retreat += distance(self.excursion_anchor, point)
+                if retreat > 12:
+                    break
+                self.excursion_anchor = point
             self.returning = True
         elif self.previous is not None and self.target is not None:
             edge = self.previous, self.target
@@ -175,7 +272,17 @@ class ExploreNavigator(PedestrianNavigator):
     def choose_goal(self, start, now):
         """Search reachable directed links, including previously visited bridges."""
         costs = {start: 0.0}
+        parents = {}
         queue = [(0.0, start)]
+        recent = Counter(frozenset(edge) for edge in self.recent_edges)
+        forward = [key for key, _ in self.graph.nodes[start].links
+                   if key != self.previous and key in self.graph.nodes
+                   and self.blocked.get((start, key), 0) <= now
+                   and self.avoided.get(key, 0) <= now]
+        unused = [key for key in forward
+                  if not (self.edge_visits[(start, key)] or self.edge_visits[(key, start)])]
+        not_recent = [key for key in forward if not recent[frozenset((start, key))]]
+        preferred = unused or not_recent or forward
         regions = Counter()
         for key, count in self.visits.items():
             if key in self.graph.nodes:
@@ -190,10 +297,14 @@ class ExploreNavigator(PedestrianNavigator):
                 if (target not in self.graph.nodes or self.blocked.get((key, target), 0) > now
                         or self.avoided.get(target, 0) > now):
                     continue
-                penalty = min(self.edge_failures[(key, target)], 20) * 50
+                if key == start and preferred and target not in preferred:
+                    continue
+                penalty = (min(self.edge_failures[(key, target)], 20) * 50
+                           + recent[frozenset((key, target))] * 300)
                 candidate = cost + distance(node.position, self.graph.nodes[target].position) + penalty
                 if candidate < costs.get(target, math.inf):
                     costs[target] = candidate
+                    parents[target] = key
                     heapq.heappush(queue, (candidate, target))
         def score(key):
             p = self.graph.nodes[key].position
@@ -202,7 +313,30 @@ class ExploreNavigator(PedestrianNavigator):
                     + costs[key] / 300 + self.coverage[self.coverage_cell(p)] * .2,
                     costs[key], key)
         self.goal = min((key for key in costs if key != start), key=score, default=None)
-        self.goal_at = now
+        if not forward and all(self.visits[key] for key in costs):
+            # Leave an exhausted dead end; never abandon a usable corridor
+            # merely because we have walked a particular distance or duration.
+            self.goal = None
+        self.goal_steps = {}
+        key = self.goal
+        while key in parents:
+            parent = parents[key]
+            self.goal_steps[parent] = key
+            key = parent
+
+    def link_options(self, node):
+        options = super().link_options(node)
+        if not self.exploring:
+            return options
+        if self.previous is not None and self.previous != node.key:
+            self.recent_edges.append((self.previous, node.key))
+            self.dirty = True
+        if self.turn:
+            # A viewer's junction choice takes precedence over the planned route.
+            self.goal = None
+            return options
+        next_key = self.goal_steps.get(node.key)
+        return [option for option in options if option[0].key == next_key]
 
     def off_path(self, position, heading, now):
         self.crossing = False
@@ -210,7 +344,9 @@ class ExploreNavigator(PedestrianNavigator):
             horizontal = distance(position, self.local_origin)
             rise = abs(position[2] - self.local_origin[2])
             if rise > 2.5 and rise > horizontal * .65:
-                self.avoid_target(now)
+                self.recovery_requested = True
+                self.message = 'exploring: steep approach; trying obstacle recovery'
+                return None
             elif distance(position, self.local_target) <= 2:
                 self.local_target = None
         if self.returning:
@@ -221,22 +357,27 @@ class ExploreNavigator(PedestrianNavigator):
                 return self.breadcrumbs[-1]
             self.returning = False
         if self.local_target is None:
-            if (self.open_goal is None or distance(position, self.open_goal) < 15
-                    or now - self.open_goal_at > 120):
+            if self.open_goal is None or distance(position, self.open_goal) < 15:
                 regions = Counter()
                 for cell, count in self.coverage.items():
                     regions[(math.floor(cell[0] * 12 / 100),
                              math.floor(cell[1] * 12 / 100), cell[2])] += count
                 candidates = []
+                if self.open_goal is not None:
+                    direction = heading_to(position, self.open_goal)
+                elif len(self.recent_ground) >= 2:
+                    direction = heading_to(self.recent_ground[-2], self.recent_ground[-1])
+                else:
+                    direction = heading
                 for step in range(8):
-                    bearing = heading + step * math.tau / 8
+                    bearing = direction + step * math.tau / 8
                     goal = (position[0] - math.sin(bearing) * 100,
                             position[1] + math.cos(bearing) * 100, position[2])
                     region = (math.floor(goal[0] / 100), math.floor(goal[1] / 100),
                               self.coverage_cell(position)[2])
-                    candidates.append((regions[region], abs(angle_delta(bearing, heading)), goal))
-                self.open_goal = min(candidates)[2]
-                self.open_goal_at = now
+                    candidates.append((min(regions[region], 100) * .02
+                                       + abs(angle_delta(bearing, direction)) * 3, goal))
+                self.open_goal = min(candidates)[1]
             options = []
             near_node = self.graph.nearest(position, radius=12)
             failed_bearings = []
@@ -262,16 +403,19 @@ class ExploreNavigator(PedestrianNavigator):
                              for x, y in ((-1, 0), (1, 0), (0, -1), (0, 1)))
                 bias = (abs(angle_delta(bearing, heading)) * .5
                         + abs(angle_delta(bearing, heading_to(position, self.open_goal))) * 3)
+                # Do not immediately reuse the ground behind us when the open
+                # goal changes or a short obstacle retreat finishes.
+                retraces = self.repeats_ground(position, target)
                 if self.turn:
                     desired = heading + {'left': math.pi / 2, 'right': -math.pi / 2,
                                          'forward': 0}[self.turn]
                     bias += abs(angle_delta(bearing, desired)) * 4
-                options.append((failures * 20 + novelty * .5 + nearby * .05 + bias,
+                options.append((retraces, failures * 20 + novelty * .5 + nearby * .05 + bias,
                                 self.rng.random(), target))
             if not options:
                 self.message = 'exploring: local approaches blocked; waiting for a new position'
                 return None
-            self.local_target = min(options)[2]
+            self.local_target = min(options)[3]
             self.local_origin = position
             self.turn = None
         self.message = 'exploring open ground'
@@ -289,8 +433,8 @@ class ExploreNavigator(PedestrianNavigator):
             self.best_remaining, self.progress_at = remaining, now
         elif now - self.progress_at > 30:
             # Moving in circles is also a failed approach, even without a stall.
-            self.avoid_target(now)
-            self.message = 'exploring: no progress toward waypoint; planning another approach'
+            self.recovery_requested = True
+            self.message = 'exploring: no progress toward waypoint; trying obstacle recovery'
             return None
         return result
 
@@ -324,30 +468,31 @@ class ExploreNavigator(PedestrianNavigator):
                 self.excursion_anchor = None
                 self.returning = False
                 self.local_target = None
-                self.open_goal = None
                 self.breadcrumbs = [position]
                 self.travel = 0
             else:
                 return self.off_path(position, heading, now)
+        # A nearby sidewalk is not a reason to interrupt a successful open walk.
+        if self.local_target is not None:
+            return self.off_path(position, heading, now)
         if nearby is None:
             self.target = self.previous = self.goal = None
             return self.off_path(position, heading, now)
+        node = self.graph.nodes.get(self.target, nearby)
+        if self.target is None or distance(position, node.position) <= 2:
+            departure = self.try_open_departure(node, position, heading)
+            if departure is not None:
+                return departure
         self.returning = False
-        if self.travel >= 250 and (len(nearby.links) == 1 or self.travel >= 400):
-            self.excursion_anchor = position
-            self.excursion_travel = 0
-            self.breadcrumbs = [position]
-            self.local_target = self.goal = self.target = self.previous = None
-            return self.off_path(position, heading, now)
         self.local_target = None
         reached_goal = (self.goal in self.graph.nodes
                         and distance(position, self.graph.nodes[self.goal].position) <= 3
                         and abs(position[2] - self.graph.nodes[self.goal].position[2]) <= 3)
-        if (self.goal is None or self.goal not in self.graph.nodes or now - self.goal_at > 180
-                or reached_goal):
+        if self.goal is None or self.goal not in self.graph.nodes or reached_goal:
             if reached_goal:
                 self.visits[self.goal] += 1
-            self.choose_goal(nearby.key, now)
+            start = self.target if self.target in self.graph.nodes else nearby.key
+            self.choose_goal(start, now)
         # Reuse directed mission routing without exposing an exploration goal as a mission.
         self.destination = self.goal
         try:

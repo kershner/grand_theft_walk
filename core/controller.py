@@ -25,6 +25,7 @@ SECONDS_PER_STEP = 1.0
 WALK_SPEED_MULTIPLIER = 0.75
 RECOVERY_ESCAPE_RADIUS = 8.0
 RECOVERY_ESCALATE_AFTER = 3
+OPEN_GROUND_BACKTRACK_AFTER = 5
 
 
 def distance(a, b):
@@ -113,7 +114,11 @@ class Walking:
         if self.recovery_anchor is None:
             self.recovery_anchor = dict(position)
         self.recovery_attempts += 1
-        if self.mode == "explore" and (self.navigator.local_target is not None or self.navigator.returning):
+        open_recovery = self.mode == "explore" and (
+            self.navigator.local_target is not None or self.navigator.returning)
+        if self.mode == "explore":
+            self.navigator.progress_target = None
+        if open_recovery and self.recovery_attempts >= OPEN_GROUND_BACKTRACK_AFTER:
             self.navigator.avoid_target(now)
             self.recovery_turn = None
             self.origin = None
@@ -126,7 +131,7 @@ class Walking:
         )
         self.recovery_steps = 50 if persistent else 20
         self.recovery_turn = self.recovery_steps * MOUSE_UNITS_PER_STEP
-        if persistent and self.navigator:
+        if persistent and self.navigator and not open_recovery:
             self.navigator.avoid_target(now)
         self.aligning = False
         self.turn_direction = 0
@@ -193,6 +198,9 @@ class Walking:
                 now,
             )
             if waypoint is None:
+                if mode == "explore" and self.navigator.recovery_requested:
+                    self.navigator.recovery_requested = False
+                    return self.recover(position, now)
                 self.stop()
                 return self.navigator.message
             facing = state.get("camera_heading")
@@ -225,6 +233,10 @@ class Walking:
         if mode in ("mission", "explore") and self.aligning:
             self.keys.set(self.walk_modifier)
             self.origin, self.progress_at = position, now
+            if mode == "explore" and (self.navigator.local_target is not None or self.navigator.returning):
+                if self.navigator.returning:
+                    return "exploring open ground: aligning for backtracking"
+                return "exploring open ground: aligning with route"
             return "aligning with pedestrian path"
         self.keys.set(self.walk_modifier | {"forward"})
         if self.origin is None or distance(position, self.origin) >= 0.8:
@@ -300,6 +312,7 @@ class Controller:
         self.camera_error = self.camera_request = None
         self.last_message = self.last_steering = None
         self.report = {}
+        self.report_write_blocked = False
         logger.info(
             "Controller ready. Background operation: %s.\n"
             "%sF5 free/explore/mission | F6 walk/pause | F7 left | F8 right | F9 stop | F12 exit\n"
@@ -474,7 +487,19 @@ class Controller:
         )
         self.report["navigation"] = navigation
         self.report["missions"] = self.missions.report()
-        atomic_json(self.state_dir / "state.json", self.report)
+        self.publish_report()
+
+    def publish_report(self):
+        try:
+            atomic_json(self.state_dir / "state.json", self.report)
+        except PermissionError as error:
+            if not getattr(self, "report_write_blocked", False):
+                logger.warning("Status file is locked; continuing gameplay and retrying the next report: %s", error)
+            self.report_write_blocked = True
+        else:
+            if getattr(self, "report_write_blocked", False):
+                logger.info("Status file unlocked; report publication resumed")
+            self.report_write_blocked = False
 
     def tick(self, now):
         result = self._tick(now)
@@ -598,7 +623,7 @@ class Controller:
                 restore_errors=failures,
                 autosave=self.autosave.report() if self.autosave else {"supported": False},
             )
-            atomic_json(self.state_dir / "state.json", self.report)
+            self.publish_report()
             logger.info(
                 "Controller stopped; held keys released and temporary settings restored."
             )

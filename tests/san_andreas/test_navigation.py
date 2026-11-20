@@ -497,13 +497,14 @@ class MovementTests(unittest.TestCase):
     def test_switching_from_mission_to_explore_discards_goal_and_keeps_exploring(self):
         self.movement.set_mode("mission")
         navigator = self.movement.navigator
+        navigator.open_terrain_chance = 1
         navigator.set_destination((0, 4))
         navigator.visits[(0, 3)] = 20
         self.movement.tick(self.state, True, "mission")
         self.state["position"] = {"x": 0, "y": 6, "z": 0}
         self.movement.tick(self.state, True, "explore")
         self.assertIsNone(navigator.destination)
-        self.assertEqual(navigator.target, (0, 0))
+        self.assertIsNotNone(navigator.local_target)
         self.assertNotIn("mission", navigator.message)
         self.assertEqual(navigator.visits[(0, 3)], 20)
 
@@ -710,6 +711,20 @@ class ControllerTests(unittest.TestCase):
                     self.assertEqual(report.call_count, 1)
                     self.assertTrue(controller.tick(11))
                     self.assertEqual(report.call_count, 2)
+                before = (args.state_dir / "state.json").read_bytes()
+                with (
+                    patch("core.controller.atomic_json", side_effect=PermissionError("reader holds state.json")),
+                    self.assertLogs("core.controller", level="WARNING") as warnings,
+                ):
+                    self.assertTrue(controller.tick(12))
+                    self.assertTrue(controller.tick(13))
+                self.assertEqual(len(warnings.output), 1)
+                self.assertTrue(controller.report_write_blocked)
+                self.assertEqual((args.state_dir / "state.json").read_bytes(), before)
+                with self.assertLogs("core.controller", level="INFO") as recovery:
+                    self.assertTrue(controller.tick(14))
+                self.assertFalse(controller.report_write_blocked)
+                self.assertTrue(any("publication resumed" in message for message in recovery.output))
             published = json.loads((args.state_dir / "state.json").read_text())
             self.assertEqual(published["controller"], "running")
             self.assertEqual(published["game"], "san_andreas")
