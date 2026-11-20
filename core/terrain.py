@@ -155,6 +155,8 @@ class TerrainNavigator:
         self.direct = True
         self.refresh_probe = None
         self.last_position = None
+        self.search_context = None
+        self.search_samples = {}
 
     @property
     def enabled(self):
@@ -208,6 +210,25 @@ class TerrainNavigator:
 
     def search(self, start, target, now):
         """Unknown edges request samples and defer; never become traversable."""
+        if (self.search_context is None or self.search_context[1] != target
+                or math.dist(start, self.search_context[0]) > .5):
+            self.search_context = (start, target)
+            self.search_samples = {}
+        # A bounded search spans asynchronous batches. Retain completed static
+        # samples for this attempt so early clear rays cannot expire faster
+        # than the frontier advances. Actual walking still checks dynamic rays.
+        start = self.search_context[0]
+
+        def sample(kind, *points):
+            key = (kind, *points)
+            if key not in self.search_samples:
+                result = (self.ground(*points, now) if kind == 'ground'
+                          else self.corridor(*points, now))
+                if result is not None:
+                    self.search_samples[key] = result
+                return result
+            return self.search_samples[key]
+
         origin = (0, 0, round(start[2], 1))
         positions = {origin: start}
         costs, parents = {origin: 0.}, {}
@@ -234,7 +255,7 @@ class TerrainNavigator:
                 gx, gy = key[0] + ox, key[1] + oy
                 if abs(gx) > RADIUS or abs(gy) > RADIUS:
                     continue
-                ground = self.ground(start[0] + gx * STEP, start[1] + gy * STEP, point[2], now)
+                ground = sample('ground', start[0] + gx * STEP, start[1] + gy * STEP, point[2])
                 if ground is None:
                     waiting = True
                     continue
@@ -244,7 +265,7 @@ class TerrainNavigator:
                 candidate = cost + math.dist(point, ground)
                 if candidate >= costs.get(neighbour, math.inf):
                     continue
-                clear = self.corridor(point, ground, now)
+                clear = sample('corridor', point, ground)
                 if clear is None:
                     waiting = True
                     continue
@@ -252,7 +273,7 @@ class TerrainNavigator:
                     continue
                 costs[neighbour], parents[neighbour], positions[neighbour] = candidate, key, ground
                 heapq.heappush(queue, (candidate + math.dist(ground[:2], target[:2]), candidate, neighbour))
-        if waiting or queue:
+        if waiting:
             return None
         return []
 

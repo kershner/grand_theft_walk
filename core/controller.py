@@ -30,6 +30,7 @@ WALK_SPEED_MULTIPLIER = 0.75
 RECOVERY_ESCAPE_RADIUS = 8.0
 JUMP_LANDING_GRACE = 3.0
 JUMP_GROUND_SETTLE = .6
+TERRAIN_WAIT_LIMIT = 15.
 
 
 def distance(a, b):
@@ -469,6 +470,11 @@ class Walking:
                     self.navigator.watchdogs_paused_until = now + 2.5
                     self.navigator.journey_observed_at = None
                     self.navigator.progress_at = now
+                    timed_out = now - self.terrain_wait_since >= TERRAIN_WAIT_LIMIT
+                    if timed_out:
+                        # A planner retry is not physical progress. Enter the
+                        # same bounded jump/replan recovery as a walking stall.
+                        return self.recover(position, now, state)
                     if self.terrain.blocked:
                         if self.terrain.temporary:
                             origin = tuple(position[axis] for axis in ('x', 'y', 'z'))

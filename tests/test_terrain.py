@@ -171,12 +171,59 @@ class TerrainTests(unittest.TestCase):
                          in_vehicle=False, health=100, player_state=0, ped_state=1,
                          interior=0, heading=0, standing=True, in_air=False,
                          position=dict(x=0, y=0, z=1))
-            for now in range(25):
+            for now in range(10):
                 with patch('core.controller.time.monotonic', return_value=now):
                     self.assertIn('sampling', walk.tick(state, True, 'explore'))
             self.assertEqual(walk.recoveries, 0)
             self.assertFalse(walk.navigator.failures)
             walk.keys.set.assert_called_with({'walk'})
+
+    def test_endless_terrain_wait_enters_jump_recovery(self):
+        with patch('core.controller.Keys'):
+            walk = Walking()
+            walk.set_mode('explore')
+            walk.jump_supported = True
+            walk.navigator.waypoint = Mock(return_value=(0, 10, 0))
+            walk.terrain = TerrainNavigator(World())
+            walk.terrain.sensor.pending = True
+            state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
+                         in_vehicle=False, health=100, player_state=0, ped_state=1,
+                         interior=0, heading=0, standing=True, in_air=False,
+                         position=dict(x=0, y=0, z=1))
+            with patch('core.controller.time.monotonic', return_value=0):
+                walk.tick(state, True, 'explore')
+            with patch('core.controller.time.monotonic', return_value=15):
+                self.assertIn('backing up for jump', walk.tick(state, True, 'explore'))
+            self.assertEqual(walk.recoveries, 1)
+            self.assertFalse(walk.navigator.failures)
+            self.assertIsNone(walk.terrain_wait_since)
+            self.assertEqual(walk.jump_budget_used, 1)
+            walk.keys.set.assert_called_with({'walk', 'back'})
+
+    def test_repeated_terrain_timeouts_keep_the_local_jump_budget(self):
+        with patch('core.controller.Keys'):
+            walk = Walking()
+            walk.set_mode('explore')
+            walk.jump_supported = True
+            walk.navigator.waypoint = Mock(return_value=(0, 10, 0))
+            walk.terrain = TerrainNavigator(World())
+            walk.terrain.sensor.pending = True
+            state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
+                         in_vehicle=False, health=100, player_state=0, ped_state=1,
+                         interior=0, heading=0, standing=True, in_air=False,
+                         position=dict(x=0, y=0, z=1))
+            jumps = 0
+            for attempt in range(6):
+                # Simulate each recovery finishing at the same blocked site.
+                walk.recovery_jump_setup = None
+                with patch('core.controller.time.monotonic', return_value=attempt * 16):
+                    walk.tick(state, True, 'explore')
+                with patch('core.controller.time.monotonic', return_value=attempt * 16 + 15):
+                    result = walk.tick(state, True, 'explore')
+                jumps += 'backing up for jump' in result
+            self.assertEqual(walk.recoveries, 6)
+            self.assertEqual(jumps, 2)
+            self.assertEqual(len(walk.jump_sites), 2)
 
     def test_repeated_query_waits_preserve_accumulated_actual_walking_stalls(self):
         with patch('core.controller.Keys'):
@@ -221,16 +268,22 @@ class TerrainTests(unittest.TestCase):
 
             def ray(self, start, end, flags, now):
                 key = (start, end, flags)
+                if key in self.results and self.results[key][0] <= now:
+                    del self.results[key]
                 if key not in self.results and len(self.queue) < MAX_RAYS:
                     self.queue[key] = None
-                return self.results.get(key)
+                return self.results[key][1] if key in self.results else None
 
             def pump(self, now):
-                if self.last_pump == now:
+                if self.last_pump is not None and now - self.last_pump < .1:
                     return
                 self.last_pump = now
                 for key in list(self.queue)[:12]:
-                    self.results[key] = super().ray(*key, now)
+                    # Match the live sensor's expiring collision cache. Earlier
+                    # tests retained every ray forever and hid search starvation.
+                    result = super().ray(*key, now)
+                    ttl = (1.5 if result else .75) if key[-1] & 1 else (30 if result else 3)
+                    self.results[key] = (now + ttl, result)
                     del self.queue[key]
 
         nav = TerrainNavigator(BufferedWorld())
@@ -241,7 +294,7 @@ class TerrainTests(unittest.TestCase):
                 break
         self.assertIsNotNone(result)
         self.assertLess(result[1], 0)
-        self.assertLess(frame, 600)
+        self.assertLess(frame, 1200)
 
 
 class Memory:
