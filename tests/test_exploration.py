@@ -614,7 +614,11 @@ class ExplorationTests(unittest.TestCase):
             for attempt, turn in ((1, 20), (2, None), (3, 20), (4, 50), (5, 50)):
                 status = movement.recover({'x': 0, 'y': 0, 'z': 0}, attempt)
                 if turn is None:
-                    self.assertIn('jumping', status)
+                    self.assertIn('backing up', status)
+                    self.assertIsNone(movement.recovery_jump_request)
+                    position = {'x': 0, 'y': 0, 'z': 0}
+                    self.assertIn('approaching jump', movement.prepare_recovery_jump(position, attempt + 1.5))
+                    self.assertIn('jumping', movement.prepare_recovery_jump(position, attempt + 1.75))
                     self.assertIsNotNone(movement.recovery_jump_request)
                 else:
                     self.assertIn(f'turning right {turn}', status)

@@ -693,14 +693,19 @@ class WaterRecoveryTests(unittest.TestCase):
 
 
 class ClassicViewTests(unittest.TestCase):
-    def test_vice_city_up_down_and_center_follow_the_native_vertical_direction(self):
+    def test_classic_games_up_down_and_center_follow_the_native_vertical_direction(self):
+        for backend in (iii, vc):
+            with self.subTest(game=backend.__name__):
+                self.check_vertical_direction(backend)
+
+    def check_vertical_direction(self, backend):
         with patch('core.controls.Keys'):
-            view = ViewControl(look_multiplier=vc.LOOK_MULTIPLIER)
+            view = ViewControl(look_multiplier=backend.LOOK_MULTIPLIER)
         state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
                      in_vehicle=False, health=100, player_state=0, camera_pitch=0.)
 
         def look(amount):
-            # VC's native positive mouse Y raises the view; the shared default
+            # The classic games' positive mouse Y raises the view; the shared default
             # has the opposite sign. Exercise the actual calibrated output.
             state['camera_pitch'] += math.radians(amount * .1)
 

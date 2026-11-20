@@ -27,6 +27,7 @@ WALK_KEYS = {"forward": "w", "back": "s"}
 # walking controller's output so commands, path alignment and recovery share
 # the same response while retaining the shared acceleration and command timing.
 TURN_MULTIPLIER = 4
+LOOK_MULTIPLIER = -4
 MISSION_DEFAULTS = {"radius": 100.0, "height_tolerance": 15.0}
 JUMP_ACTION, JUMP_KEY = 11, 32
 PLAYER_INFO, PED_POOL, PED_SIZE = 0x9414A8, 0x8F2D14, 0x5F0

@@ -48,6 +48,7 @@ class Walking:
         self.recovery_attempts = 0
         self.recoveries = 0
         self.jump_supported = False
+        self.recovery_jump_setup = None
         self.recovery_jump_request = None
         self.recovery_jump_started = None
         self.recovery_jump_airborne = False
@@ -91,6 +92,7 @@ class Walking:
         self.recovery_turn = None
         self.recovery_anchor = None
         self.recovery_attempts = 0
+        self.recovery_jump_setup = None
         self.recovery_jump_request = self.recovery_jump_started = None
         self.recovery_jump_airborne = False
         self.smooth_turn.reset()
@@ -112,8 +114,8 @@ class Walking:
 
     def backing_up(self, now):
         return (
-            self.manual_direction == "back"
-            and now < self.manual_until
+            (self.manual_direction == "back" and now < self.manual_until)
+            or (self.recovery_jump_setup is not None and self.recovery_jump_setup[0] == "back")
         )
 
     def recover(self, position, now):
@@ -122,6 +124,7 @@ class Walking:
         if self.recovery_anchor is None:
             self.recovery_anchor = dict(position)
         self.recovery_attempts += 1
+        self.recovery_jump_setup = None
         self.recovery_jump_request = self.recovery_jump_started = None
         self.recovery_jump_airborne = False
         open_recovery = self.mode == "explore" and (
@@ -145,15 +148,15 @@ class Walking:
             self.mode in ("mission", "explore")
             and self.recovery_attempts >= RECOVERY_ESCALATE_AFTER + int(self.jump_supported)
         )
-        # Try a small right turn, then jump, before further turning attempts.
+        # Leave room for takeoff instead of jumping while pressed into a wall.
         if self.jump_supported and self.recovery_attempts == 2:
-            self.recovery_jump_request = control_request()
-            self.recovery_jump_started = now
+            self.recovery_jump_setup = ("back", now, dict(position))
+            self.keys.set(self.walk_modifier | {"back"})
             self.recovery_turn = None
             self.origin, self.progress_at = position, now
             self.aligning = False
             self.smooth_turn.reset()
-            return "obstacle recovery: jumping"
+            return "obstacle recovery: backing up for jump"
         self.recovery_steps = 50 if persistent else 20
         self.recovery_turn = self.recovery_steps * MOUSE_UNITS_PER_STEP
         if persistent and self.navigator and not open_recovery:
@@ -162,6 +165,26 @@ class Walking:
         self.turn_direction = 0
         self.smooth_turn.reset()
         return f"obstacle recovery: turning right {self.recovery_steps}"
+
+    def prepare_recovery_jump(self, position, now):
+        phase, started, origin = self.recovery_jump_setup
+        if phase == "back":
+            # Bound the retreat even when another obstacle blocks the way.
+            if distance(position, origin) < 1.5 and now - started < 1.5:
+                self.keys.set(self.walk_modifier | {"back"})
+                return "obstacle recovery: backing up for jump"
+            self.recovery_jump_setup = ("forward", now, dict(position))
+        elif now - started >= 0.25 or distance(position, origin) >= 0.5:
+            # Request only after forward input has had time to turn the ped
+            # around. Keep the approach short so takeoff precedes the wall.
+            self.recovery_jump_setup = None
+            self.recovery_jump_request = control_request()
+            self.recovery_jump_started = now
+            self.origin, self.progress_at = dict(position), now
+            self.keys.set(self.walk_modifier | {"forward"})
+            return "obstacle recovery: jumping"
+        self.keys.set(self.walk_modifier | {"forward"})
+        return "obstacle recovery: approaching jump"
 
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
@@ -194,6 +217,8 @@ class Walking:
             self.stop()
             return "stopped"
         position = state["position"]
+        if self.recovery_jump_setup is not None:
+            return self.prepare_recovery_jump(position, now)
         # A short sidestep followed by returning to the same obstacle is still
         # the same stuck episode. Reset only after actually leaving the area.
         if (self.recovery_anchor is not None

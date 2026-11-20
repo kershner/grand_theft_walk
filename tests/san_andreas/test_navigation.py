@@ -349,16 +349,24 @@ class MovementTests(unittest.TestCase):
                 movement.navigator.local_target = (0, 10, 0)
                 movement.navigator.open_goal = (0, 100, 0)
                 self.assertIn('turning right 20', movement.recover(self.state['position'], 0))
-                self.assertIn('jumping', movement.recover(self.state['position'], 2))
+                self.assertIn('backing up', movement.recover(self.state['position'], 2))
+                self.assertIsNone(movement.recovery_jump_request)
+                self.keys.set.assert_called_with({'walk', 'back'})
+                with patch('core.controller.time.monotonic', return_value=3.5):
+                    self.assertIn('approaching jump', movement.tick(self.state, True, mode))
+                self.keys.set.assert_called_with({'walk', 'forward'})
+                self.assertIsNone(movement.recovery_jump_request)
+                with patch('core.controller.time.monotonic', return_value=3.75):
+                    self.assertIn('jumping', movement.tick(self.state, True, mode))
                 self.assertIsNotNone(movement.recovery_jump_request)
                 state = dict(self.state, in_air=True, standing=False, ped_state=41)
-                with patch('core.controller.time.monotonic', return_value=2.1):
+                with patch('core.controller.time.monotonic', return_value=3.85):
                     self.assertIn('jumping', movement.tick(state, True, mode))
                 self.assertEqual(movement.recovery_attempts, 2)
                 state.update(in_air=False, standing=True, ped_state=1)
-                with patch('core.controller.time.monotonic', return_value=3):
+                with patch('core.controller.time.monotonic', return_value=4.75):
                     self.assertIn('walking forward', movement.tick(state, True, mode))
-                with patch('core.controller.time.monotonic', return_value=7.2):
+                with patch('core.controller.time.monotonic', return_value=8.95):
                     self.assertIn('turning right 20', movement.tick(state, True, mode))
                 self.assertEqual(movement.recovery_attempts, 3)
                 expected = 20 if mode == 'free' else 50
@@ -367,6 +375,46 @@ class MovementTests(unittest.TestCase):
                 movement.stop()
                 self.assertIsNone(movement.recovery_jump_request)
                 self.assertIsNone(movement.recovery_jump_started)
+
+    def test_jump_retreat_distance_starts_short_forward_approach(self):
+        movement = self.movement
+        movement.set_mode('free')
+        movement.jump_supported = True
+        movement.recover(self.state['position'], 0)
+        movement.recover(self.state['position'], 1)
+        self.assertTrue(movement.backing_up(1))
+        with patch('core.controller.time.monotonic', return_value=1.5):
+            self.assertIn('backing up', movement.tick(self.state, True))
+        state = dict(self.state, position={'x': -1.5, 'y': 0, 'z': 0})
+        with patch('core.controller.time.monotonic', return_value=1.6):
+            self.assertIn('approaching jump', movement.tick(state, True))
+        self.assertFalse(movement.backing_up(1.6))
+        self.assertIsNone(movement.recovery_jump_request)
+        state['position'] = {'x': -1, 'y': 0, 'z': 0}
+        with patch('core.controller.time.monotonic', return_value=1.8):
+            self.assertIn('jumping', movement.tick(state, True))
+        self.assertIsNotNone(movement.recovery_jump_request)
+
+    def test_jump_preparation_cancels_on_stop_focus_loss_pause_and_mode_change(self):
+        for phase in ('back', 'forward'):
+            for cancel in ('stop', 'foreground', 'paused', 'mode'):
+                with self.subTest(phase=phase, cancel=cancel):
+                    movement = Walking(graph_fixture())
+                    movement.set_mode('free')
+                    movement.jump_supported = True
+                    movement.recover(self.state['position'], 0)
+                    movement.recover(self.state['position'], 1)
+                    if phase == 'forward':
+                        with patch('core.controller.time.monotonic', return_value=2.5):
+                            movement.tick(self.state, True)
+                    state = dict(self.state)
+                    if cancel in ('foreground', 'paused'):
+                        state[cancel] = cancel == 'paused'
+                    with patch('core.controller.time.monotonic', return_value=2.6):
+                        movement.tick(state, cancel != 'stop', 'explore' if cancel == 'mode' else 'free')
+                    self.assertIsNone(movement.recovery_jump_setup)
+                    self.assertIsNone(movement.recovery_jump_request)
+                    self.assertIsNone(movement.recovery_jump_started)
 
     def finish_recovery_turn(self, start):
         self.keys.turn.reset_mock()
@@ -472,6 +520,11 @@ class MovementTests(unittest.TestCase):
                         status = movement.recover(self.state['position'], now)
                         self.assertNotIn('abandoned', status)
                         if jumping and attempt == 2:
+                            with patch('core.controller.time.monotonic', return_value=now + 1.5):
+                                movement.tick(self.state, True, mode)
+                            with patch('core.controller.time.monotonic', return_value=now + 1.75):
+                                movement.tick(self.state, True, mode)
+                            now += 1.75
                             airborne = dict(self.state, in_air=True, standing=False, ped_state=41)
                             with patch('core.controller.time.monotonic', return_value=now + .1):
                                 movement.tick(airborne, True, mode)
