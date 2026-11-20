@@ -216,12 +216,49 @@ class HighJump:
         self.release_at = 0.0
         self.deadline = 0.0
         self.result = None
+        self.climb_anchor = None
+        self.climb_since = self.climb_retry_at = 0.0
+        self.climb_attempts = 0
 
     def cancel(self):
         self.keys.release()
         self.player = None
 
-    def tick(self, request, state, now, saving=False):
+    def auto_pull_up(self, state, now, enabled):
+        candidate = (enabled and can_control(state) and not state.get('in_water')
+                     and state.get('in_air') and not state.get('standing')
+                     and abs(state.get('vertical_speed', 0)) < .03)
+        anchor = (state.get('ped'), state.get('identity'),
+                  tuple(state.get('position', {}).get(axis, 0) for axis in ('x', 'y', 'z')))
+        if (not candidate or self.climb_anchor is None or anchor[:2] != self.climb_anchor[:2]
+                or sum((a - b) ** 2 for a, b in zip(anchor[2], self.climb_anchor[2])) > .04):
+            self.climb_anchor = anchor if candidate else None
+            self.climb_since, self.climb_attempts = now, 0
+            self.climb_retry_at = now
+            return
+        if now - self.climb_since < .6 or now < self.climb_retry_at or self.climb_attempts >= 3:
+            return
+        can_drop = getattr(self.game, 'can_drop', None)
+        if can_drop is None or can_drop(state) is not True:
+            return
+        self.cancel()
+        if not self.climb_attempts:
+            self.binder(self.game, self.bindings)
+            self.keys.set({'jump'})
+            self.action = 'climb'
+            self.player = (state['ped'], state['identity'])
+            self.release_at = now + .35
+            self.result = 'climbing'
+            logger.info('Ledge recovery: requesting pull-up')
+        else:
+            pull_up = getattr(self.game, 'pull_up', None)
+            if pull_up is not None and pull_up(state) is True:
+                self.result = 'climbing'
+                logger.info('Ledge recovery: native pull-up requested')
+        self.climb_attempts += 1
+        self.climb_retry_at = now + 1.5
+
+    def tick(self, request, state, now, saving=False, auto_climb=False):
         usable = can_control(state) and not saving
         if self.player is not None:
             if not usable or self.player != (state["ped"], state["identity"]):
@@ -230,7 +267,7 @@ class HighJump:
             else:
                 if now >= self.release_at:
                     self.keys.release()
-                if self.action == "drop":
+                if self.action in ("drop", "climb"):
                     if now >= self.release_at:
                         self.cancel()
                 elif (
@@ -247,6 +284,9 @@ class HighJump:
                     self.result = "failed"
                     self.cancel()
 
+        manual_drop = (isinstance(request, dict) and request.get('direction') == 'drop'
+                       and request.get('id') != self.last_request and not request_expired(request))
+        self.auto_pull_up(state, now, auto_climb and usable and not manual_drop)
         if not isinstance(request, dict) or request.get("id") == self.last_request:
             return
         if request_expired(request):

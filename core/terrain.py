@@ -162,9 +162,18 @@ class TerrainNavigator:
     def enabled(self):
         return self.sensor.enabled
 
-    def ground(self, x, y, reference, now):
+    def sample_ray(self, start, end, flags, now, samples=None):
+        key = ('ray', start, end, flags)
+        if samples is not None and key in samples:
+            return samples[key]
+        result = self.sensor.ray(start, end, flags, now)
+        if samples is not None and result is not None:
+            samples[key] = result
+        return result
+
+    def ground(self, x, y, reference, now, samples=None):
         reference = round(reference * 2) / 2
-        hit = self.sensor.ray((x, y, reference + 1.25), (x, y, reference - 2.0), 2, now)
+        hit = self.sample_ray((x, y, reference + 1.25), (x, y, reference - 2.0), 2, now, samples)
         if hit is None or hit is False:
             return hit
         point, normal, wet = hit
@@ -172,7 +181,7 @@ class TerrainNavigator:
             return False
         return point
 
-    def corridor(self, start, end, now, *, dynamic=False):
+    def corridor(self, start, end, now, *, dynamic=False, samples=None):
         if len(self.dynamic_blocks) > 512:
             self.dynamic_blocks = {key: expiry for key, expiry in self.dynamic_blocks.items() if expiry > now}
         edge = tuple(sorted(tuple(round(v, 1) for v in point) for point in (start, end)))
@@ -186,10 +195,10 @@ class TerrainNavigator:
         pending = False
         # Test support midway as well as at endpoints: a clear ray across a hole
         # does not make that hole walkable. Stay near this surface, not a roof.
-        samples = max(2, math.ceil(length))
-        for index in range(1, samples):
-            middle = tuple(a + (b - a) * index / samples for a, b in zip(start, end))
-            support = self.ground(*middle, now)
+        steps = max(2, math.ceil(length))
+        for index in range(1, steps):
+            middle = tuple(a + (b - a) * index / steps for a, b in zip(start, end))
+            support = self.ground(*middle, now, samples=samples)
             if support is None:
                 pending = True
             elif support is False or abs(support[2] - middle[2]) > .6:
@@ -199,7 +208,7 @@ class TerrainNavigator:
             for height in (.45, 1.05, 1.75):
                 a = (start[0] - dy * side, start[1] + dx * side, start[2] + height)
                 b = (end[0] - dy * side, end[1] + dx * side, end[2] + height)
-                hit = self.sensor.ray(a, b, int(dynamic), now)
+                hit = self.sample_ray(a, b, int(dynamic), now, samples)
                 if hit is None:
                     pending = True
                 elif hit is not False:
@@ -223,7 +232,7 @@ class TerrainNavigator:
             key = (kind, *points)
             if key not in self.search_samples:
                 result = (self.ground(*points, now) if kind == 'ground'
-                          else self.corridor(*points, now))
+                          else self.corridor(*points, now, samples=self.search_samples))
                 if result is not None:
                     self.search_samples[key] = result
                 return result
@@ -351,9 +360,15 @@ class TerrainNavigator:
                 return None
         if self.path:
             previous = self.validated
+            nearest = (closest_point_on_segment(feet, previous[0], previous[1])
+                       if previous else feet)
+            lateral = math.dist(feet[:2], nearest[:2])
             covered = (previous and previous[1] == self.path[0] and now < previous[2]
-                       and math.dist(feet, closest_point_on_segment(feet, previous[0], previous[1])) < .25)
-            refreshed = not covered or now >= self.refresh_at
+                       # Small steering arcs should not pulse forward off/on
+                       # while a fresh corridor query is still in flight.
+                       and lateral < .5
+                       and abs(feet[2] - nearest[2]) < .6)
+            refreshed = not covered or now >= self.refresh_at or lateral >= .25
             if refreshed:
                 if self.refresh_probe is None or self.refresh_probe[1] != self.path[0]:
                     self.refresh_probe = (feet, self.path[0])
@@ -382,8 +397,11 @@ class TerrainNavigator:
                 self.refresh_probe = None
                 self.direct = False
                 self.proposal = None
+            elif clear is None:
+                self.status = 'refreshing terrain clearance'
         if not self.path:
             if now < self.search_at:
+                self.status = 'checking terrain and obstacle clearance'
                 return None
             self.search_at = now + .1
             self.plans += 1
@@ -414,6 +432,109 @@ class TerrainNavigator:
                 'checked_rays': self.sensor.checked, 'search_nodes': self.nodes,
                 'route_searches': self.plans,
                 'route': self.path, 'water_checks': self.sensor.mem.profile.id != 'gta_iii'}
+
+
+class WaterAvoidance:
+    """A few shoreline probes, independent of route finding or ground normals."""
+
+    def __init__(self, sensor):
+        self.sensor = sensor
+        self.areas = []
+        self.probe = self.escape = None
+        try:
+            path = Path(sensor.mem.exe).parent / 'data/water.dat'
+            for line in path.read_text(encoding='ascii').splitlines():
+                fields = line.split(';')[0].strip().replace(',', ' ').split()
+                if not fields or fields[0] in ('*', 'processed'):
+                    continue
+                values = tuple(map(float, fields))
+                if len(values) == 5:  # III/VC: level, rectangle bounds.
+                    z, x1, y1, x2, y2 = values
+                    points = ((x1, y1), (x2, y1), (x2, y2), (x1, y2))
+                elif len(values) in (22, 29):  # SA: three/four seven-value vertices.
+                    vertices = [values[i:i + 3] for i in range(0, len(values) - 1, 7)]
+                    z = max(p[2] for p in vertices)
+                    cx = sum(p[0] for p in vertices) / len(vertices)
+                    cy = sum(p[1] for p in vertices) / len(vertices)
+                    points = tuple((p[0], p[1]) for p in sorted(vertices,
+                        key=lambda p: math.atan2(p[1] - cy, p[0] - cx)))
+                else:
+                    continue
+                if not all(math.isfinite(v) for p in points for v in p) or not math.isfinite(z):
+                    raise ValueError('Invalid water boundary')
+                self.areas.append((z, points))
+        except (OSError, ValueError, TypeError) as error:
+            self.areas = []
+            logger.warning('Water boundaries unavailable: %s', error)
+
+    def level(self, x, y):
+        levels = []
+        for z, polygon in self.areas:
+            inside = False
+            for a, b in zip(polygon, polygon[1:] + polygon[:1]):
+                if (a[1] > y) != (b[1] > y) and x < (
+                        (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0]):
+                    inside = not inside
+            if inside:
+                levels.append(z)
+        return max(levels) if levels else None
+
+    def danger(self, position, heading, now):
+        if (self.probe is None or math.dist(position, self.probe[0]) > .75
+                or abs(angle_delta(heading, self.probe[1])) > .25):
+            self.probe = (position, heading)
+        origin, bearing = self.probe
+        pending = False
+        for length in (1.5, 3., 5.):
+            x = origin[0] - math.sin(bearing) * length
+            y = origin[1] + math.cos(bearing) * length
+            level = self.level(x, y)
+            if level is None:
+                continue
+            # Water polygons also extend under bridges and some dry ground.
+            # Only reject a course when actual support is missing or submerged.
+            hit = self.sensor.ray((x, y, origin[2] + 1), (x, y, origin[2] - 14), 2, now)
+            if hit is None:
+                pending = True
+            elif hit is False or hit[2] or hit[0][2] <= level + .35:
+                return True
+        return None if pending else False
+
+    def tick(self, walk, state, now):
+        if (not self.areas or not self.sensor.enabled or state.get('in_water')
+                or state.get('in_air') or not state.get('standing', True)):
+            self.probe = self.escape = None
+            return None
+        self.sensor.pump(now)
+        position = tuple(state['position'][axis] for axis in ('x', 'y', 'z'))
+        facing = state.get('camera_heading')
+        facing = state['heading'] if facing is None else facing
+        if self.escape is not None and math.dist(position[:2], self.escape[:2]) < 1.5:
+            self.escape = self.probe = None
+            walk.free_walk_until = 0  # Prefer a safe route after leaving the shore.
+        if self.escape is None:
+            danger = self.danger(position, facing, now)
+            self.sensor.pump(now)
+            if danger is False:
+                return None
+            if danger is None:
+                walk.keys.set(walk.walk_modifier)
+                walk.suspend_progress(state['position'], now)
+                return 'exploring: checking shoreline ahead'
+            self.escape = (position[0] + math.sin(facing) * 8,
+                           position[1] - math.cos(facing) * 8, position[2])
+            walk.recovery_target = walk.recovery_jump_setup = None
+            walk.recovery_jump_request = walk.recovery_jump_started = None
+            walk.navigator.reset()
+            walk.smooth_turn.reset()
+        error = angle_delta(heading_to(position, self.escape), facing)
+        turn = walk.smooth_turn.step(-error * 140 * walk.turn_multiplier, now)
+        if turn:
+            walk.keys.turn(turn)
+        # Turn on dry ground; never jump toward a shoreline.
+        walk.keys.set(walk.walk_modifier | ({'forward'} if abs(error) < .3 else set()))
+        walk.suspend_progress(state['position'], now)
+        return 'exploring: turning away from water'
 
 
 class SwimNavigator:

@@ -807,6 +807,7 @@ class ControllerTests(unittest.TestCase):
             memory, backend, autosave = Mock(), Mock(), Mock()
             backend.CAPABILITIES = CAPABILITIES
             backend.WALK_KEYS = None
+            backend.TURN_MULTIPLIER = 1
             backend.MISSION_DEFAULTS = None
             memory.profile.id = "san_andreas"
             state = {
@@ -860,6 +861,18 @@ class ControllerTests(unittest.TestCase):
                 self.assertTrue(controller.tick(15))
                 self.assertEqual(controller.jump.tick.call_args.args[0], request)
                 self.assertIsNone(controller.movement.recovery_jump_request)
+                controller.last_message = 'following route'
+                statuses = ['refreshing clearance', 'following route'] * 5
+                statuses += ['waiting for terrain', 'waiting for terrain']
+                with patch.object(controller.movement, 'tick', side_effect=statuses), \
+                        patch('core.controller.logger.info') as messages:
+                    for index in range(10):
+                        self.assertTrue(controller.tick(16 + index * .05))
+                    messages.assert_not_called()
+                    self.assertTrue(controller.tick(17))
+                    messages.assert_not_called()
+                    self.assertTrue(controller.tick(17.31))
+                    messages.assert_called_once_with('waiting for terrain')
             published = json.loads((args.state_dir / "state.json").read_text())
             self.assertEqual(published["controller"], "running")
             self.assertEqual(published["game"], "san_andreas")
@@ -870,6 +883,7 @@ class ControllerTests(unittest.TestCase):
             memory, backend, autosave = Mock(), Mock(), Mock()
             backend.CAPABILITIES = CAPABILITIES
             backend.WALK_KEYS = None
+            backend.TURN_MULTIPLIER = 1
             backend.MISSION_DEFAULTS = None
             backend.load_destinations.return_value = []
             graph = graph_fixture()

@@ -296,6 +296,20 @@ class JumpBoostTests(unittest.TestCase):
             bind_jump_key(self.game, RuntimeChanges(self.mem))
         self.assertEqual(self.mem.data, before)
 
+    def test_pull_up_requests_only_a_verified_hanging_task_and_preserves_other_flags(self):
+        climb = 0x50000
+        self.game.climb_task = Mock(return_value=climb)
+        flags = bytes.fromhex('0000000000010100')
+        self.mem.write(climb + 8, flags)
+        self.assertTrue(self.game.pull_up(self.state))
+        self.assertEqual(self.mem.read(climb + 8, 8), bytes.fromhex('0000000100010100'))
+        self.assertFalse(self.game.pull_up(dict(self.state, identity='stale')))
+        for invalid in ('0100000000010100', '0000000001010100',
+                        '0000000000020100', '0000000000010200'):
+            self.mem.write(climb + 8, bytes.fromhex(invalid))
+            self.assertFalse(self.game.pull_up(self.state))
+            self.assertEqual(self.mem.read(climb + 8, 8), bytes.fromhex(invalid))
+
     def test_drop_requires_a_live_matching_player_and_active_climb(self):
         intelligence, root_task, climb = 0x30000, 0x40000, 0x50000
         complex_vtable = 0x860000
@@ -397,6 +411,59 @@ class HighJumpTests(unittest.TestCase):
         self.assertEqual(self.jump.result, 'rejected')
         self.keys.set.assert_not_called()
         self.game.boost_jump.assert_not_called()
+
+    def test_stationary_ledge_hang_gets_pull_up_input_without_high_jump_boost(self):
+        self.game.can_drop.return_value = True
+        self.state.update(standing=False, in_air=True, vertical_speed=0,
+                          position=dict(x=0, y=0, z=10))
+        self.jump.tick(None, self.state, 0, auto_climb=True)
+        self.keys.set.assert_not_called()
+        self.jump.tick(None, self.state, .61, auto_climb=True)
+        self.keys.set.assert_called_once_with({'jump'})
+        self.assertEqual(self.jump.result, 'climbing')
+        self.state['vertical_speed'] = .1
+        self.jump.tick(None, self.state, .8, auto_climb=True)
+        self.jump.tick(None, self.state, 1, auto_climb=True)
+        self.keys.release.assert_called()
+        self.game.boost_jump.assert_not_called()
+        self.game.pull_up.assert_not_called()
+
+    def test_persistent_hang_uses_bounded_native_pull_up_retries(self):
+        self.game.can_drop.return_value = self.game.pull_up.return_value = True
+        self.state.update(standing=False, in_air=True, vertical_speed=0)
+        for now in (0, .61, 1, 2.2, 3.8, 6, 10):
+            self.jump.tick(None, self.state, now, auto_climb=True)
+        self.keys.set.assert_called_once_with({'jump'})
+        self.assertEqual(self.game.pull_up.call_count, 2)
+        self.game.boost_jump.assert_not_called()
+        self.assertEqual(self.jump.climb_attempts, 3)
+
+    def test_normal_airtime_and_progressing_climbs_do_not_trigger_pull_up(self):
+        self.game.can_drop.return_value = False
+        self.state.update(standing=False, in_air=True, vertical_speed=0)
+        for now in (0, 1, 2):
+            self.jump.tick(None, self.state, now, auto_climb=True)
+        self.game.can_drop.return_value = True
+        for now in (3, 3.5, 4, 4.5):
+            self.state['position'] = dict(x=0, y=0, z=now)
+            self.jump.tick(None, self.state, now, auto_climb=True)
+        self.keys.set.assert_not_called()
+        self.game.pull_up.assert_not_called()
+
+    def test_auto_climb_respects_pause_saving_and_manual_drop(self):
+        self.game.can_drop.return_value = True
+        self.state.update(standing=False, in_air=True, vertical_speed=0)
+        self.jump.tick(None, self.state, 0, auto_climb=True)
+        self.jump.tick(None, self.state, 1, saving=True, auto_climb=True)
+        self.jump.tick(None, self.state, 2, auto_climb=False)
+        self.state['paused'] = True
+        self.jump.tick(None, self.state, 3, auto_climb=True)
+        self.keys.set.assert_not_called()
+        self.state['paused'] = False
+        self.jump.tick(None, self.state, 4, auto_climb=True)
+        self.jump.tick(dict(self.request, direction='drop'), self.state, 5, auto_climb=True)
+        self.keys.set.assert_called_once_with({'drop'})
+        self.game.pull_up.assert_not_called()
 
     def test_background_request_waits_for_focus(self):
         self.state["foreground"] = False
@@ -601,6 +668,7 @@ class ControllerRespawnTests(unittest.TestCase):
             memory.profile.id = 'san_andreas'
             backend.CAPABILITIES = sa.CAPABILITIES
             backend.WALK_KEYS = None
+            backend.TURN_MULTIPLIER = 1
             backend.MISSION_DEFAULTS = None
             backend.RuntimeChanges.return_value.restore.return_value = []
             game = backend.Game.return_value
@@ -737,7 +805,7 @@ class ClassicTurningTests(unittest.TestCase):
         self.backend = backend
         with patch("core.controller.Keys"):
             self.walking = Walking(bindings={"forward": "w", "back": "s"},
-                                   turn_multiplier=backend.TURN_MULTIPLIER)
+                                   turn_multiplier=getattr(backend, "TURN_MULTIPLIER", 1))
         self.keys = self.walking.keys
         self.state = dict(ready=True, foreground=False, background_control=True,
                           paused=False, controls_disabled=False, in_vehicle=False,
@@ -754,7 +822,7 @@ class ClassicTurningTests(unittest.TestCase):
             return self.walking.tick(self.state, enabled, mode)
 
     def test_numbered_turns_finish_smoothly_in_both_directions_while_stopped(self):
-        for backend in (iii, vc):
+        for backend in (iii, vc, sa):
             with self.subTest(game=backend.__name__):
                 self.configure(backend)
                 for direction, sign in (("left", 1), ("right", -1)):
@@ -765,10 +833,30 @@ class ClassicTurningTests(unittest.TestCase):
                         self.assertTrue(self.walking.steer(direction, "free", self.state, 25))
                         for step in range(720):
                             self.tick(step / 120)
-                        self.assertAlmostEqual(self.state["camera_heading"], sign * math.radians(100))
+                        multiplier = getattr(backend, "TURN_MULTIPLIER", 1)
+                        self.assertAlmostEqual(self.state["camera_heading"], sign * math.radians(25 * multiplier))
                         self.assertEqual(self.walking.manual_turn, 0)
                         self.assertLessEqual(max(abs(c.args[0]) for c in self.keys.turn.call_args_list), 8)
                         self.keys.set.assert_not_called()
+
+    def test_turn_speed_and_ramp_are_gentle_in_all_three_games(self):
+        for backend in (iii, vc, sa):
+            for direction in ("left", "right"):
+                with self.subTest(game=backend.__name__, direction=direction):
+                    self.configure(backend)
+                    self.walking.steer(direction, "free", self.state, 100)
+                    totals = []
+                    for step in range(120):
+                        self.tick(step / 120)
+                        totals.append(sum(abs(c.args[0]) for c in self.keys.turn.call_args_list))
+                    multiplier = getattr(backend, "TURN_MULTIPLIER", 1)
+                    # The first half-second ramps up; the following half-second
+                    # stays within half the old 160-unit/second speed limit.
+                    self.assertLess(totals[59], 20 * multiplier)
+                    self.assertLessEqual(totals[-1] - totals[59], 40 * multiplier)
+                    amounts = [abs(c.args[0]) for c in self.keys.turn.call_args_list]
+                    self.assertIn(1, amounts)
+                    self.assertLessEqual(max(amounts), math.ceil(80 * multiplier / 120))
 
     def test_explore_and_mission_align_with_a_right_angle_within_six_seconds(self):
         for backend in (iii, vc):

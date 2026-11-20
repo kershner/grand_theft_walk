@@ -488,6 +488,25 @@ class Game:
             and self.climb_task(ped)
         )
 
+    def pull_up(self, state):
+        """Ask a verified hanging task to advance through its native pull-up."""
+        if not self.can_drop(state):
+            return False
+        task = self.climb_task(state['ped'])
+        if task is None:
+            return False
+        # CTaskSimpleClimb: finished +8, invalid +C, anim/position stages +D/+E.
+        # GRAB=1 is the hanging stage; do not interfere with an active ascent.
+        flags = self.mem.read(task + 8, 8)
+        if flags[0] or flags[4] or flags[5:7] != b'\x01\x01':
+            return False
+        if self.climb_task(state['ped']) != task or not self.can_drop(state):
+            return False
+        # m_HasToForceClimb follows the same animation progression as GetJump().
+        # Native vault/stand-up collision tests remain responsible for clearance.
+        self.mem.write(task + 0xB, b'\x01')
+        return True
+
     def boost_jump(self, state):
         """Boost a real takeoff once, preserving horizontal velocity and gravity."""
         if not state.get("ready") or not state.get("in_air") or state.get("standing"):

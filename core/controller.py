@@ -21,7 +21,7 @@ from core.files import atomic_json
 from core.missions import MissionSystem
 from core.navigation import SmoothTurn, angle_delta, heading_to
 from core.runtime import DEFAULTS, DIRECTIONS, MODES, control_request, read_controls, request_expired
-from core.terrain import NativeTerrain, SwimNavigator, TerrainNavigator
+from core.terrain import NativeTerrain, SwimNavigator, TerrainNavigator, WaterAvoidance
 
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ WALK_SPEED_MULTIPLIER = 0.75
 RECOVERY_ESCAPE_RADIUS = 8.0
 JUMP_LANDING_GRACE = 3.0
 JUMP_GROUND_SETTLE = .6
-TERRAIN_WAIT_LIMIT = 15.
+TERRAIN_WAIT_LIMIT = 1.
 
 
 def distance(a, b):
@@ -65,6 +65,7 @@ class Walking:
         self.jump_takeoff_event = False
         self.jump_takeoff_until = 0.0
         self.jump_landing_pending = False
+        self.jump_route_origin = None
         self.jump_landing_since = None
         self.jump_grounded_since = None
         self.jump_grace_until = 0.0
@@ -74,7 +75,10 @@ class Walking:
         self.mode = None
         self.navigator = ExploreNavigator(graph, memory_path=exploration_path)
         self.navigation_error = navigation_error
-        self.smooth_turn = SmoothTurn()
+        # Smooth in final mouse units so III/VC's sensitivity compensation
+        # does not quantize every small correction into a four-unit jump.
+        self.smooth_turn = SmoothTurn(speed=80 * turn_multiplier,
+                                      acceleration=120 * turn_multiplier)
         self.turn_multiplier = turn_multiplier
         self.manual_turn = 0
         self.manual_direction = None
@@ -83,7 +87,10 @@ class Walking:
         self.aligning = False
         self.terrain = None
         self.terrain_wait_since = None
+        self.free_walk_until = 0.0
+        self.route_retry_at = 0.0
         self.swim = None
+        self.water_guard = None
 
     def steer(self, direction, mode, state, amount=1):
         if type(amount) is not int or not 1 <= amount <= 100:
@@ -96,9 +103,11 @@ class Walking:
             if self.navigator is None or direction not in ("left", "right", "forward"):
                 return False
             self.navigator.turn = direction
+            self.free_walk_until = 0.0
         elif direction in ("left", "right"):
             self.manual_turn += (
                 (-1 if direction == "left" else 1) * amount * MOUSE_UNITS_PER_STEP
+                * self.turn_multiplier
             )
         elif direction in ("forward", "back"):
             self.recovery_target = None
@@ -110,6 +119,7 @@ class Walking:
 
     def stop(self, preserve_recovery=False):
         self.keys.release()
+        self.free_walk_until = 0.0
         self.origin = None
         self.terrain_wait_since = None
         self.recovery_target = None
@@ -121,6 +131,7 @@ class Walking:
             self.jump_takeoff_event = False
             self.jump_takeoff_until = self.jump_grace_until = 0.0
             self.jump_landing_pending = False
+            self.jump_route_origin = None
             self.jump_landing_since = None
             self.jump_grounded_since = None
         if self.terrain:
@@ -159,6 +170,7 @@ class Walking:
         )
 
     def recover(self, position, now, state=None):
+        self.free_walk_until = 0.0
         self.terrain_wait_since = None
         if self.terrain:
             self.terrain.reset()
@@ -279,6 +291,9 @@ class Walking:
                            and (self.jump_landing_pending or self.recovery_jump_started is not None
                                 or now < self.jump_takeoff_until))
         if state.get('in_air', False) or vertical_motion:
+            if self.jump_route_origin is None:
+                self.jump_route_origin = (self.navigator.last_position
+                    or tuple(state['position'][axis] for axis in ('x', 'y', 'z')))
             self.jump_landing_pending = True
             self.jump_landing_since = None
             self.jump_grounded_since = None
@@ -309,6 +324,19 @@ class Walking:
             self.suspend_progress(state['position'], now)
             self.keys.set(self.walk_modifier | {'forward'})
             return 'obstacle recovery: recovering from landing'
+        if self.jump_route_origin is not None:
+            if self.mode == 'explore':
+                position = tuple(state['position'][axis] for axis in ('x', 'y', 'z'))
+                self.navigator.resume_after_jump(self.jump_route_origin, position,
+                                                 state['heading'], now)
+                self.recovery_target = self.last_waypoint = None
+                self.recovery_jump_started = self.recovery_jump_request = None
+                self.recovery_jump_failed = False
+                self.aligning = False
+                self.smooth_turn.reset()
+                if self.terrain:
+                    self.terrain.reset()
+            self.jump_route_origin = None
         return None
 
     def prepare_recovery_jump(self, position, now, state=None):
@@ -365,17 +393,34 @@ class Walking:
                 facing = state.get('camera_heading')
                 facing = state['heading'] if facing is None else facing
                 error = angle_delta(heading_to((position['x'], position['y']), target), facing)
-                amount = self.smooth_turn.step(-error * 140, now)
-                self.keys.turn(amount * self.turn_multiplier)
+                amount = self.smooth_turn.step(-error * 140 * self.turn_multiplier, now)
+                self.keys.turn(amount)
                 if abs(error) > 1.2:
                     self.keys.set(self.walk_modifier)
                     return 'swimming: aligning toward shore'
             self.keys.set(self.walk_modifier | {'forward'})
         return self.swim.status
 
+    def begin_free_walk(self, state, now):
+        self.free_walk_until, self.route_retry_at = now + 10, now + 1
+        self.navigator.reset()
+        self.navigator.course = state.get('camera_heading', state['heading'])
+        self.terrain.reset()
+        self.terrain_wait_since = None
+        self.recovery_target = self.last_waypoint = None
+        self.aligning = False
+        self.smooth_turn.reset()
+        self.origin, self.progress_at = dict(state['position']), now
+        self.keys.set(self.walk_modifier | {'forward'})
+        return 'exploring: walking freely'
+
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
         now = time.monotonic()
+        if self.water_guard and mode == 'explore' and enabled and can_control(state):
+            guarded = self.water_guard.tick(self, state, now)
+            if guarded is not None:
+                return guarded
         swimming = self.swim_motion(state, enabled, now)
         if swimming is not None:
             return swimming
@@ -438,7 +483,21 @@ class Walking:
         status = "walking freely"
         desired_turn = 0.0
         detouring = self.recovery_target is not None
-        if mode in ("mission", "explore") or detouring:
+        if mode == 'explore' and 0 < self.free_walk_until <= now:
+            self.navigator.resume_after_free_walk(
+                tuple(position[axis] for axis in ('x', 'y', 'z')), state['heading'], now)
+            self.free_walk_until = 0
+        freely = mode == 'explore' and now < self.free_walk_until and not detouring
+        if freely and self.terrain and self.terrain.enabled and now >= self.route_retry_at:
+            self.route_retry_at = now + .5
+            point = tuple(position[axis] for axis in ('x', 'y', 'z'))
+            target = self.navigator.join_forward_path(point, state['heading'], now)
+            if target is not None and self.terrain.route(point, target, now) is not None:
+                self.free_walk_until, freely = 0, False
+        if freely:
+            self.navigator.observe(tuple(position[axis] for axis in ('x', 'y', 'z')), now)
+            status = 'exploring: walking freely'
+        if (mode in ("mission", "explore") and not freely) or detouring:
             if self.navigator is None:
                 self.navigator = ExploreNavigator()
             waypoint = self.recovery_target if detouring else self.navigator.waypoint(
@@ -465,28 +524,17 @@ class Walking:
                                           waypoint, now)
                 if safe is None:
                     self.keys.set(self.walk_modifier)
+                    self.smooth_turn.step(0, now)
                     if self.terrain_wait_since is None:
                         self.terrain_wait_since = now
                     self.navigator.watchdogs_paused_until = now + 2.5
                     self.navigator.journey_observed_at = None
                     self.navigator.progress_at = now
                     timed_out = now - self.terrain_wait_since >= TERRAIN_WAIT_LIMIT
-                    if timed_out:
-                        # A planner retry is not physical progress. Enter the
-                        # same bounded jump/replan recovery as a walking stall.
-                        return self.recover(position, now, state)
-                    if self.terrain.blocked:
-                        if self.terrain.temporary:
-                            origin = tuple(position[axis] for axis in ('x', 'y', 'z'))
-                            self.navigator.reset()
-                            self.navigator.failed_approaches.append(
-                                (origin, heading_to(origin, waypoint), now + 5))
-                        else:
-                            self.navigator.avoid_target(now, retreat=False)
-                        self.terrain.reset()
-                        self.terrain_wait_since = None
-                        self.origin, self.progress_at = None, now
-                        return 'exploring: terrain route blocked; choosing another approach'
+                    if timed_out or self.terrain.blocked:
+                        # Try ordinary walking before treating a sensor verdict
+                        # as a real obstacle. The movement watchdog stays active.
+                        return self.begin_free_walk(state, now)
                     return 'exploring: ' + self.terrain.status
                 if self.terrain_wait_since is not None:
                     delay = now - self.terrain_wait_since
@@ -519,9 +567,9 @@ class Walking:
         if mode == "free" and not detouring:
             turn, self.manual_turn = self.smooth_turn.nudge(self.manual_turn, now)
         else:
-            turn = self.smooth_turn.step(desired_turn, now)
+            turn = self.smooth_turn.step(desired_turn * self.turn_multiplier, now)
         if turn:
-            self.keys.turn(turn * self.turn_multiplier)
+            self.keys.turn(turn)
         if mode == "free" and (self.manual_direction or not enabled):
             if self.manual_direction:
                 self.keys.set(self.walk_modifier | {self.manual_direction})
@@ -531,6 +579,9 @@ class Walking:
         if (mode in ("mission", "explore") or detouring) and self.aligning:
             self.keys.set(self.walk_modifier)
             self.origin, self.progress_at = position, now
+            self.navigator.progress_at = now
+            self.navigator.watchdogs_paused_until = now + .1
+            self.navigator.journey_observed_at = None
             if mode == "explore" and (self.navigator.local_target is not None or self.navigator.returning):
                 if self.navigator.returning:
                     return "exploring open ground: aligning for backtracking"
@@ -572,6 +623,8 @@ class Controller:
                                 turn_multiplier=getattr(backend, "TURN_MULTIPLIER", 1),
                                 exploration_path=self.state_dir / "exploration.json")
         sensor = NativeTerrain(mem)
+        self.movement.water_guard = WaterAvoidance(sensor)
+        self.movement.navigator.open_terrain_chance = .15
         self.movement.terrain = TerrainNavigator(sensor)
         if mem.profile.id == 'san_andreas':
             self.movement.swim = SwimNavigator(sensor, self.movement.navigator.graph)
@@ -846,7 +899,8 @@ class Controller:
         if self.jump:
             recovery_jump = self.movement.recovery_jump_request
             request = recovery_jump if isinstance(recovery_jump, dict) else self.settings.get("jump")
-            self.jump.tick(request, state, now, saving=saving)
+            self.jump.tick(request, state, now, saving=saving,
+                           auto_climb=self.settings['walking'] and self.capabilities.ledge_drop)
             self.movement.jump_feedback(self.jump.last_request, self.jump.result)
             if isinstance(recovery_jump, dict) and self.jump.last_request == recovery_jump["id"]:
                 self.movement.recovery_jump_request = None
@@ -880,7 +934,9 @@ class Controller:
                 and not state["in_air"]
                 and bool(self.movement.keys.held & {"forward", "back"}),
             )
-        if status != self.last_message:
+        if status != getattr(self, 'pending_message', None):
+            self.pending_message, self.message_since = status, now
+        if status != self.last_message and (self.last_message is None or now - self.message_since >= .3):
             logger.info(status)
             self.last_message = status
         if now - self.saved_at > 0.75:

@@ -144,6 +144,44 @@ class ExploreNavigator(PedestrianNavigator):
         except (OSError, ValueError, TypeError, sqlite3.Error) as error:
             logger.warning('Exploration memory unavailable: %s', error)
 
+    def resume_after_free_walk(self, position, heading, now):
+        """Find a route here, rather than retracing the start of a free stretch."""
+        self.observe(position, now)
+        travel = self.travel
+        self.reset()
+        self.travel = travel
+        self.last_position, self.last_cell = position, self.coverage_cell(position)
+        self.breadcrumbs = [position]
+        self.course = heading
+        self.join_forward_path(position, heading, now)
+
+    def resume_after_jump(self, origin, position, heading, now):
+        """Resume from actual landing ground, without retracing airborne travel."""
+        moved = distance(origin, position)
+        course = heading_to(origin, position) if moved > 2 else heading
+        # Landing is observed ground; the airborne segment is not a safe
+        # walking connection or a breadcrumb trail to follow backward.
+        self.last_position = self.last_cell = None
+        self.observe(position, now)
+        self.travel += moved
+        self.breadcrumbs = [position]
+        self.excursion_anchor = position
+        self.excursion_travel = 0.0
+        self.returning = False
+        self.target = self.previous = self.goal = self.goal_edge = None
+        self.goal_steps = {}
+        self.local_target = self.local_origin = None
+        self.detour_heading = self.detour_origin = None
+        self.course = course
+        if (self.open_goal is not None and (distance(position, self.open_goal) < 15
+                or abs(angle_delta(heading_to(position, self.open_goal), course)) > math.pi / 2)):
+            self.open_goal = None
+        self.progress_target = None
+        self.best_remaining, self.progress_at = math.inf, now
+        self.recovery_requested = False
+        self.journey_goal = self.journey_observed_at = None
+        self.journey_stalled = 0.0
+
     def save_memory(self, now, force=False):
         counters = {name: getattr(self, name) for name in MEMORY_COUNTERS}
         changed = self.dirty or any(counter.pending for counter in counters.values())
