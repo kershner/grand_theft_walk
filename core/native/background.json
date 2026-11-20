@@ -1,6 +1,7 @@
 {
   "format": 1,
   "protocol": 1,
-  "sha256": "5bf229347a9dac4eca777ad0a30c80b1ef028697773351b05734201bb260e438",
-  "state_rva": 8192
+  "sha256": "1a7bdffef916eeb4a2f5d3b3c9534e02809bb8fbde80f6eec235352b11f014f1",
+  "state_rva": 12288,
+  "terrain_rva": 12456
 }

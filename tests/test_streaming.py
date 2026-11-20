@@ -10,8 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from chat.oauth import OAuthTokens, REQUIRED_SCOPES as OAUTH_SCOPES, REQUIRED_SCOPES
+from chat.bot import ChatBot
 from chat.twitch import CATEGORIES, STREAM_TAGS, StreamMetadata, TwitchBot
 from core.config import RotationProgress, load_parameters, rotation_seconds, select_game, twitch_settings
+from core.files import atomic_json, read_json
+from games import get_game
 from streaming import launch as launcher
 from streaming.launch import OBS
 
@@ -132,6 +135,42 @@ class SessionLifecycleTests(unittest.TestCase):
 
 
 class TimedRotationTests(unittest.TestCase):
+    def test_switch_waits_for_delivery_and_retries_until_acknowledged(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "rotation.json"
+            atomic_json(path, {"game": "gta_iii", "next_game": "san_andreas",
+                               "next_switch_at": 1000, "rotation_id": "round-a"})
+            control = Mock(game=get_game("gta_iii"), state_dir=None)
+            control.snapshot.return_value = {"ready": False}
+            bot = ChatBot(control, rotation_file=path)
+            self.addCleanup(bot.close)
+            delivered = []
+
+            def deliver(_):
+                messages = bot.poll_events()
+                self.assertEqual(messages, ["Switching to San Andreas..."])
+                # Polling alone cannot acknowledge a failed send.
+                self.assertEqual(bot.poll_events(), messages)
+                self.assertFalse(read_json(path)["switch_announced"])
+                bot.acknowledge_rotation("unrelated chat")
+                self.assertFalse(read_json(path)["switch_announced"])
+                delivered.extend(messages)
+                bot.acknowledge_rotation(messages[0])
+
+            with patch.object(launcher.time, "sleep", side_effect=deliver):
+                launcher.announce_switch(path, Mock(poll=Mock(return_value=None)))
+            self.assertEqual(delivered, ["Switching to San Andreas..."])
+            self.assertEqual(bot.poll_events(), [])
+
+    def test_disconnected_chat_cannot_hold_rotation_indefinitely(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "rotation.json"
+            atomic_json(path, {"game": "gta_iii", "next_game": "san_andreas"})
+            with patch.object(launcher.time, "sleep") as sleep:
+                launcher.announce_switch(path, Mock(poll=Mock(return_value=None)))
+            self.assertEqual(sleep.call_count, 30)
+            self.assertFalse(read_json(path)["switch_announced"])
+
     def test_deadline_rotates_in_order_and_requests_controller_cleanup(self):
         import core.manager
         import core.winmemory
@@ -164,7 +203,9 @@ class TimedRotationTests(unittest.TestCase):
                 stack.enter_context(patch.object(launcher.time, "monotonic", side_effect=[100, 7299 - elapsed, 7300 - elapsed, 7300 - elapsed]))
                 stack.enter_context(patch.object(launcher.time, "time", return_value=1000))
                 sleep = stack.enter_context(patch.object(launcher.time, "sleep"))
+                announce = stack.enter_context(patch.object(launcher, "announce_switch"))
                 self.assertEqual(launcher.run_game_session({}, root / "params.json", current, "dev"), expected)
+                announce.assert_called_once_with(Path(spawn.call_args.args[1][-1]), chat)
                 self.assertEqual(reports[0]["next_switch_at"], 8200 - elapsed)
                 self.assertEqual(reports[0]["next_game"], expected)
                 self.assertEqual([call.args[0] for call in command.call_args_list], [current, expected])
@@ -334,7 +375,7 @@ class MetadataTests(unittest.TestCase):
                 self.assertEqual(request.call_args_list[1].kwargs["params"], {"name": CATEGORIES[game]})
                 self.assertEqual(request.call_args.kwargs["json"], {
                     "game_id": "category", "tags": STREAM_TAGS,
-                    "title": "Red County • Jan 29 5:20 PM (evening) • cloudy • heading north"})
+                    "title": "Red County • Jan 29 5:20 PM • cloudy • heading north"})
                 self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer fresh-token")
 
     def test_only_changes_and_periodic_refresh_write_and_failures_retry(self):
@@ -353,6 +394,30 @@ class MetadataTests(unittest.TestCase):
             request.return_value = Mock(status_code=204)
             self.assertTrue(metadata.update(self.state, now=360))
             self.assertIn("heading west", request.call_args.kwargs["json"]["title"])
+
+    def test_title_ends_with_info_countdown_and_updates_when_minute_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "rotation.json"
+            atomic_json(path, {"game": "gta_iii", "next_game": "san_andreas",
+                               "next_switch_at": 10000})
+            metadata = StreamMetadata(self.params, self.tokens, "gta_iii", path)
+            with patch("chat.twitch.requests.request", side_effect=self.responses("gta_iii")) as request:
+                with patch("chat.bot.time.time", return_value=5320):
+                    self.assertTrue(metadata.update(self.state, now=0))
+                self.assertTrue(metadata.last_title.endswith(" • Next game in: 1h18m"))
+                request.side_effect = None
+                request.return_value = Mock(status_code=204)
+                with patch("chat.bot.time.time", return_value=5380):
+                    self.assertTrue(metadata.update(self.state, now=30))
+                self.assertTrue(metadata.last_title.endswith(" • Next game in: 1h17m"))
+                self.state["location"]["places"] = ["A" * 200]
+                with patch("chat.bot.time.time", return_value=10001):
+                    metadata.update(self.state, now=60)
+                self.assertEqual(len(metadata.last_title), 140)
+                self.assertTrue(metadata.last_title.endswith(" • Next game in: 0h00m"))
+                atomic_json(path, {"game": "vice_city", "next_switch_at": 10000})
+                metadata.update(self.state, now=90)
+                self.assertNotIn("Next game in:", metadata.last_title)
 
     def test_loading_and_empty_location_do_not_touch_twitch(self):
         metadata = StreamMetadata(self.params, self.tokens, "vice_city")

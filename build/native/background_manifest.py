@@ -7,6 +7,7 @@ official release ZIP must already be downloaded to runtime/windowed-mode.zip.
 import hashlib
 import json
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
@@ -26,11 +27,33 @@ def write(path, value):
 
 
 def main():
+    sys.path.insert(0, str(ROOT))
+    from build.build_suite import add_component
+
     bridge = NATIVE / "GTW.BackgroundInput.asi"
     pe = pefile.PE(str(bridge))
     rva = next(s.address for s in pe.DIRECTORY_ENTRY_EXPORT.symbols if s.name in (b"GTWInput", b"_GTWInput"))
+    terrain_rva = next(s.address for s in pe.DIRECTORY_ENTRY_EXPORT.symbols
+                       if s.name in (b"GTWTerrain", b"_GTWTerrain"))
     data = bridge.read_bytes()
-    write(NATIVE / "background.json", {"format": 1, "protocol": 1, "sha256": digest(data), "state_rva": rva})
+    # A bridge rebuild changes the complete package fingerprint. Keep the exact
+    # previous definition so normal repair can carry original backups forward.
+    for game in ("gta_iii", "vice_city", "san_andreas"):
+        installer = ROOT / "games" / game / "installer"
+        current = json.loads((installer / "background.json").read_text(encoding="utf-8"))
+        if next(entry['sha256'] for entry in current['files']
+                if entry['path'] == 'scripts/GTW.BackgroundInput.asi') == digest(data):
+            continue
+        previous = add_component(None, game)
+        path = installer / 'manifest.json'
+        base = json.loads(path.read_text(encoding='utf-8'))
+        versions = base.setdefault('previous_versions', [])
+        if not any(entry['component_id'] == previous['component_id'] for entry in versions):
+            versions.append({'component_id': previous['component_id'],
+                             'files': {entry['path']: entry['sha256'] for entry in previous['files']}})
+            write(path, base)
+    write(NATIVE / "background.json", {"format": 1, "protocol": 1, "sha256": digest(data),
+                                      "state_rva": rva, "terrain_rva": terrain_rva})
     archive_path = ROOT / "runtime/windowed-mode.zip"
     lock_path = ROOT / "build/native/windowed-mode.lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))

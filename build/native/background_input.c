@@ -4,6 +4,107 @@
 #include <windows.h>
 #include <string.h>
 
+/* Collision queries executed only on the game's existing input thread.
+   ABI: plugin-sdk CWorld::ProcessLineOfSight and CColPoint. III uses 1.1.
+   Requests are published last, completions last; at most 12 rays per update. */
+#include <windows.h>
+#include <math.h>
+#include <stddef.h>
+
+#define RAY_COUNT 64
+typedef struct { float x, y, z; } Vector;
+typedef struct {
+    Vector from, to;
+    DWORD flags; /* 1: vehicles, 2: check water at the ground hit */
+    DWORD hit;
+    Vector point, normal;
+    DWORD wet;
+} Ray;
+typedef struct {
+    DWORD protocol, game, ready;
+    volatile LONG request, complete;
+    DWORD count, heartbeat;
+    Ray rays[RAY_COUNT];
+} TerrainState;
+typedef char RaySizeMustBe60[sizeof(Ray) == 60 ? 1 : -1];
+typedef char HeaderMustBe28[offsetof(TerrainState, rays) == 28 ? 1 : -1];
+__declspec(dllexport) TerrainState GTWTerrain = {1};
+
+static DWORD line_address, water_address;
+static LONG active_request;
+static DWORD cursor, count;
+static Ray batch[RAY_COUNT];
+
+void terrain_init(DWORD game) {
+    GTWTerrain.game = game;
+    if (game == 1) { line_address = 0x56BA00; water_address = 0x6E8580; }
+    if (game == 2) { line_address = 0x4D92D0; water_address = 0x5C2C80; }
+    if (game == 3) line_address = 0x4AFA60; /* III 1.1, NOT 1.0's 0x4AF970 */
+    GTWTerrain.ready = line_address != 0;
+}
+
+static int valid_vector(Vector v) {
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.z)
+        && fabs(v.x) < 20000 && fabs(v.y) < 20000 && fabs(v.z) < 20000;
+}
+
+static void trace(Ray *ray) {
+    /* Both classic (0x28) and SA (0x2C) results fit; vectors at 0 and 0x10. */
+    union { double align; BYTE bytes[48]; } collision;
+    void *entity = NULL;
+    unsigned char hit;
+    int vehicles = !!(ray->flags & 1);
+    ray->hit = 0; ray->wet = 0;
+    if (!valid_vector(ray->from) || !valid_vector(ray->to)) return;
+    if (fabs(ray->to.x - ray->from.x) > 16 || fabs(ray->to.y - ray->from.y) > 16
+            || fabs(ray->to.z - ray->from.z) > 16) return;
+    ZeroMemory(&collision, sizeof(collision));
+    if (GTWTerrain.game == 3) {
+        hit = ((unsigned char (__cdecl *)(Vector*,Vector*,void*,void**,int,int,int,int,int,int,int))line_address)
+            (&ray->from,&ray->to,&collision,&entity,1,vehicles,0,1,1,0,0);
+    } else {
+        hit = ((unsigned char (__cdecl *)(Vector*,Vector*,void*,void**,int,int,int,int,int,int,int,int))line_address)
+            (&ray->from,&ray->to,&collision,&entity,1,vehicles,0,1,1,0,0,0);
+    }
+    if (!hit) return;
+    ray->point = *(Vector *)collision.bytes;
+    ray->normal = *(Vector *)(collision.bytes + 16);
+    if (!valid_vector(ray->point) || !valid_vector(ray->normal)) return;
+    ray->hit = 1;
+    if ((ray->flags & 2) && water_address) {
+        float level = 0;
+        unsigned char water;
+        if (GTWTerrain.game == 1)
+            water = ((unsigned char (__cdecl *)(float,float,float,float*,int,int))water_address)
+                (ray->point.x,ray->point.y,ray->point.z,&level,0,0);
+        else
+            water = ((unsigned char (__cdecl *)(float,float,float,float*))water_address)
+                (ray->point.x,ray->point.y,ray->point.z,&level);
+        ray->wet = water && isfinite(level) && level > ray->point.z + 0.15f;
+    }
+}
+
+void terrain_update(int playable) {
+    DWORD budget = 12;
+    LONG request = GTWTerrain.request;
+    if (!GTWTerrain.ready || !playable || !request || request == GTWTerrain.complete
+            || GetTickCount() - GTWTerrain.heartbeat > 1000) return;
+    if (request != active_request) {
+        count = GTWTerrain.count;
+        if (!count || count > RAY_COUNT) return;
+        CopyMemory(batch, GTWTerrain.rays, count * sizeof(Ray));
+        if (request != GTWTerrain.request) return;
+        active_request = request;
+        cursor = 0;
+    }
+    while (budget-- && cursor < count) trace(&batch[cursor++]);
+    if (cursor == count && GTWTerrain.request == active_request) {
+        CopyMemory(GTWTerrain.rays, batch, count * sizeof(Ray));
+        InterlockedExchange(&GTWTerrain.complete, active_request);
+    }
+}
+
+
 typedef struct {
     DWORD protocol, status, game;
     volatile DWORD enabled, heartbeat, buttons, mouse_x, mouse_y;
@@ -32,6 +133,7 @@ static void __cdecl update(void) {
     int active, background;
     ((void (__cdecl *)(void))update_pads)();
     GTWInput.frames++;
+    terrain_update(playable());
     x = GTWInput.mouse_x;
     y = GTWInput.mouse_y;
     dx = (LONG)(x - last_x);
@@ -109,6 +211,7 @@ static int install(void) {
         if (*(BYTE *)calls[i] != 0xE8 || calls[i] + 5 + *(DWORD *)(calls[i]+1) != update_pads)
             return 0;
     }
+    terrain_init(GTWInput.game);
     for (i = 0; i < count; i++) {
         if (!VirtualProtect((void *)calls[i], 5, PAGE_EXECUTE_READWRITE, &old_protection))
             return 0;

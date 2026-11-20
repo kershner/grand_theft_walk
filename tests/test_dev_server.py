@@ -1,5 +1,6 @@
 """Exercise HTTP chat commands through to the walker's file protocol."""
 
+import asyncio
 import json
 import tempfile
 import threading
@@ -672,7 +673,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.command("info")
         expected = (
             f"Game: {get_game(self.game).title} • "
-            "Las Colinas, Los Santos • Jul 14 4:32 PM (afternoon) • rain, strong wind • "
+            "Las Colinas, Los Santos • Jul 14 4:32 PM • rain, strong wind • "
             "heading northwest • mode: explore • camera: third person • "
             "Current mission: Travel to Market • 1.2 mi away"
         )
@@ -856,7 +857,7 @@ class RotationChatTests(unittest.TestCase):
                 with patch("chat.bot.time.time", return_value=9399):
                     self.assertEqual(bot.poll_events(now=2), [])
                 with patch("chat.bot.time.time", return_value=9400):
-                    self.assertEqual(bot.poll_events(now=3), ["Switching to GTA III in 10 minutes"])
+                    self.assertEqual(bot.poll_events(now=3), ["Switching to GTA III in 10 minutes."])
                     self.assertEqual(bot.poll_events(now=4), [])
                 atomic_json(rotation, {"game": "vice_city", "next_game": "gta_iii",
                                        "next_switch_at": 10001, "rotation_id": "round-a"})
@@ -877,6 +878,75 @@ class RotationChatTests(unittest.TestCase):
             self.assertNotIn("Next game in:", bot._info_reply(state))
             rotation.unlink()
             self.assertNotIn("Next game in:", bot._info_reply(state))
+
+
+class WaterIdleVoteTests(ChatFixture):
+    def setUp(self):
+        super().setUp()
+        self.bot = self.app.extensions['gtw_bot']
+        self.state.update(in_water=True, standing=False, in_air=False, health=100)
+        self.write('state.json', self.state)
+
+    def poll(self, now):
+        with patch('chat.bot.time.monotonic', return_value=now):
+            return self.bot.poll_events(include_announcements=False, now=now)
+
+    def advance(self, first, last):
+        return [message for now in range(first, last + 1) for message in self.poll(now)]
+
+    def test_idle_swim_opens_with_one_yes_and_does_not_repeat(self):
+        self.assertEqual(self.advance(0, 119), [])
+        messages = self.poll(120)
+        self.assertIn('Two minutes swimming', messages[0])
+        self.assertIn('60 seconds', messages[0])
+        self.assertEqual(self.voting.vote.votes, {'automatic:respawn': 'yes'})
+        self.timer.call_args.args[1]()
+        self.assertIn('respawn', self.control())
+        self.assertIn('Vote passed! (1-0)', self.advance(121, 400)[0])
+        self.assertFalse(self.voting.vote.active)
+        self.assertEqual(self.timer.call_count, 2)
+
+    def test_valid_command_resets_inactivity_without_resetting_swim_duration(self):
+        self.advance(0, 100)
+        with patch('chat.bot.time.monotonic', return_value=100):
+            self.command('left')
+        self.assertEqual(self.advance(101, 219), [])
+        self.assertIn('Vote started!', self.poll(220)[0])
+
+    def test_chatter_unknown_and_invalid_commands_do_not_reset_the_timer(self):
+        self.advance(0, 100)
+        asyncio.run(self.bot.process_chat_message(None, 'ordinary chat'))
+        self.command('notacommand')
+        self.command('left 101')
+        self.assertIsNone(self.bot.last_game_command)
+        self.assertIn('Vote started!', self.advance(101, 120)[0])
+
+    def test_automatic_vote_cancels_if_land_is_reached_before_it_passes(self):
+        self.advance(0, 120)
+        with patch('chat.bot.time.monotonic', return_value=121):
+            self.voting.cast('viewer', 'yes')
+        self.state['in_water'] = False
+        self.write('state.json', self.state)
+        self.timer.call_args.args[1]()
+        self.assertNotIn('respawn', self.control())
+        self.assertIn('back on land', self.voting.drain_events()[-1])
+
+    def test_paused_time_does_not_spend_the_swimming_budget(self):
+        self.advance(0, 100)
+        self.state['paused'] = True
+        self.write('state.json', self.state)
+        self.assertEqual(self.advance(101, 220), [])
+        self.state['paused'] = False
+        self.write('state.json', self.state)
+        self.assertEqual(self.advance(221, 239), [])
+        self.assertIn('Vote started!', self.poll(240)[0])
+
+    def test_other_games_do_not_start_automatic_water_votes(self):
+        self.state['game'] = 'vice_city'
+        self.bot.control.game = get_game('vice_city')
+        self.write('state.json', self.state)
+        self.assertEqual(self.advance(0, 130), [])
+        self.assertFalse(self.voting.vote.active)
 
 
 if __name__ == "__main__":

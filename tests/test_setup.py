@@ -323,7 +323,11 @@ class RetiredComponentTests(unittest.TestCase):
                 'title': 'Vice City', 'executable': 'gta-vc.exe',
                 'install_folder': 'Grand Theft Auto Vice City', 'controller_ready': True}))
             with patch.object(build_suite, 'ROOT', root):
+                before = set(root.rglob('*'))
+                described = build_suite.add_component(None, 'vice_city')
+                self.assertEqual(set(root.rglob('*')), before)
                 definition = build_suite.add_component(root / 'stage', 'vice_city')
+                self.assertEqual(described, definition)
                 self.assertEqual(definition['files'], [{
                     'path': name, 'payload': None, 'sha256': None, 'accepted_before': [None, expected]}])
                 self.assertFalse((root / 'stage/games/vice_city/installer/payload').exists())

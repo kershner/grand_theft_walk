@@ -184,6 +184,38 @@
         "scripts/GTW.BackgroundInput.asi": "57537e840e98c86c0591927495dd4d4d9c5e4ff76aa71047abbd2d3c6171afc9",
         "scripts/III.VC.SA.WindowedMode.asi": "ef36fb8fe0a7a715a2c76377177b07047e85925d153c7b9d6cb13cda9dd65872"
       }
+    },
+    {
+      "component_id": "gta_iii-1ca69d5f493dd473",
+      "files": {
+        "ddraw.dll": "f22b58fbdef93fbe292a741f130db7adfc0c7d0774f762bbf0ea93c8581d03ad",
+        "dinput8.dll": "63b465dbc1bf9c5ab4e33c3ccad099d9edb702f2c51587ac8d4f196497396437",
+        "gta3.exe": "17e036ff18cdd805951fec9107746492f582ae1eb46ca028544e37e517e8fc1f",
+        "GTW/walker-seed.b": "3342ae68b1debfc1297c2a15ef557d34b4814ad0af99ffb38451cacffe71e06d",
+        "anim/fps.ifp": "1b026cc36b8847abfcbbb301666a601fb9e35a708a9611ae434f698b300b40dc",
+        "FirstPersonIII.asi": "95e4297221206e8be734f9defa074522fd441ce25df57cfd9e519835d5039327",
+        "d3d8.dll": "58b9b73859f107183e4146c2b854f929397892058d46de3691129722a6f29d92",
+        "scripts/GTA3.WidescreenFix.asi": "214e332085d516cb8b154b52f673ad0e2c02423dd0b7019a51cd33fde7497b42",
+        "scripts/GTA3.WidescreenFix.ini": "369c92f3ebf731c7ce5fff4cbc81c9c613f6382b16b952615a57d2b79e680df5",
+        "SilentPatchIII.asi": "97d162081032f048958c3de0a5d92eb08d15512fc972bb9ce24562e4d35c3c5c",
+        "SilentPatchIII.ini": "0036239d0c6385f270f782abc1e4153a1ee96acb4641907b9e3c4987b35e2e36",
+        "scripts/GTW.BackgroundInput.asi": "5bf229347a9dac4eca777ad0a30c80b1ef028697773351b05734201bb260e438",
+        "scripts/III.VC.SA.WindowedMode.asi": "ef36fb8fe0a7a715a2c76377177b07047e85925d153c7b9d6cb13cda9dd65872",
+        "MTLX.dll": null,
+        "index.bin": null,
+        "rwd3d9.dll": null,
+        "scripts/III.VC.SA.LimitAdjuster.asi": null,
+        "scripts/III.VC.SA.LimitAdjuster.ini": null,
+        "scripts/IIILodLights.asi": null,
+        "scripts/IIILodLights.dat": null,
+        "scripts/neo/carTweakingTable.dat": null,
+        "scripts/neo/neo.txd": null,
+        "scripts/neo/rimTweakingTable.dat": null,
+        "scripts/neo/worldTweakingTable.dat": null,
+        "scripts/skygfx.asi": null,
+        "scripts/skygfx.dll": null,
+        "scripts/skygfx.ini": null
+      }
     }
   ],
   "required_hashes": {

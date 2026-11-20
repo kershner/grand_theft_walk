@@ -241,6 +241,113 @@ class NavigatorTests(unittest.TestCase):
 
 
 class MovementTests(unittest.TestCase):
+    def test_airtime_and_landing_do_not_spend_the_route_stall_budget(self):
+        movement = Walking()
+        movement.set_mode('explore')
+        nav = movement.navigator
+        nav.waypoint((0, 0, 0), 0, 0, 0)
+        nav.journey_goal, nav.journey_remaining = nav.open_goal, 100
+        nav.journey_stalled, nav.journey_observed_at = 19, 0
+        state = dict(self.state, standing=False, in_air=True, ped_state=41)
+        for now in range(1, 16):
+            with patch('core.controller.time.monotonic', return_value=now):
+                self.assertIn('jumping', movement.tick(state, True, 'explore'))
+        state.update(in_air=False, standing=True)
+        with patch('core.controller.time.monotonic', return_value=16):
+            self.assertIn('recovering from landing', movement.tick(state, True, 'explore'))
+        state['ped_state'] = 1
+        for now in (17, 18.4, 19):
+            with patch('core.controller.time.monotonic', return_value=now):
+                movement.tick(state, True, 'explore')
+        self.assertEqual(movement.recoveries, 0)
+        self.assertEqual(nav.journey_stalled, 19)
+        self.assertFalse(nav.failures)
+        self.keys.set.assert_called_with({'walk', 'forward'})
+
+    def test_manual_jump_gets_takeoff_and_landing_time_then_stuck_checks_resume(self):
+        movement = Walking()
+        movement.set_mode('explore')
+        with patch('core.controller.time.monotonic', return_value=0):
+            movement.tick(self.state, True, 'explore')
+        movement.jump_feedback('viewer-jump', 'accepted')
+        with patch('core.controller.time.monotonic', return_value=5):
+            self.assertIn('jumping', movement.tick(self.state, True, 'explore'))
+        airborne = dict(self.state, in_air=True, standing=False, ped_state=41)
+        with patch('core.controller.time.monotonic', return_value=6):
+            movement.tick(airborne, True, 'explore')
+        for now in (7, 9):
+            with patch('core.controller.time.monotonic', return_value=now):
+                movement.tick(self.state, True, 'explore')
+            self.assertEqual(movement.recoveries, 0)
+        with patch('core.controller.time.monotonic', return_value=11):
+            movement.tick(self.state, True, 'explore')
+        self.assertEqual(movement.recoveries, 0)
+        with patch('core.controller.time.monotonic', return_value=14.1):
+            movement.tick(self.state, True, 'explore')
+        self.assertEqual(movement.recoveries, 1)
+
+    def test_jump_protection_does_not_reset_the_obstacle_retry_budget(self):
+        movement = Walking()
+        movement.set_mode('free')
+        movement.recover(self.state['position'], 0, self.state)
+        attempts, target = movement.recovery_attempts, movement.recovery_target
+        for now in (9, 10, 11):
+            state = dict(self.state, in_air=True, standing=False, ped_state=41)
+            with patch('core.controller.time.monotonic', return_value=now):
+                movement.tick(state, True)
+        with patch('core.controller.time.monotonic', return_value=12):
+            movement.tick(self.state, True)
+        self.assertEqual(movement.recovery_attempts, attempts)
+        self.assertEqual(movement.recovery_target, target)
+        self.assertEqual(movement.recovery_progress_at, 12)
+        with patch('core.controller.time.monotonic', return_value=12.7):
+            movement.tick(self.state, True)
+        self.assertEqual(movement.recovery_progress_at, 15.7)
+
+    def test_all_local_directions_blocked_still_produces_a_walking_route(self):
+        movement = Walking()
+        movement.set_mode('explore')
+        nav = movement.navigator
+        nav.recent_ground.extend(((0, -6, 0), (0, 0, 0)))
+        for bearing in (0, math.pi / 2, math.pi, -math.pi / 2):
+            nav.failed_approaches.append(((0, 0, 0), bearing, 120))
+        target = nav.waypoint((0, 0, 0), 0, 0, 0)
+        self.assertEqual(target, (0, -6, 0))
+        self.assertIn('walking to find a route', nav.message)
+        state = dict(self.state, camera_heading=math.pi)
+        with patch('core.controller.time.monotonic', return_value=.1):
+            movement.tick(state, True, 'explore')
+        self.keys.set.assert_called_with({'walk', 'forward'})
+        next_target = nav.waypoint(target, math.pi, 0, 1)
+        self.assertLess(next_target[1], target[1])
+
+    def test_missing_mission_path_keeps_walking_and_retries_the_planner(self):
+        movement = Walking()
+        movement.set_mode('mission')
+        with patch.object(movement.navigator, 'waypoint', return_value=None) as route:
+            with patch('core.controller.time.monotonic', return_value=0):
+                movement.tick(self.state, True, 'mission')
+            target = movement.recovery_target
+            state = dict(self.state, camera_heading=heading_to((0, 0), target))
+            with patch('core.controller.time.monotonic', return_value=.1):
+                movement.tick(state, True, 'mission')
+            self.keys.set.assert_called_with({'walk', 'forward'})
+            state['position'] = dict(zip(('x', 'y', 'z'), target))
+            with patch('core.controller.time.monotonic', return_value=1):
+                movement.tick(state, True, 'mission')
+            self.assertEqual(route.call_count, 2)
+
+    def test_detour_does_not_wait_when_all_directions_are_rejected(self):
+        movement = Walking()
+        movement.set_mode('free')
+        with patch.object(movement.navigator, 'approach_blocked', return_value=True):
+            movement.recover(self.state['position'], 0, self.state)
+        self.assertIsNotNone(movement.recovery_target)
+        state = dict(self.state, camera_heading=heading_to((0, 0), movement.recovery_target))
+        with patch('core.controller.time.monotonic', return_value=.1):
+            movement.tick(state, True)
+        self.keys.set.assert_called_with({'walk', 'forward'})
+
     def test_unreachable_mission_does_not_release_forward_in_mission_mode(self):
         graph = PedestrianGraph(list(graph_fixture().nodes.values()) + [
             Node((1, 0), (1000, 0, 0), (((1, 1), False),)),
@@ -280,44 +387,25 @@ class MovementTests(unittest.TestCase):
         self.assertNotIn("recovery", status)
         self.assertEqual(self.movement.recoveries, 0)
 
-    def test_stuck_repeatedly_turns_right_20_then_walks_in_free_and_mission_modes(self):
+    def test_stuck_walker_steers_toward_a_detour_instead_of_a_fixed_turn(self):
         for mode in ("free", "mission"):
             with self.subTest(mode=mode):
-                self.movement = Walking(graph_fixture())
-                self.movement.navigator.rng = random.Random(0)
-                self.movement.navigator.waypoint = Mock(return_value=(0, 10, 0))
-                self.keys.reset_mock()
+                movement = Walking(graph_fixture())
+                movement.navigator.waypoint = Mock(return_value=(0, 10, 0))
                 with patch("core.controller.time.monotonic", return_value=0):
-                    self.movement.tick(self.state, True, mode)
-                for attempt in range(2):
-                    start = 4.1 if attempt == 0 else end + 4.1
-                    with patch("core.controller.time.monotonic", return_value=start):
-                        self.assertIn("turning right 20", self.movement.tick(self.state, True, mode))
-                    self.keys.turn.reset_mock()
-                    with patch.object(self.movement.navigator, "waypoint", side_effect=AssertionError("route interrupted recovery")):
-                        for step in range(1, 601):
-                            end = start + step / 120
-                            with patch("core.controller.time.monotonic", return_value=end):
-                                self.movement.tick(self.state, True, mode)
-                            if self.movement.recovery_turn == 0:
-                                break
-                        else:
-                            self.fail("recovery turn never finished")
-                        turns = [call.args[0] for call in self.keys.turn.call_args_list]
-                        self.assertEqual(sum(turns), 200)
-                        self.assertTrue(all(turn > 0 for turn in turns))
-                        with patch("core.controller.time.monotonic", return_value=end + 0.01):
-                            self.movement.tick(self.state, True, mode)
-                        self.keys.set.assert_called_with({"walk", "forward"})
-                    self.assertEqual(self.movement.recoveries, attempt + 1)
-                self.assertFalse(self.movement.navigator.blocked)
-                self.assertFalse(self.movement.navigator.avoided)
-                self.assertNotIn(unittest.mock.call({"walk", "back"}), self.keys.set.call_args_list)
-                self.state["position"] = {"x": 1, "y": 0, "z": 0}
-                with patch("core.controller.time.monotonic", return_value=end + 0.02):
-                    self.movement.tick(self.state, True, mode)
-                self.assertIsNone(self.movement.recovery_turn)
-                self.state["position"] = {"x": 0, "y": 0, "z": 0}
+                    movement.tick(self.state, True, mode)
+                with patch("core.controller.time.monotonic", return_value=4.1):
+                    self.assertIn("steering around obstacle", movement.tick(self.state, True, mode))
+                target = movement.recovery_target
+                self.assertIsNotNone(target)
+                self.assertGreater(abs(target[0]), 2)
+                facing = heading_to((0, 0), target)
+                state = dict(self.state, camera_heading=facing)
+                with patch("core.controller.time.monotonic", return_value=4.2):
+                    self.assertIn("walking around obstacle", movement.tick(state, True, mode))
+                self.keys.set.assert_called_with({"walk", "forward"})
+                self.assertEqual(movement.recovery_target, target)
+
 
     def test_stop_pause_and_focus_loss_cancel_recovery(self):
         for cancel in ("stop", "paused", "foreground"):
@@ -328,59 +416,49 @@ class MovementTests(unittest.TestCase):
                     self.movement.tick(state, True, "free")
                 with patch("core.controller.time.monotonic", return_value=5):
                     self.movement.tick(state, True, "free")
-                self.assertIsNotNone(self.movement.recovery_turn)
+                self.assertIsNotNone(self.movement.recovery_target)
                 if cancel != "stop":
                     state[cancel] = cancel == "paused"
                 self.keys.reset_mock()
                 self.movement.tick(state, cancel != "stop", "free")
-                self.assertIsNone(self.movement.recovery_turn)
+                self.assertIsNone(self.movement.recovery_target)
                 self.keys.turn.assert_not_called()
                 self.keys.set.assert_not_called()
                 self.keys.release.assert_called()
                 self.assertIsNone(self.movement.recovery_anchor)
                 self.assertEqual(self.movement.recovery_attempts, 0)
 
-    def test_recovery_turns_right_20_then_jumps_and_keeps_attempts_while_airborne(self):
+    def test_recovery_jumps_first_then_returns_to_feedback_steering(self):
         for mode in ('free', 'mission'):
             with self.subTest(mode=mode):
                 movement = Walking(graph_fixture())
                 movement.set_mode(mode)
                 movement.jump_supported = True
-                movement.navigator.local_target = (0, 10, 0)
-                movement.navigator.open_goal = (0, 100, 0)
-                self.assertIn('turning right 20', movement.recover(self.state['position'], 0))
-                self.assertIn('backing up', movement.recover(self.state['position'], 2))
-                self.assertIsNone(movement.recovery_jump_request)
-                self.keys.set.assert_called_with({'walk', 'back'})
-                with patch('core.controller.time.monotonic', return_value=3.5):
+                self.assertIn('backing up', movement.recover(self.state['position'], 0))
+                with patch('core.controller.time.monotonic', return_value=1.5):
                     self.assertIn('approaching jump', movement.tick(self.state, True, mode))
-                self.keys.set.assert_called_with({'walk', 'forward'})
-                self.assertIsNone(movement.recovery_jump_request)
-                with patch('core.controller.time.monotonic', return_value=3.75):
+                with patch('core.controller.time.monotonic', return_value=1.75):
                     self.assertIn('jumping', movement.tick(self.state, True, mode))
-                self.assertIsNotNone(movement.recovery_jump_request)
-                state = dict(self.state, in_air=True, standing=False, ped_state=41)
-                with patch('core.controller.time.monotonic', return_value=3.85):
-                    self.assertIn('jumping', movement.tick(state, True, mode))
-                self.assertEqual(movement.recovery_attempts, 2)
-                state.update(in_air=False, standing=True, ped_state=1)
-                with patch('core.controller.time.monotonic', return_value=4.75):
-                    self.assertIn('walking forward', movement.tick(state, True, mode))
-                with patch('core.controller.time.monotonic', return_value=8.95):
-                    self.assertIn('turning right 20', movement.tick(state, True, mode))
-                self.assertEqual(movement.recovery_attempts, 3)
-                expected = 20 if mode == 'free' else 50
-                self.assertIn(f'turning right {expected}', movement.recover(state['position'], 12))
-                self.assertEqual(movement.navigator.open_goal, (0, 100, 0))
-                movement.stop()
-                self.assertIsNone(movement.recovery_jump_request)
+                airborne = dict(self.state, in_air=True, standing=False, ped_state=41)
+                with patch('core.controller.time.monotonic', return_value=1.85):
+                    self.assertIn('jumping', movement.tick(airborne, True, mode))
+                self.assertEqual(movement.recovery_attempts, 1)
+                with patch('core.controller.time.monotonic', return_value=2):
+                    movement.tick(self.state, True, mode)
+                self.assertIsNotNone(movement.recovery_jump_started)
+                for now in (2.7, 5.8):
+                    with patch('core.controller.time.monotonic', return_value=now):
+                        movement.tick(self.state, True, mode)
                 self.assertIsNone(movement.recovery_jump_started)
+                self.assertIn('steering around obstacle', movement.recover(self.state['position'], 6, self.state))
+                self.assertIsNotNone(movement.recovery_target)
+                self.assertIsNone(movement.recovery_jump_request)
+
 
     def test_jump_retreat_distance_starts_short_forward_approach(self):
         movement = self.movement
         movement.set_mode('free')
         movement.jump_supported = True
-        movement.recover(self.state['position'], 0)
         movement.recover(self.state['position'], 1)
         self.assertTrue(movement.backing_up(1))
         with patch('core.controller.time.monotonic', return_value=1.5):
@@ -402,7 +480,6 @@ class MovementTests(unittest.TestCase):
                     movement = Walking(graph_fixture())
                     movement.set_mode('free')
                     movement.jump_supported = True
-                    movement.recover(self.state['position'], 0)
                     movement.recover(self.state['position'], 1)
                     if phase == 'forward':
                         with patch('core.controller.time.monotonic', return_value=2.5):
@@ -416,144 +493,55 @@ class MovementTests(unittest.TestCase):
                     self.assertIsNone(movement.recovery_jump_request)
                     self.assertIsNone(movement.recovery_jump_started)
 
-    def finish_recovery_turn(self, start):
-        self.keys.turn.reset_mock()
-        navigator = self.movement.navigator
-        with patch.object(navigator, "waypoint", side_effect=AssertionError("route interrupted recovery")):
-            for step in range(1, 1201):
-                now = start + step / 120
-                with patch("core.controller.time.monotonic", return_value=now):
-                    self.movement.tick(self.state, True, self.movement.mode)
-                if self.movement.recovery_turn == 0:
-                    return now
-        self.fail("recovery turn never finished")
+    def test_detour_rejoins_the_route_without_dropping_the_mission(self):
+        movement = self.movement
+        movement.set_mode('mission')
+        movement.navigator.set_destination((0, 3))
+        movement.last_waypoint = (0, 10, 0)
+        movement.recover(self.state['position'], 0, self.state)
+        target = movement.recovery_target
+        state = dict(self.state, position=dict(zip(('x', 'y', 'z'), target)))
+        with patch.object(movement.navigator, 'waypoint', return_value=(0, 10, 0)) as route:
+            with patch('core.controller.time.monotonic', return_value=2):
+                movement.tick(state, True, 'mission')
+        route.assert_called_once()
+        self.assertIsNone(movement.recovery_target)
+        self.assertEqual(movement.navigator.destination, (0, 3))
 
-    def test_short_escapes_back_into_same_obstacle_escalate_in_mission_mode(self):
-        for mode in ("mission",):
-            with self.subTest(mode=mode):
-                self.movement = Walking(graph_fixture())
-                navigator = self.movement.navigator
-                self.state["position"] = {"x": 0, "y": 0, "z": 0}
-                now = 0
-                with patch.object(navigator, "waypoint", return_value=(0, 10, 0)):
-                    with patch("core.controller.time.monotonic", return_value=now):
-                        self.movement.tick(self.state, True, mode)
-                    navigator.previous, navigator.target = (0, 0), (0, 4)
-                    for amount in (20, 20, 50):
-                        now += 4.1
-                        with patch("core.controller.time.monotonic", return_value=now):
-                            self.assertEqual(
-                                self.movement.tick(self.state, True, mode),
-                                f"obstacle recovery: turning right {amount}",
-                            )
-                        now = self.finish_recovery_turn(now)
-                        self.assertEqual(
-                            sum(call.args[0] for call in self.keys.turn.call_args_list),
-                            amount * 10,
-                        )
-                        # A small escape must not erase the nearby failures.
-                        self.state["position"] = {"x": 0, "y": 1, "z": 0}
-                        now += 0.01
-                        with patch("core.controller.time.monotonic", return_value=now):
-                            self.movement.tick(self.state, True, mode)
-                        if amount == 20:
-                            self.assertIsNone(self.movement.recovery_turn)
-                            self.assertFalse(navigator.blocked)
-                            self.state["position"] = {"x": 0, "y": 0, "z": 0}
-                            now += 0.01
-                            with patch("core.controller.time.monotonic", return_value=now):
-                                self.movement.tick(self.state, True, mode)
-                        else:
-                            self.assertEqual(self.movement.recovery_turn, 0)
-                            self.assertIn(((0, 0), (0, 4)), navigator.blocked)
-                            self.assertIn((0, 4), navigator.avoided)
-                            self.assertIsNone(navigator.target)
-                    self.state["position"] = {"x": 0, "y": 3.1, "z": 0}
-                    now += 0.01
-                    with patch("core.controller.time.monotonic", return_value=now):
-                        self.movement.tick(self.state, True, mode)
-                    self.assertIsNone(self.movement.recovery_turn)
-                    # Leaving the area restores the ordinary small recovery.
-                    self.state["position"] = {"x": 0, "y": 9, "z": 0}
-                    now += 0.01
-                    with patch("core.controller.time.monotonic", return_value=now):
-                        self.movement.tick(self.state, True, mode)
-                    with patch("core.controller.time.monotonic", return_value=now + 4.1):
-                        self.assertIn("turning right 20", self.movement.tick(self.state, True, mode))
+    def test_detour_can_choose_either_side_and_avoids_the_failed_bearing(self):
+        targets = []
+        for side in (-1, 1):
+            movement = Walking()
+            movement.set_mode('free')
+            movement.navigator.failed_approaches.append(((0, 0, 0), side * math.pi / 2, 120))
+            movement.recover(self.state['position'], 0, self.state)
+            target = movement.recovery_target
+            self.assertIsNotNone(target)
+            self.assertFalse(movement.navigator.approach_blocked((0, 0, 0), target, 0))
+            targets.append(target[0])
+        self.assertLess(targets[0] * targets[1], 0)
 
-    def test_stationary_retries_stay_escalated_until_leaving_the_area(self):
-        for mode in ("mission",):
-            with self.subTest(mode=mode):
-                self.movement = Walking(graph_fixture())
-                self.movement.navigator.rng = random.Random(0)
-                self.movement.navigator.waypoint = Mock(return_value=(0, 10, 0))
-                with patch("core.controller.time.monotonic", return_value=0):
-                    self.movement.tick(self.state, True, mode)
-                now = 0
-                for amount in (20, 20, 50, 50):
-                    now += 4.1
-                    with patch("core.controller.time.monotonic", return_value=now):
-                        self.assertIn(
-                            f"turning right {amount}", self.movement.tick(self.state, True, mode)
-                        )
-                    now = self.finish_recovery_turn(now)
+    def test_repeated_detour_failure_does_not_retry_the_same_corridor(self):
+        movement = Walking()
+        movement.set_mode('free')
+        movement.recover(self.state['position'], 0, self.state)
+        first = movement.recovery_target
+        movement.recover(self.state['position'], 4, self.state)
+        self.assertNotEqual(movement.recovery_target, first)
+        self.assertTrue(movement.navigator.approach_blocked((0, 0, 0), first, 5))
 
-    def test_stationary_recovery_eventually_abandons_route_and_resumes_planning(self):
-        for mode in ('mission',):
-            for jumping in (False, True):
-                with self.subTest(mode=mode, jumping=jumping):
-                    movement = self.movement = Walking(graph_fixture())
-                    movement.set_mode(mode)
-                    movement.jump_supported = jumping
-                    navigator = movement.navigator
-                    navigator.open_terrain_chance = 0
-                    navigator.previous, navigator.target = (0, 0), (0, 4)
-                    navigator.goal = (0, 4)
-                    navigator.goal_edge = ((0, 0), (0, 4))
-                    navigator.goal_steps = {(0, 0): (0, 4)}
-                    # Keep the mission objective while abandoning this approach.
-                    if mode == 'mission':
-                        navigator.set_destination((0, 3))
-                    limit = 6 if jumping else 5
-                    now = 0
-                    for attempt in range(1, limit):
-                        status = movement.recover(self.state['position'], now)
-                        self.assertNotIn('abandoned', status)
-                        if jumping and attempt == 2:
-                            with patch('core.controller.time.monotonic', return_value=now + 1.5):
-                                movement.tick(self.state, True, mode)
-                            with patch('core.controller.time.monotonic', return_value=now + 1.75):
-                                movement.tick(self.state, True, mode)
-                            now += 1.75
-                            airborne = dict(self.state, in_air=True, standing=False, ped_state=41)
-                            with patch('core.controller.time.monotonic', return_value=now + .1):
-                                movement.tick(airborne, True, mode)
-                            with patch('core.controller.time.monotonic', return_value=now + .2):
-                                movement.tick(self.state, True, mode)
-                            now += .2
-                        else:
-                            now = self.finish_recovery_turn(now)
-                        now += 4.1
-                    # This last timeout must release the turn/walk retry loop.
-                    with patch('core.controller.time.monotonic', return_value=now):
-                        status = movement.tick(self.state, True, mode)
-                    self.assertIn('route abandoned', status)
-                    self.assertEqual(movement.recovery_attempts, limit)
-                    self.assertIsNone(movement.recovery_turn)
-                    self.assertIsNone(movement.recovery_jump_request)
-                    self.assertIsNone(navigator.target)
-                    self.assertIn(((0, 0), (0, 4)), navigator.blocked)
-                    if mode == 'explore':
-                        self.assertIsNone(navigator.goal)
-                        self.assertFalse(navigator.goal_steps)
-                    else:
-                        self.assertEqual(navigator.destination, (0, 3))
-                    with patch.object(navigator, 'waypoint', wraps=navigator.waypoint) as plan:
-                        with patch('core.controller.time.monotonic', return_value=now + .1):
-                            movement.tick(self.state, True, mode)
-                    plan.assert_called_once()
-                    self.assertIsNotNone(navigator.target)
-                    self.assertNotEqual(navigator.target, (0, 4))
+    def test_detour_watchdog_detects_motion_without_getting_closer(self):
+        movement = Walking()
+        movement.set_mode('free')
+        movement.recover(self.state['position'], 0, self.state)
+        first = movement.recovery_target
+        for now in range(1, 10):
+            state = dict(self.state, position=dict(x=0, y=(-1) ** now, z=0),
+                         camera_heading=heading_to((0, (-1) ** now), first))
+            with patch('core.controller.time.monotonic', return_value=now):
+                movement.tick(state, True, 'free')
+        self.assertGreater(movement.recoveries, 1)
+        self.assertNotEqual(movement.recovery_target, first)
 
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
         self.state["camera_heading"] = 0.0
@@ -622,9 +610,9 @@ class MovementTests(unittest.TestCase):
 
     def test_switching_modes_cancels_old_recovery_and_route(self):
         self.movement.tick(self.state, True, "explore")
-        self.movement.recovery_turn = 200
+        self.movement.recovery_target = (6, 0, 0)
         self.movement.tick(self.state, True, "free")
-        self.assertIsNone(self.movement.recovery_turn)
+        self.assertIsNone(self.movement.recovery_target)
         self.assertIsNone(self.movement.navigator.target)
 
     def test_switching_from_mission_to_explore_discards_goal_and_keeps_exploring(self):
@@ -648,11 +636,19 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(self.movement.steer("back", "mission", self.state))
         self.assertIsNone(self.movement.manual_direction)
 
-    def test_missing_network_only_blocks_mission_mode(self):
+    def test_missing_network_keeps_every_mode_moving(self):
         movement = Walking(navigation_error="missing files")
         self.assertIn("exploring open ground", movement.tick(self.state, True, "explore"))
-        self.assertIn("unavailable", movement.tick(self.state, True, "mission"))
+        self.assertIn("obstacle recovery", movement.tick(self.state, True, "mission"))
         self.assertEqual(movement.tick(self.state, True, "free"), "walking freely")
+
+    def test_controllable_water_does_not_pause_exploration(self):
+        movement = Walking()
+        state = dict(self.state, in_water=True)
+        with patch('core.controller.time.monotonic', return_value=0):
+            status = movement.tick(state, True, 'explore')
+        self.assertNotIn('paused', status)
+        self.keys.set.assert_called_with({'walk', 'forward'})
 
     def test_manual_turn_is_spread_across_ticks_and_cancelled_on_alt_tab(self):
         with patch("core.controller.time.monotonic", return_value=0):
@@ -747,7 +743,7 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(self.movement.backing_up(12))
         self.movement.stop()
         self.assertFalse(self.movement.backing_up(10))
-        self.movement.recovery_turn = 200
+        self.movement.recovery_target = (6, 0, 0)
         self.assertFalse(self.movement.backing_up(14))
 
 

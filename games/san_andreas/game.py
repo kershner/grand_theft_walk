@@ -8,6 +8,7 @@ import struct
 import zlib
 
 from core.controls import bind_action_key
+from core.missions import load_destinations
 from core.saves import Autosave as SharedAutosave
 from games import Capabilities
 

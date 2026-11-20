@@ -23,7 +23,7 @@ from core.controls import (
     configure_window,
 )
 from core.files import atomic_json
-from core.navigation import angle_delta
+from core.navigation import angle_delta, heading_to
 from core.runtime import control_request
 from games import Capabilities
 from games.gta_iii import game as iii
@@ -783,6 +783,11 @@ class ClassicTurningTests(unittest.TestCase):
                         self.state["heading"] = self.state["camera_heading"] = 0
                         for step in range(720):
                             self.tick(step / 120, True, mode)
+                            if 'forward' in self.keys.set.call_args.args[0]:
+                                self.state['position'] = dict(
+                                    x=self.state['position']['x'] - math.sin(self.state['camera_heading']) / 120,
+                                    y=self.state['position']['y'] + math.cos(self.state['camera_heading']) / 120,
+                                    z=0)
                             if abs(angle_delta(math.pi / 2, self.state["camera_heading"])) <= 0.04:
                                 break
                         else:
@@ -790,15 +795,23 @@ class ClassicTurningTests(unittest.TestCase):
                         self.assertEqual(self.walking.recoveries, 0)
                         self.keys.set.assert_called_with({"forward"})
 
-    def test_obstacle_recovery_uses_the_same_turn_response(self):
+    def test_obstacle_detour_turns_gradually_while_continuing_to_walk(self):
         for backend in (iii, vc):
             with self.subTest(game=backend.__name__):
                 self.configure(backend)
                 self.walking.set_mode("free")
-                self.walking.recover(self.state["position"], 0)
-                for step in range(720):
+                self.walking.recover(self.state["position"], 0, self.state)
+                target = self.walking.recovery_target
+                initial_error = abs(heading_to((0, 0), target))
+                walking_during_turn = False
+                for step in range(240):
                     self.tick(step / 120, True)
-                    if self.walking.recovery_turn == 0:
+                    error = abs(angle_delta(heading_to((0, 0), target), self.state['camera_heading']))
+                    if self.keys.set.call_args.args[0] == {'forward'} and error > .1:
+                        walking_during_turn = True
+                    if error < .08:
                         break
-                self.assertEqual(self.walking.recovery_turn, 0)
-                self.assertAlmostEqual(self.state["camera_heading"], -math.radians(80))
+                self.assertLess(error, initial_error)
+                self.assertTrue(walking_during_turn)
+                self.assertLessEqual(max(abs(c.args[0]) for c in self.keys.turn.call_args_list), 8)
+

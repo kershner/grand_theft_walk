@@ -3,12 +3,14 @@
 import random
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core.files import atomic_json
 from core.missions import CommandVoting, MissionSystem
 from core.navigation import Node, PedestrianGraph, PedestrianNavigator
+from games.san_andreas import game as backend
 
 
 def graph_fixture():
@@ -23,6 +25,23 @@ def graph_fixture():
 
 
 class MissionTests(unittest.TestCase):
+    def test_backend_loads_named_destinations_for_controller_startup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "data").mkdir()
+            (root / "data/info.zon").write_text(
+                "TEST, 0, -1, -1, -1, 1, 21, 1, 0, TEST\n"
+            )
+            graph = graph_fixture()
+            read_text = Mock(return_value={
+                zlib.crc32(b"TEST") ^ 0xFFFFFFFF: "Meeting place",
+            })
+            destinations = backend.load_destinations(root, graph, read_text)
+            read_text.assert_called_once_with(root / "text/american.gxt")
+            self.assertEqual(destinations, [{
+                "name": "Meeting place", "node": [0, 1], "position": [0, 10, 0],
+            }])
+
     def setUp(self):
         self.create_mission()
 

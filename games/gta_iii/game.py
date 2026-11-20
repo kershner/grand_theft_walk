@@ -20,7 +20,7 @@ from core.winmemory import Memory as ProcessMemory, RuntimeChanges as SharedChan
 from games import Capabilities
 
 
-CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True,
+CAPABILITIES = Capabilities(protection=True, peaceful=True, unlock_map=True, walk_binding=True,
     walking_pace=True, first_person=True, respawn=True, jump=True, autosave=True, view=True, hide_hud=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
 # FirstPersonIII applies mouse X in 0.1-degree increments. Compensate at the
@@ -195,6 +195,22 @@ def apply_protection(game, changes, state):
         for offset in (0, 0x18, *(0x1C + i * 0x1C for i in range(16))):
             if changes.valid_guard(guard) and mem.u32(wanted + offset):
                 mem.write(wanted + offset, b"\0" * 4)
+
+
+def apply_peaceful_mode(game, changes):
+    """Let native AI abandon attacks on the player, including existing pursuits."""
+    state = game.snapshot()
+    if not game.current(state):
+        return 0
+    wanted = state["wanted_pointer"]
+    if not wanted:
+        return 0
+    # CWanted::m_bIgnoredByEveryone, not merely zero wanted stars. Native
+    # kill-character AI checks this bit and idles even for hostile gang peds.
+    # Keep other wanted flags and guard against respawn/reused allocations.
+    guard = ("wanted", state["ped"], state["identity"], wanted)
+    changes.patch(wanted + 0x16, b"\x02", b"\x02", guard)
+    return 0  # This player-level switch does not rewrite individual NPCs.
 
 
 def bind_walk_key(game, changes):

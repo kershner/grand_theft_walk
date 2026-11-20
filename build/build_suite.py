@@ -82,7 +82,8 @@ def add_component(stage, game):
             if sha256(original) != entry["sha256"]:
                 raise ValueError(f"Source component missing or changed: {original}")
             relative = f"games/{game}/installer/payload/{name}"
-            copy_file(original, under(stage, relative))
+            if stage is not None:
+                copy_file(original, under(stage, relative))
             accepted = entry.get("accepted_before", [entry.get("clean_sha256")])
             if game == "vice_city" and name.lower() == "ddraw.dll":
                 accepted.append(None)  # A fresh original game has no startup fix.
@@ -108,6 +109,8 @@ def add_component(stage, game):
         "required_hashes": ({"data/timecycp.dat": base["ps2_timecycle_sha256"]} if game == "san_andreas" else base.get("required_hashes", {})),
         "previous_versions": base.get("previous_versions", []),
     }
+    if stage is None:
+        return definition
     installer = stage / "games" / game / "installer"
     installer.mkdir(parents=True, exist_ok=True)
     (installer / "manifest.json").write_text(json.dumps(definition, indent=2) + "\n", encoding="utf-8")
@@ -152,11 +155,13 @@ def build(keep_stage=False):
                 continue
             copy_file(path, stage / name / path.relative_to(folder))
     # The packaged regression tests also exercise the builder's validation helpers.
-    for name in ("Start Grand Theft Walk.cmd", "requirements.txt", "parameters.example.json"):
+    for name in ("Start Grand Theft Walk.cmd", "requirements.txt", "parameters.example.json", "tests/native_terrain.c"):
         copy_file(ROOT / name, stage / name)
     for name in ("__init__.py", "build_suite.py", "setup/__init__.py", "setup/setup.py",
                  "setup/Setup.cmd", "setup/Setup.ps1", "native/build.ps1",
-                 "native/save_bridge.c", "native/save_request.c", "native/save_shared.h"):
+                 "native/save_bridge.c", "native/save_request.c", "native/save_shared.h",
+                 "native/background_input.c", "native/background_manifest.py", "native/build-background.ps1",
+                 "native/windowed-mode.lock.json"):
         copy_file(ROOT / "build" / name, stage / "build" / name)
     for game in GAMES:
         copy_file(ROOT / "games" / game / "profile.json", stage / "games" / game / "profile.json")

@@ -67,6 +67,40 @@ class PlayerTests(unittest.TestCase):
         changes.restore()
         self.assertEqual(self.mem.byte(self.ped + 0x53), 255)
 
+    def test_peaceful_mode_preserves_other_wanted_flags_and_restores(self):
+        wanted = 0x400000
+        self.mem.write(self.ped + 0x53C, struct.pack("<I", wanted))
+        self.mem.write(wanted + 0x16, b"\x11")
+        changes = iii.RuntimeChanges(self.mem)
+        iii.apply_peaceful_mode(self.game, changes)
+        self.assertEqual(self.mem.byte(wanted + 0x16), 0x13)
+        self.mem.write(wanted + 0x16, b"\x1b")
+        self.assertEqual(changes.restore(), [])
+        self.assertEqual(self.mem.byte(wanted + 0x16), 0x19)
+
+    def test_peaceful_mode_does_not_restore_replaced_wanted_or_player(self):
+        for replace_player in (False, True):
+            with self.subTest(replace_player=replace_player):
+                self.setUp()
+                wanted = 0x400000
+                self.mem.write(self.ped + 0x53C, struct.pack("<I", wanted))
+                changes = iii.RuntimeChanges(self.mem)
+                iii.apply_peaceful_mode(self.game, changes)
+                if replace_player:
+                    self.mem.write(self.bitmap, b"\x02")
+                else:
+                    self.mem.write(self.ped + 0x53C, struct.pack("<I", wanted + 0x1000))
+                changes.restore()
+                self.assertEqual(self.mem.byte(wanted + 0x16), 2)
+
+    def test_peaceful_mode_skips_loading_and_missing_wanted(self):
+        changes = iii.RuntimeChanges(self.mem)
+        iii.apply_peaceful_mode(self.game, changes)
+        self.assertEqual(changes.entries, {})
+        self.mem.write(iii.MENU + 0x114, b"\x01")
+        iii.apply_peaceful_mode(self.game, changes)
+        self.assertEqual(changes.entries, {})
+
     def test_jump_changes_only_vertical_velocity_and_checks_identity(self):
         self.mem.write(self.ped + 0x154, b"\x00\x08")
         self.mem.write(self.ped + 0x78, struct.pack("<3f", 0.1, 0.2, 0.3))

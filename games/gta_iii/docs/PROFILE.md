@@ -43,6 +43,14 @@ routine. This suppresses the health/armour, weapon, money, clock, wanted stars,
 and radar without disabling frontend menus. The shared masked-write tracker
 restores the prior flag when the controller closes.
 
+Player-only peaceful mode sets CWanted's `m_bIgnoredByEveryone` bit (0x02 at
+wanted + 0x16). Native kill-character AI idles when its target is the ignored
+player, including existing gang attackers. NPC factions, weapons, threat masks,
+and attacks against other NPCs stay intact. The masked write preserves other
+wanted flags and restores the original bit on disable/exit only while the
+player pool identity and wanted allocation still match. The existing shared
+peaceful setting defaults on and reapplies after respawn.
+
 Live validation: normal checkpoint load with both story unlocks set, first person,
 free walking, native sidewalk steering, jump, native autosave, hospital respawn,
 HUD restoration, and controller cleanup. Runtime reports stay under this game's

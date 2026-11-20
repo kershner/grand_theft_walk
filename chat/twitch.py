@@ -10,7 +10,7 @@ from pathlib import Path
 import requests
 from twitchio.ext import commands
 
-from chat.bot import ChatBot, location_text
+from chat.bot import ChatBot, location_text, read_rotation, rotation_countdown
 from chat.oauth import OAuthTokens
 from core.config import load_parameters, local_path, twitch_settings
 from core.files import atomic_json
@@ -35,8 +35,9 @@ REFRESH_INTERVAL = 300
 
 
 class StreamMetadata:
-    def __init__(self, params, tokens, game):
+    def __init__(self, params, tokens, game, rotation_file=None):
         self.params, self.tokens = params, tokens
+        self.game, self.rotation_file = game, rotation_file
         self.category = CATEGORIES[game]
         self.broadcaster_id = None
         self.game_id = None
@@ -59,9 +60,12 @@ class StreamMetadata:
     def update(self, state, now=None):
         if not chat_ready(state):
             return False
-        title = location_text(state)[:140]
+        title = location_text(state)
         if not title:
             return False
+        countdown = rotation_countdown(read_rotation(self.rotation_file, self.game))
+        suffix = f" • {countdown}" if countdown else ""
+        title = title[:140 - len(suffix)].rstrip() + suffix
         now = time.monotonic() if now is None else now
         if title == self.last_title and now < self.next_refresh:
             return False
@@ -89,7 +93,7 @@ class TwitchBot(commands.Bot):
         self.access = tokens.ensure_fresh()["access_token"]
         super().__init__(token=self.access, prefix="!", initial_channels=[params["TWITCH_CHANNEL"]])
         self.chat = ChatBot(WalkerControl(game=game), rotation_file=rotation_file)
-        self.metadata = StreamMetadata(params, tokens, game)
+        self.metadata = StreamMetadata(params, tokens, game, rotation_file)
         self.next_metadata_poll = 0
         self.runtime_task = None
         self.send_lock = asyncio.Lock()
@@ -144,6 +148,7 @@ class TwitchBot(commands.Bot):
                     self._http.token = self.access
                 for text in self.chat.poll_events():
                     await self.say(text)
+                    self.chat.acknowledge_rotation(text)
             except (OSError, ValueError, RuntimeError, requests.RequestException):
                 # Do not include HTTP exceptions/URLs, which can contain credentials.
                 logger.error("Twitch runtime update failed; retrying shortly.")

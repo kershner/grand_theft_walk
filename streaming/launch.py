@@ -78,6 +78,20 @@ def run_session(params, parameters_path, game, mode):
                 obs.close()
 
 
+def announce_switch(rotation_file, chat_process):
+    rotation = read_json(rotation_file)
+    atomic_json(rotation_file, dict(rotation, status="switching", switch_announced=False))
+    # Keep the outgoing chat alive until it has sent the announcement. A lost
+    # chat connection must not block rotation indefinitely.
+    for _ in range(30):
+        if read_json(rotation_file).get("switch_announced"):
+            return
+        if chat_process.poll() is not None:
+            break
+        time.sleep(0.5)
+    logger.warning("Chat did not acknowledge the game-switch announcement before rotation.")
+
+
 def run_game_session(params, parameters_path, game, mode, obs=None, switched_from=None):
     from core.manager import session_command
     from core.winmemory import ProcessJob, stop_processes
@@ -132,6 +146,7 @@ def run_game_session(params, parameters_path, game, mode, obs=None, switched_fro
                 # Validate the incoming installation before ending this game.
                 session_command(next_game)
                 logger.info("Rotating from %s to %s.", game, next_game)
+                announce_switch(rotation_file, processes[1])
                 return next_game
             time.sleep(0.5)
         if process.returncode:

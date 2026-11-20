@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from core.controller import Walking
 from core.controls import HighJump
-from core.exploration import ExploreNavigator
+from core.exploration import JOURNEY_STALL_SECONDS, ExploreNavigator
 from core.navigation import Node, PedestrianGraph, angle_delta, distance, heading_to
 from core.runtime import MODES, read_controls
 
@@ -297,6 +297,78 @@ class ExplorationTests(unittest.TestCase):
         target = navigator.waypoint(position, math.pi / 2, 0, 1)
         self.assertAlmostEqual(target[0], 6)
         self.assertAlmostEqual(target[1], 16)
+
+    def test_journey_watchdog_survives_short_waypoints_and_recovery_replans(self):
+        navigator = self.navigator()
+        navigator.open_goal = (0, 100, 0)
+        for now in range(int(JOURNEY_STALL_SECONDS) + 1):
+            position = (3 * math.sin(now), 3 * math.cos(now), 0)
+            navigator.last_position = navigator.local_origin = position
+            navigator.local_target = (position[0], position[1] + 10, 0)
+            if now == 5:
+                navigator.avoid_target(now, retreat=False)
+            abandoned = navigator.journey_stalled_out(position, now)
+            self.assertEqual(abandoned, now == JOURNEY_STALL_SECONDS)
+        self.assertIsNone(navigator.open_goal)
+        self.assertIsNone(navigator.local_target)
+        self.assertFalse(navigator.recovery_requested)
+        self.assertFalse(navigator.returning)
+        self.assertTrue(navigator.approach_blocked(position, (0, 100, 0), 46))
+        replacement = navigator.waypoint(position, 0, 0, 46)
+        self.assertIsNotNone(replacement)
+        self.assertIsNotNone(navigator.open_goal)
+        self.assertNotEqual(navigator.open_goal, (0, 100, 0))
+        self.assertFalse(navigator.approach_blocked(position, replacement, 46))
+
+    def test_journey_watchdog_measures_best_distance_instead_of_total_movement(self):
+        navigator = self.navigator()
+        navigator.open_goal = (0, 100, 0)
+        for now in range(int(JOURNEY_STALL_SECONDS) + 1):
+            # Repeated tiny improvements and reversals cannot refill the budget.
+            position = (0, (now % 5) * .2, 0)
+            self.assertEqual(navigator.journey_stalled_out(position, now), now == JOURNEY_STALL_SECONDS)
+
+    def test_stalled_journey_replans_without_another_jump_in_controller(self):
+        with patch('core.controller.Keys'):
+            movement = Walking()
+        movement.set_mode('explore')
+        movement.jump_supported = True
+        navigator = movement.navigator
+        navigator.open_goal = (0, 100, 0)
+        navigator.local_origin = (0, 0, 0)
+        navigator.local_target = (0, 10, 0)
+        for now in range(int(JOURNEY_STALL_SECONDS)):
+            self.assertFalse(navigator.journey_stalled_out((0, 0, 0), now))
+        state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
+                     in_vehicle=False, health=100, player_state=0, ped_state=1,
+                     interior=0, heading=0, position=dict(x=0, y=0, z=0))
+        with patch('core.controller.time.monotonic', return_value=JOURNEY_STALL_SECONDS):
+            self.assertNotIn('stopped', movement.tick(state, True, 'explore'))
+        self.assertIsNone(movement.recovery_jump_setup)
+        self.assertEqual(movement.recoveries, 0)
+        with patch('core.controller.time.monotonic', return_value=JOURNEY_STALL_SECONDS + .1):
+            movement.tick(state, True, 'explore')
+        self.assertIsNotNone(navigator.local_target)
+        self.assertNotEqual(navigator.open_goal, (0, 100, 0))
+
+    def test_journey_watchdog_allows_a_successful_long_walk(self):
+        navigator = self.navigator()
+        navigator.open_goal = (0, 1000, 0)
+        for now in range(300):
+            self.assertFalse(navigator.journey_stalled_out((0, now * .5, 0), now))
+        self.assertEqual(navigator.open_goal, (0, 1000, 0))
+
+    def test_journey_watchdog_excludes_pause_gaps_and_resets_for_new_goal(self):
+        navigator = self.navigator()
+        navigator.open_goal = (0, 100, 0)
+        for now in range(11):
+            self.assertFalse(navigator.journey_stalled_out((0, 0, 0), now))
+        self.assertFalse(navigator.journey_stalled_out((0, 0, 0), 1000))
+        self.assertEqual(navigator.journey_stalled, 10)
+        navigator.open_goal = (100, 0, 0)
+        for now in range(1001, 1021):
+            self.assertFalse(navigator.journey_stalled_out((0, 0, 0), now))
+        self.assertTrue(navigator.journey_stalled_out((0, 0, 0), 1021))
 
     def test_open_goal_still_avoids_a_known_failed_step(self):
         position = (6, 6, 0)
@@ -603,13 +675,17 @@ class ExplorationTests(unittest.TestCase):
         state['position']['y'] = 1
         tick(5)
         self.assertEqual(movement.recovery_attempts, 1)
+        self.assertIsNotNone(movement.recovery_jump_started)
+        tick(5.7)
+        tick(8.8)
         self.assertIsNone(movement.recovery_jump_started)
-        self.assertIn('choosing another direction', tick(7.1))
+        self.assertNotIn('choosing another direction', tick(10.5))
+        self.assertIn('choosing another direction', tick(11.0))
         self.assertIsNone(movement.navigator.local_target)
         self.assertEqual(sum(movement.navigator.failures.values()), 1)
-        tick(7.2)
+        tick(11.1)
         self.assertNotEqual(movement.navigator.local_target, target)
-        self.assertIn('backing up for jump', movement.recover(state['position'], 10))
+        self.assertIn('backing up for jump', movement.recover(state['position'], 12))
         self.assertEqual(movement.recovery_attempts, 3)
 
     def recovery_session(self):
@@ -642,16 +718,20 @@ class ExplorationTests(unittest.TestCase):
         self.assertIn('jumping', tick(3.85))
         return movement, jump, state, tick
 
-    def test_rejected_recovery_jump_replans_immediately(self):
+    def test_rejected_recovery_jump_waits_for_existing_airtime_and_landing(self):
         movement, jump, state, tick = self.recovery_session()
         state.update(in_air=True, standing=False)
-        self.assertIn('choosing another direction', tick(3.86))
+        self.assertIn('jumping', tick(3.86))
         self.assertEqual(jump.result, 'rejected')
+        state.update(in_air=False, standing=True)
+        self.assertIn('recovering from landing', tick(4))
+        tick(4.7)
+        self.assertIn('choosing another direction', tick(7.8))
         self.assertIsNone(movement.recovery_jump_started)
         self.assertIsNone(movement.recovery_jump_request)
         self.assertEqual(movement.recovery_attempts, 2)
         self.assertEqual(movement.jump_budget_used, 1)
-        tick(3.87)
+        tick(7.9)
         self.assertIsNone(movement.recovery_jump_started)
 
     def test_twenty_foot_turnarounds_do_not_refill_jump_budget(self):
@@ -701,17 +781,20 @@ class ExplorationTests(unittest.TestCase):
         self.assertIn('jumping', tick(4))
         self.assertEqual(jump.result, 'airborne')
         state.update(in_air=False, standing=True, vertical_speed=0)
-        self.assertIn('waiting for active', tick(5))
+        self.assertIn('recovering from landing', tick(5))
         self.assertEqual(movement.recovery_attempts, 1)
         self.assertIsNotNone(movement.recovery_anchor)
         state['ped_state'] = 1
         tick(6)
-        self.assertIn('choosing another direction', tick(8.1))
-        tick(8.2)
-        self.assertIn('backing up', movement.recover(state['position'], 10, state))
+        tick(6.7)
+        self.assertNotIn('choosing another direction', tick(8.1))
+        tick(9.8)
+        self.assertIn('choosing another direction', tick(12.0))
+        tick(12.1)
+        self.assertIn('backing up', movement.recover(state['position'], 12.2, state))
         self.assertEqual(movement.jump_budget_used, 2)
         # The same interruptions that used to reset the loop cannot refill it.
-        for now in range(11, 21):
+        for now in range(13, 23):
             movement.stop()
             movement.navigator.waypoint((0, -1.5, 0), 0, 0, now)
             status = movement.recover(state['position'], now, state)
@@ -720,7 +803,7 @@ class ExplorationTests(unittest.TestCase):
         # An actual escape starts a fresh obstacle episode.
         state['position']['y'] = 20
         movement.stop()
-        self.assertIn('backing up', movement.recover(state['position'], 22, state))
+        self.assertIn('backing up', movement.recover(state['position'], 24, state))
         self.assertEqual(movement.jump_budget_used, 1)
 
     def test_recovery_does_not_schedule_jump_without_ground_contact(self):
@@ -751,7 +834,7 @@ class ExplorationTests(unittest.TestCase):
         self.assertIsNone(navigator.goal)
         self.assertIn(((0, 0), (0, 1)), navigator.blocked)
         self.assertEqual(navigator.edge_failures[((0, 0), (0, 1))], 1)
-        self.assertIsNone(movement.recovery_turn)
+        self.assertIsNone(movement.recovery_target)
         self.assertTrue(navigator.exploring)
 
     def test_steep_height_change_requests_recovery_before_abandoning_route(self):
@@ -779,7 +862,7 @@ class ExplorationTests(unittest.TestCase):
                 self.assertEqual(movement.navigator.open_goal, goal)
                 self.assertIsNone(movement.navigator.local_target)
                 self.assertEqual(sum(movement.navigator.failures.values()), 1)
-                self.assertIsNone(movement.recovery_turn)
+                self.assertIsNone(movement.recovery_target)
                 self.assertIsNone(movement.recovery_jump_setup)
                 self.assertFalse(movement.navigator.returning)
                 self.assertFalse(movement.navigator.recovery_requested)
@@ -793,6 +876,21 @@ class ExplorationTests(unittest.TestCase):
         navigator.observe((1, 1, 0), 0)
         navigator.observe((1, 1, 8), 1)
         self.assertEqual(len(navigator.coverage), 2)
+
+    def test_mountain_failures_abandon_goal_and_remain_blocked_after_moving_away(self):
+        navigator = self.navigator()
+        navigator.waypoint((0, 0, 0), 0, 0, 0)
+        original_goal = navigator.open_goal
+        navigator.avoid_target(1, retreat=False)
+        navigator.waypoint((0, -20, 0), 0, 0, 2)
+        navigator.avoid_target(3, retreat=False)
+        self.assertTrue(navigator.route_abandoned)
+        self.assertIsNone(navigator.open_goal)
+        target = navigator.waypoint((0, -20, 0), 0, 0, 4)
+        self.assertNotEqual(navigator.open_goal, original_goal)
+        self.assertFalse(navigator.approach_blocked((0, -20, 0), target, 4))
+        self.assertTrue(navigator.approach_blocked((0, 0, 0), original_goal, 250))
+        self.assertFalse(navigator.approach_blocked((0, 0, 0), original_goal, 304))
 
     def test_memory_survives_restart_including_blocked_connections(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -870,7 +968,7 @@ class ExplorationTests(unittest.TestCase):
             read_controls(path, settings)
             self.assertEqual(settings['mode'], 'explore')
 
-    def test_off_path_replanning_keeps_course_without_automatic_backtracking(self):
+    def test_repeated_off_path_failures_abandon_course_without_automatic_backtracking(self):
         with patch('core.controller.Keys'):
             movement = Walking()
             movement.set_mode('explore')
@@ -881,19 +979,20 @@ class ExplorationTests(unittest.TestCase):
                 status = movement.recover({'x': 0, 'y': 0, 'z': 0}, attempt)
                 self.assertIn('choosing another direction', status)
                 self.assertIsNone(movement.recovery_jump_setup)
-                self.assertIsNone(movement.recovery_turn)
-                self.assertEqual(movement.navigator.open_goal, goal)
+                self.assertIsNone(movement.recovery_target)
+                if attempt == 1:
+                    self.assertEqual(movement.navigator.open_goal, goal)
+                else:
+                    self.assertIsNone(movement.navigator.open_goal)
                 self.assertIsNone(movement.navigator.local_target)
                 self.assertFalse(movement.navigator.returning)
                 movement.navigator.waypoint((0, 0, 0), 0, 0, attempt + .1)
                 self.assertNotEqual(movement.navigator.local_target, target)
             self.assertIn('choosing another direction', movement.recover({'x': 0, 'y': 0, 'z': 0}, 3))
-            self.assertIsNone(movement.recovery_turn)
+            self.assertIsNone(movement.recovery_target)
             self.assertIsNone(movement.navigator.local_target)
-            self.assertEqual(movement.navigator.open_goal, goal)
+            self.assertIsNone(movement.navigator.open_goal)
             self.assertEqual(sum(movement.navigator.failures.values()), 3)
             self.assertFalse(movement.navigator.returning)
             movement.navigator.waypoint((0, 0, 0), 0, 0, 7)
             self.assertNotEqual(movement.navigator.local_target, target)
-            self.assertIn('water', movement.tick({'in_water': True}, True, 'explore'))
-            self.assertIsNone(movement.navigator.local_target)
