@@ -403,6 +403,29 @@ class CameraTests(unittest.TestCase):
         self.camera.close()
         self.assertEqual(self.selector(), 3)
 
+    def test_standard_mouse_camera_settings_are_owned_and_restored(self):
+        from games.vice_city.game import CONTROL_METHOD, MOUSE_THIRD_PERSON
+        self.mem.write(CONTROL_METHOD, b'\x01')
+        self.mem.write(MOUSE_THIRD_PERSON, b'\0')
+        self.assertTrue(self.camera.apply(True))
+        self.assertEqual(self.mem.byte(CONTROL_METHOD), 0)
+        self.assertEqual(self.mem.byte(MOUSE_THIRD_PERSON), 1)
+        self.camera.apply(False)
+        self.assertEqual(self.mem.byte(MOUSE_THIRD_PERSON), 1)
+        self.camera.close()
+        self.assertEqual(self.mem.byte(CONTROL_METHOD), 1)
+        self.assertEqual(self.mem.byte(MOUSE_THIRD_PERSON), 0)
+
+    def test_invalid_mouse_camera_settings_block_all_writes(self):
+        from games.vice_city.game import CONTROL_METHOD, MOUSE_THIRD_PERSON
+        for address in (CONTROL_METHOD, MOUSE_THIRD_PERSON):
+            with self.subTest(address=address):
+                self.mem.write(address, b'\x02')
+                before = dict(self.mem.data)
+                self.assertFalse(self.camera.apply(True))
+                self.assertEqual(self.mem.data, before)
+                self.mem.write(address, b'\0')
+
     def test_missing_changed_small_or_invalid_plugin_cannot_write(self):
         for change in ("missing", "hash", "size", "flag"):
             with self.subTest(change=change):

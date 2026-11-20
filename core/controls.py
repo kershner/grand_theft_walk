@@ -1,15 +1,21 @@
-"""Focus-aware keyboard input, held-key tracking, and relative mouse movement."""
+"""Keyboard/native input, view and jump commands, and native respawn recovery."""
 
+import configparser
 import ctypes as c
+import io
 import logging
 import struct
 import time
 from ctypes import wintypes as w
+from pathlib import Path
 
 import keyboard
 
+from core.files import read_json, sha256
 from core.navigation import SmoothTurn
 from core.runtime import request_expired
+from core.winmemory import k32
+
 
 logger = logging.getLogger(__name__)
 MOUSE_UNITS_PER_STEP = 10
@@ -150,8 +156,9 @@ class Keys:
 
 
 class ViewControl:
-    def __init__(self, focused=None):
+    def __init__(self, focused=None, look_multiplier=1):
         self.keys = Keys(focused=focused)
+        self.look_multiplier = look_multiplier
         self.turn = SmoothTurn()
         self.last_request = None
         self.cancel()
@@ -194,7 +201,7 @@ class ViewControl:
         else:
             pixels, self.pending = self.turn.nudge(self.pending, now)
         if pixels:
-            self.keys.look(pixels)
+            self.keys.look(pixels * self.look_multiplier)
 
 
 class HighJump:
@@ -261,3 +268,155 @@ class HighJump:
         self.release_at = now + 0.12
         self.deadline = now + 2.0
         logger.debug("%s requested", action.capitalize())
+
+
+logger = logging.getLogger(__name__)
+
+
+class Respawn:
+    def __init__(self, game, protection, session):
+        self.game = game
+        self.protection = protection
+        self.session = session
+        self.last_request = None
+        self.active = False
+        self.seen_dead = False
+        self.started_at = 0.0
+
+    def requested(self, request):
+        return bool(
+            isinstance(request, dict) and request.get("id")
+            and request["id"] != self.last_request
+            and request.get("session") == self.session
+            and not request_expired(request)
+        )
+
+    def tick(self, request, state, now, saving=False):
+        if self.active:
+            living = bool(state.get("ready") and state.get("health", 0) > 0
+                          and state.get("player_state") == 0)
+            self.seen_dead = self.seen_dead or not living
+            if self.seen_dead and living:
+                self.active = False
+                logger.info("Player respawned; normal controls resumed")
+            elif now - self.started_at >= 30:
+                self.active = False
+                logger.warning("Native respawn is taking longer than expected; controls resumed")
+            return self.active
+        if not self.requested(request):
+            return False
+        if not state.get("ready"):
+            return False
+        if state.get("health", 0) <= 0 or state.get("player_state") != 0:
+            self.last_request = request["id"]
+            return False  # An existing native death already satisfies this request.
+        if saving or not (state.get("foreground") or state.get("background_control")) or state.get("paused") or state.get("cutscene"):
+            return False
+        self.last_request = request["id"]
+        if self.protection:
+            failures = self.protection.restore()
+            if failures:
+                logger.error("Respawn cancelled: could not suspend protection: %s", failures)
+                return False
+        if not self.game.kill_player(state):
+            logger.warning("Respawn cancelled: the current player changed")
+            return False
+        self.active, self.seen_dead, self.started_at = True, False, now
+        logger.info("Voted respawn: player health cleared; waiting for native respawn")
+        return True
+
+
+MODULE = "GTW.BackgroundInput.asi"
+
+
+WINDOW_CONFIG = "scripts/III.VC.SA.WindowedMode.cfg"
+
+
+BUTTONS = {"forward": 1, "back": 2, "jump": 4, "drop": 8, "walk": 16}
+
+
+def configure_window(directory):
+    """Keep window geometry local; set streaming requirements before launch."""
+    path = Path(directory) / WINDOW_CONFIG
+    config = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
+    config.optionxform = str
+    if path.exists():
+        config.read(path, encoding="utf-8-sig")
+    if not config.has_section("MAIN"):
+        config.add_section("MAIN")
+    required = {"WindowMode": "2", "PauseOnFocusLoss": "0", "ResumeOnFocus": "0", "ConfineCursor": "1"}
+    if all(config.get("MAIN", key, fallback=None) == value for key, value in required.items()):
+        return
+    for key, value in required.items():
+        config.set("MAIN", key, value)
+    output = io.StringIO()
+    config.write(output)
+    path.write_text(output.getvalue(), encoding="utf-8")
+
+
+class NativeInput:
+    def __init__(self, memory):
+        self.mem = memory
+        manifest = read_json(Path(__file__).parent / "native/background.json")
+        module = memory.module(MODULE)
+        if not module or sha256(module["path"]) != manifest["sha256"]:
+            raise RuntimeError("The background input bridge is missing or changed; run suite repair.")
+        self.address = module["base"] + manifest["state_rva"]
+        if manifest["state_rva"] + 40 > module["size"]:
+            raise RuntimeError("Invalid background input bridge layout")
+        protocol, status, game = memory.unpack(self.address, "3I")
+        expected = {"san_andreas": 1, "vice_city": 2, "gta_iii": 3}[memory.profile.id]
+        if (protocol, status, game) != (1, 1, expected):
+            raise RuntimeError("The background input hook did not match this game; refusing desktop input fallback.")
+        self.channels = []
+        self.x = self.y = 0
+        memory.background_control = True
+
+    def keys(self, actions=()):
+        channel = NativeKeys(self, actions)
+        self.channels.append(channel)
+        return channel
+
+    def publish(self):
+        bits = 0
+        for channel in self.channels:
+            for action in channel.held:
+                bits |= BUTTONS[action]
+        self.mem.write(self.address + 20, struct.pack("<3I", bits, self.x, self.y))
+        self.mem.write(self.address + 16, struct.pack("<I", k32.GetTickCount() & 0xFFFFFFFF))
+        self.mem.write(self.address + 12, struct.pack("<I", 1))
+
+    def report(self):
+        frames, applied = self.mem.unpack(self.address + 32, "2I")
+        return {"enabled": True, "input": "native", "frames": frames, "applied_frames": applied}
+
+    def close(self):
+        self.mem.background_control = False
+        if self.mem.alive():
+            self.mem.write(self.address + 12, bytes(20))
+
+
+class NativeKeys:
+    def __init__(self, bridge, actions):
+        self.bridge = bridge
+        self.bindings = dict(actions) if isinstance(actions, dict) else {name: name for name in actions}
+        self.held = set()
+
+    def set(self, desired):
+        desired = set(desired)
+        if not desired <= self.bindings.keys() or not desired <= BUTTONS.keys():
+            raise ValueError("Unknown native input action")
+        self.held = desired
+
+    def release(self, actions=None):
+        self.held.difference_update(self.held.copy() if actions is None else actions)
+
+    def move_mouse(self, horizontal, vertical):
+        self.bridge.x = (self.bridge.x + int(horizontal)) & 0xFFFFFFFF
+        self.bridge.y = (self.bridge.y + int(vertical)) & 0xFFFFFFFF
+
+    def turn(self, amount):
+        self.move_mouse(amount, 0)
+
+    def look(self, amount):
+        self.move_mouse(0, amount)

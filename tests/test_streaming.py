@@ -9,12 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from chat.auth import OAuthTokens, REQUIRED_SCOPES
-from chat.oauth import REQUIRED_SCOPES as OAUTH_SCOPES
+from chat.oauth import OAuthTokens, REQUIRED_SCOPES as OAUTH_SCOPES, REQUIRED_SCOPES
 from chat.twitch import CATEGORIES, STREAM_TAGS, StreamMetadata, TwitchBot
 from core.config import RotationProgress, load_parameters, rotation_seconds, select_game, twitch_settings
 from streaming import launch as launcher
-from streaming.obs import OBS
+from streaming.launch import OBS
 
 
 class RotationTests(unittest.TestCase):
@@ -78,7 +77,7 @@ class ReadinessTests(unittest.TestCase):
 class SessionLifecycleTests(unittest.TestCase):
     def run_mock_session(self, mode, chat_failure=False):
         import core.manager
-        import core.processes
+        import core.winmemory
         import core.winmemory
 
         with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
@@ -87,9 +86,9 @@ class SessionLifecycleTests(unittest.TestCase):
             stack.enter_context(patch.object(core.winmemory, "process_mutex"))
             stack.enter_context(patch.object(core.winmemory, "game_pids", return_value=[]))
             stack.enter_context(patch.object(core.manager, "session_command", return_value=(["python", "launch.py"], root)))
-            job = stack.enter_context(patch.object(core.processes, "ProcessJob")).return_value
-            obs = stack.enter_context(patch("streaming.obs.OBS")).return_value
-            auth = stack.enter_context(patch("chat.auth.OAuthTokens")).return_value
+            job = stack.enter_context(patch.object(core.winmemory, "ProcessJob")).return_value
+            obs = stack.enter_context(patch("streaming.launch.OBS")).return_value
+            auth = stack.enter_context(patch("chat.oauth.OAuthTokens")).return_value
             control = stack.enter_context(patch.object(launcher, "WalkerControl")).return_value
             control.state_dir = root
             control.snapshot.side_effect = RuntimeError("offline")
@@ -135,7 +134,7 @@ class SessionLifecycleTests(unittest.TestCase):
 class TimedRotationTests(unittest.TestCase):
     def test_deadline_rotates_in_order_and_requests_controller_cleanup(self):
         import core.manager
-        import core.processes
+        import core.winmemory
 
         for current, expected, elapsed in (("san_andreas", "vice_city", 0),
                                            ("gta_iii", "san_andreas", 0),
@@ -147,7 +146,7 @@ class TimedRotationTests(unittest.TestCase):
                     {"version": 1, "game": current, "elapsed_seconds": elapsed}))
                 stack.enter_context(patch.object(launcher, "ROOT", root))
                 command = stack.enter_context(patch.object(core.manager, "session_command", return_value=(["python"], root)))
-                job = stack.enter_context(patch.object(core.processes, "ProcessJob")).return_value
+                job = stack.enter_context(patch.object(core.winmemory, "ProcessJob")).return_value
                 control = stack.enter_context(patch.object(launcher, "WalkerControl")).return_value
                 control.state_dir = root
                 control.snapshot.return_value = {"session": "new"}
@@ -167,6 +166,7 @@ class TimedRotationTests(unittest.TestCase):
                 sleep = stack.enter_context(patch.object(launcher.time, "sleep"))
                 self.assertEqual(launcher.run_game_session({}, root / "params.json", current, "dev"), expected)
                 self.assertEqual(reports[0]["next_switch_at"], 8200 - elapsed)
+                self.assertEqual(reports[0]["next_game"], expected)
                 self.assertEqual([call.args[0] for call in command.call_args_list], [current, expected])
                 sleep.assert_called_once_with(0.5)
                 self.assertTrue(json.loads((root / "control.json").read_text())["quit"])
@@ -180,8 +180,8 @@ class TimedRotationTests(unittest.TestCase):
         with (
             patch("core.winmemory.process_mutex"),
             patch("core.winmemory.game_pids", return_value=[]),
-            patch("chat.auth.OAuthTokens"),
-            patch("streaming.obs.OBS") as factory,
+            patch("chat.oauth.OAuthTokens"),
+            patch("streaming.launch.OBS") as factory,
             patch.object(launcher, "run_game_session", side_effect=["gta_iii", "san_andreas", None]) as run,
         ):
             params = {"CLIENT_ID": "app", "CLIENT_SECRET": "secret", "TWITCH_CHANNEL": "walker", "TWITCH_BOT_LOGIN": "walker"}
@@ -197,29 +197,66 @@ class OBSOwnershipTests(unittest.TestCase):
     def test_existing_live_stream_is_never_stopped(self):
         client = Mock()
         client.get_stream_status.return_value.output_active = True
-        obs = OBS({"settle_seconds": 0})
-        with patch("streaming.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
-                patch("streaming.obs.obsws_python.ReqClient", return_value=client), \
-                patch("streaming.obs.subprocess.Popen") as popen:
-            with self.assertRaisesRegex(RuntimeError, "already streaming"):
-                obs.prepare("vice_city")
+        obs = OBS({"profile": "Managed", "scene_collection": "Games",
+                   "scenes": {"vice_city": "VC"}, "settle_seconds": 0})
+        with patch("streaming.launch.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("streaming.launch.obsws_python.ReqClient", return_value=client), \
+                patch("streaming.launch.subprocess.Popen") as popen:
+            obs.prepare("vice_city")
+            obs.start_stream()
             obs.close()
         popen.assert_not_called()
+        client.set_current_profile.assert_not_called()
+        client.set_current_scene_collection.assert_not_called()
+        client.set_current_program_scene.assert_called_once_with("VC")
+        client.start_stream.assert_not_called()
         client.stop_stream.assert_not_called()
+        client.disconnect.assert_called_once()
+        self.assertFalse(obs.started_stream)
 
     def test_scene_selected_before_stream_and_owned_stream_stops(self):
         client = Mock()
         client.get_stream_status.return_value.output_active = False
         obs = OBS({"scenes": {"vice_city": "VC"}, "settle_seconds": 0})
-        with patch("streaming.obs.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
-                patch("streaming.obs.obsws_python.ReqClient", return_value=client):
+        with patch("streaming.launch.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("streaming.launch.obsws_python.ReqClient", return_value=client):
             obs.prepare("vice_city")
         client.set_current_program_scene.assert_called_once_with("VC")
         client.start_stream.assert_not_called()
+        client.get_stream_status.side_effect = [SimpleNamespace(output_active=False), SimpleNamespace(output_active=True)]
+        obs.start_stream()
+        obs.close()
+        client.start_stream.assert_called_once()
+        client.stop_stream.assert_called_once()
+
+    def test_stream_started_during_game_startup_is_reused(self):
+        client = Mock()
+        client.get_stream_status.return_value.output_active = False
+        obs = OBS({"profile": "Managed", "scene_collection": "Games", "settle_seconds": 0})
+        with patch("streaming.launch.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("streaming.launch.obsws_python.ReqClient", return_value=client):
+            obs.prepare("vice_city")
+        client.set_current_profile.assert_called_once_with("Managed")
+        client.set_current_scene_collection.assert_called_once_with("Games")
         client.get_stream_status.return_value.output_active = True
         obs.start_stream()
         obs.close()
-        client.stop_stream.assert_called_once()
+        client.start_stream.assert_not_called()
+        client.stop_stream.assert_not_called()
+
+    def test_existing_stream_survives_scene_selection_failure(self):
+        client = Mock()
+        client.get_stream_status.return_value.output_active = True
+        client.set_current_program_scene.side_effect = RuntimeError("Missing scene")
+        obs = OBS({"scenes": {"vice_city": "VC"}, "settle_seconds": 0})
+        with patch("streaming.launch.psutil.process_iter", return_value=[SimpleNamespace(info={"name": "obs64.exe"})]), \
+                patch("streaming.launch.obsws_python.ReqClient", return_value=client):
+            with self.assertRaisesRegex(RuntimeError, "Missing scene"):
+                obs.prepare("vice_city")
+            obs.close()
+        client.start_stream.assert_not_called()
+        client.stop_stream.assert_not_called()
+        client.disconnect.assert_called_once()
 
 
 class TokenTests(unittest.TestCase):
@@ -238,8 +275,8 @@ class TokenTests(unittest.TestCase):
             refreshed.json.return_value = {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}
             validated = Mock(status_code=200)
             validated.json.return_value = {"client_id": "app", "login": "walker", "scopes": ["chat:read", "chat:edit", "channel:manage:broadcast"]}
-            with patch("chat.auth.requests.post", return_value=refreshed) as post, \
-                    patch("chat.auth.requests.get", return_value=validated) as get:
+            with patch("chat.oauth.requests.post", return_value=refreshed) as post, \
+                    patch("chat.oauth.requests.get", return_value=validated) as get:
                 tokens.ensure_fresh()
                 tokens.ensure_fresh()
             self.assertEqual(json.loads(path.read_text())["refresh_token"], "new-refresh")
@@ -253,7 +290,7 @@ class TokenTests(unittest.TestCase):
             tokens = OAuthTokens({"CLIENT_ID": "app", "TWITCH_BOT_LOGIN": "walker"}, path)
             response = Mock(status_code=200)
             response.json.return_value = {"client_id": "app", "login": "someone_else", "scopes": ["chat:read", "chat:edit"]}
-            with patch("chat.auth.requests.get", return_value=response), self.assertRaisesRegex(RuntimeError, "wrong"):
+            with patch("chat.oauth.requests.get", return_value=response), self.assertRaisesRegex(RuntimeError, "wrong"):
                 tokens.ensure_fresh()
 
 

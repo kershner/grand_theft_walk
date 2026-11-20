@@ -11,11 +11,15 @@ import time
 import uuid
 from pathlib import Path
 
+import obsws_python
+import psutil
+
 from core.config import RotationProgress, load_parameters, local_path, rotation_seconds, twitch_settings
 from core.files import atomic_json, read_json
 from core.runtime import WalkerControl, chat_ready, configure_logging
+from core.winmemory import spawn
 from games import ACTIVE_GAMES, ROOT, get_game
-from core.processes import spawn
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +60,7 @@ def run_session(params, parameters_path, game, mode):
         previous_game = None
         try:
             if mode == "prod":
-                from streaming.obs import OBS
-                from chat.auth import OAuthTokens
+                from chat.oauth import OAuthTokens
 
                 twitch_settings(params)
                 OAuthTokens(params, local_path(parameters_path, params.get("TOKENS_FILE", "oauth_tokens.json"))).ensure_fresh()
@@ -77,7 +80,7 @@ def run_session(params, parameters_path, game, mode):
 
 def run_game_session(params, parameters_path, game, mode, obs=None, switched_from=None):
     from core.manager import session_command
-    from core.processes import ProcessJob, stop_processes
+    from core.winmemory import ProcessJob, stop_processes
 
     command, directory = session_command(game)
     control = WalkerControl(game=game)
@@ -100,6 +103,8 @@ def run_game_session(params, parameters_path, game, mode, obs=None, switched_fro
         next_game = games[(games.index(game) + 1) % len(games)] if game in games else games[0]
         rotating = next_game != game
         atomic_json(rotation_file, {"game": game, "switched_from": switched_from,
+                                   "rotation_id": rotation_file.stem,
+                                   "next_game": next_game if rotating else None,
                                    "next_switch_at": time.time() + interval if rotating else None})
         if mode == "prod":
             chat_command = [sys.executable, "-B", "-m", "chat.twitch",
@@ -115,6 +120,8 @@ def run_game_session(params, parameters_path, game, mode, obs=None, switched_fro
             obs.start_stream()
         progress.start(game)
         atomic_json(rotation_file, {"game": game, "switched_from": switched_from,
+                                   "rotation_id": rotation_file.stem,
+                                   "next_game": next_game if rotating else None,
                                    "next_switch_at": time.time() + interval if rotating else None})
         logger.info("Session ready: %s (%s). F12 exits the game; Ctrl+C stops the session.", game, mode)
         while process.poll() is None:
@@ -189,6 +196,95 @@ def main(argv=None):
         return
     configure_logging(ROOT / "runtime", log_name="stream")
     run_session(params, args.parameters, game, mode)
+
+
+logger = logging.getLogger(__name__)
+
+
+class OBS:
+    def __init__(self, settings):
+        self.settings = settings
+        self.client = None
+        self.started_stream = False
+
+    def prepare(self, game):
+        settings = self.settings
+        executable = Path(settings.get("executable", "C:/Program Files/obs-studio/bin/64bit/obs64.exe"))
+        running = any((p.info["name"] or "").lower() == executable.name.lower()
+                      for p in psutil.process_iter(["name"]))
+        local = settings.get("host", "127.0.0.1") in ("localhost", "127.0.0.1", "::1")
+        if not running and local:
+            if not executable.is_file():
+                raise RuntimeError(
+                    "OBS executable was not found. Set OBS.executable in parameters.json "
+                    "to the full path of obs64.exe."
+                )
+            command = [str(executable), "--minimize-to-tray", "--disable-missing-files-check", "--disable-updater"]
+            for key, flag in (("profile", "--profile"), ("scene_collection", "--collection")):
+                if settings.get(key):
+                    command.extend([flag, settings[key]])
+            subprocess.Popen(command, cwd=executable.parent)
+        deadline = time.monotonic() + float(settings.get("connect_timeout", 60))
+        while True:
+            try:
+                self.client = obsws_python.ReqClient(
+                    host=settings.get("host", "127.0.0.1"), port=settings.get("port", 4455),
+                    password=settings.get("password", ""), timeout=5)
+                self.client.get_version()
+                break
+            except Exception:
+                self.disconnect()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("OBS WebSocket unavailable; check OBS Tools > WebSocket Server Settings.") from None
+                time.sleep(2)
+        if self.client.get_stream_status().output_active:
+            logger.info("Reusing the live OBS stream; keeping its profile and scene collection.")
+        else:
+            if settings.get("profile"):
+                self.client.set_current_profile(settings["profile"])
+            if settings.get("scene_collection"):
+                self.client.set_current_scene_collection(settings["scene_collection"])
+        self.select_game(game)
+
+    def select_game(self, game):
+        scene = self.settings.get("scenes", {}).get(game)
+        if scene:
+            self.client.set_current_program_scene(scene)
+        # Attach capture before the next game creates its DirectX context.
+        time.sleep(float(self.settings.get("settle_seconds", 10)))
+
+    def start_stream(self):
+        # OBS may already be live, including a stream started during game startup.
+        if self.client.get_stream_status().output_active:
+            logger.info("OBS stream already live; continuing without restarting it.")
+            return
+        # Set ownership first: a timed-out request may still have started the stream.
+        self.started_stream = True
+        self.client.start_stream()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if self.client.get_stream_status().output_active:
+                logger.info("OBS stream live.")
+                return
+            time.sleep(1)
+        raise RuntimeError("OBS did not report a live stream within 30 seconds.")
+
+    def disconnect(self):
+        if self.client is not None:
+            try:
+                self.client.disconnect()
+            except Exception:
+                pass
+            self.client = None
+
+    def close(self):
+        try:
+            if self.started_stream and self.client is not None:
+                self.client.stop_stream()
+        except Exception:
+            logger.error("Could not stop the managed OBS stream; check OBS.")
+        finally:
+            self.disconnect()
 
 
 if __name__ == "__main__":

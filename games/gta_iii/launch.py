@@ -5,14 +5,27 @@ import sys
 import time
 from pathlib import Path
 
+# Direct script launches must find the project before importing its packages.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+
 from core.controls import Keys
 from core.files import atomic_json, read_json, sha256
-from core.session import StartupWait, choose_save
 from core.saves import seed_checkpoint
-from games.gta_iii.game import Game, RuntimeChanges, MENU, SAVE_PREFIX, menu, on_mission, unlock_regions, valid_save, initialize_camera_provider
+from core.session import StartupWait, choose_save
+from games.gta_iii.game import (
+    Game,
+    MENU,
+    RuntimeChanges,
+    SAVE_PREFIX,
+    initialize_camera_provider,
+    menu,
+    on_mission,
+    unlock_regions,
+    valid_save,
+)
+
 
 MAIN_MENU, LOAD, PAUSE = 51, 14, 52
 SEED_SHA256 = "3342ae68b1debfc1297c2a15ef557d34b4814ad0af99ffb38451cacffe71e06d"

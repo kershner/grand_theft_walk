@@ -97,4 +97,3 @@ def put_file(source, target):
         os.replace(temporary, target)
     finally:
         _retry_file_access(temporary.unlink, missing_ok=True)
-

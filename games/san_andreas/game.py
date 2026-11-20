@@ -7,10 +7,10 @@ import re
 import struct
 import zlib
 
-from games import Capabilities
 from core.controls import bind_action_key
 from core.saves import Autosave as SharedAutosave
-from core.missions import load_destinations
+from games import Capabilities
+
 
 CAPABILITIES = Capabilities(
     protection=True, peaceful=True, unlock_map=True, walk_binding=True,

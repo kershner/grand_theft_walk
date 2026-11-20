@@ -15,8 +15,8 @@ from core import session
 from core.controller import Controller
 from core.files import atomic_json
 from core.navigation import Node, PedestrianGraph
-from core.processes import ProcessJob, spawn, stop_processes, watch
 from core.runtime import control_request
+from core.winmemory import ProcessJob, spawn, stop_processes, watch
 from games import ACTIVE_GAMES, Capabilities, get_game
 
 
@@ -205,7 +205,7 @@ class ProcessOwnershipTests(unittest.TestCase):
     def test_failed_job_assignment_does_not_leave_a_child_running(self):
         child, job = Mock(), Mock()
         job.add.side_effect = RuntimeError("assignment failed")
-        with patch("core.processes.subprocess.Popen", return_value=child):
+        with patch("core.winmemory.subprocess.Popen", return_value=child):
             with self.assertRaisesRegex(RuntimeError, "assignment failed"):
                 spawn(job, ["python", "child.py"])
         child.kill.assert_called_once()

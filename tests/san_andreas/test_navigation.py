@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from core.controller import Controller, Walking
 from core.navigation import (
     Node,
     PedestrianGraph,
@@ -20,7 +21,6 @@ from core.navigation import (
     read_area,
 )
 from core.runtime import DEFAULTS, control_request
-from core.controller import Controller, Walking
 from games.san_andreas.game import CAPABILITIES
 
 
@@ -340,6 +340,34 @@ class MovementTests(unittest.TestCase):
                 self.assertIsNone(self.movement.recovery_anchor)
                 self.assertEqual(self.movement.recovery_attempts, 0)
 
+    def test_recovery_turns_right_20_then_jumps_and_keeps_attempts_while_airborne(self):
+        for mode in ('free', 'mission', 'explore'):
+            with self.subTest(mode=mode):
+                movement = Walking(graph_fixture())
+                movement.set_mode(mode)
+                movement.jump_supported = True
+                movement.navigator.local_target = (0, 10, 0)
+                movement.navigator.open_goal = (0, 100, 0)
+                self.assertIn('turning right 20', movement.recover(self.state['position'], 0))
+                self.assertIn('jumping', movement.recover(self.state['position'], 2))
+                self.assertIsNotNone(movement.recovery_jump_request)
+                state = dict(self.state, in_air=True, standing=False, ped_state=41)
+                with patch('core.controller.time.monotonic', return_value=2.1):
+                    self.assertIn('jumping', movement.tick(state, True, mode))
+                self.assertEqual(movement.recovery_attempts, 2)
+                state.update(in_air=False, standing=True, ped_state=1)
+                with patch('core.controller.time.monotonic', return_value=3):
+                    self.assertIn('walking forward', movement.tick(state, True, mode))
+                with patch('core.controller.time.monotonic', return_value=7.2):
+                    self.assertIn('turning right 20', movement.tick(state, True, mode))
+                self.assertEqual(movement.recovery_attempts, 3)
+                expected = 20 if mode == 'free' else 50
+                self.assertIn(f'turning right {expected}', movement.recover(state['position'], 12))
+                self.assertEqual(movement.navigator.open_goal, (0, 100, 0))
+                movement.stop()
+                self.assertIsNone(movement.recovery_jump_request)
+                self.assertIsNone(movement.recovery_jump_started)
+
     def finish_recovery_turn(self, start):
         self.keys.turn.reset_mock()
         navigator = self.movement.navigator
@@ -421,6 +449,58 @@ class MovementTests(unittest.TestCase):
                             f"turning right {amount}", self.movement.tick(self.state, True, mode)
                         )
                     now = self.finish_recovery_turn(now)
+
+    def test_stationary_recovery_eventually_abandons_route_and_resumes_planning(self):
+        for mode in ('mission', 'explore'):
+            for jumping in (False, True):
+                with self.subTest(mode=mode, jumping=jumping):
+                    movement = self.movement = Walking(graph_fixture())
+                    movement.set_mode(mode)
+                    movement.jump_supported = jumping
+                    navigator = movement.navigator
+                    navigator.open_terrain_chance = 0
+                    navigator.previous, navigator.target = (0, 0), (0, 4)
+                    navigator.goal = (0, 4)
+                    navigator.goal_edge = ((0, 0), (0, 4))
+                    navigator.goal_steps = {(0, 0): (0, 4)}
+                    # Keep the mission objective while abandoning this approach.
+                    if mode == 'mission':
+                        navigator.set_destination((0, 3))
+                    limit = 6 if jumping else 5
+                    now = 0
+                    for attempt in range(1, limit):
+                        status = movement.recover(self.state['position'], now)
+                        self.assertNotIn('abandoned', status)
+                        if jumping and attempt == 2:
+                            airborne = dict(self.state, in_air=True, standing=False, ped_state=41)
+                            with patch('core.controller.time.monotonic', return_value=now + .1):
+                                movement.tick(airborne, True, mode)
+                            with patch('core.controller.time.monotonic', return_value=now + .2):
+                                movement.tick(self.state, True, mode)
+                            now += .2
+                        else:
+                            now = self.finish_recovery_turn(now)
+                        now += 4.1
+                    # This last timeout must release the turn/walk retry loop.
+                    with patch('core.controller.time.monotonic', return_value=now):
+                        status = movement.tick(self.state, True, mode)
+                    self.assertIn('route abandoned', status)
+                    self.assertEqual(movement.recovery_attempts, limit)
+                    self.assertIsNone(movement.recovery_turn)
+                    self.assertIsNone(movement.recovery_jump_request)
+                    self.assertIsNone(navigator.target)
+                    self.assertIn(((0, 0), (0, 4)), navigator.blocked)
+                    if mode == 'explore':
+                        self.assertIsNone(navigator.goal)
+                        self.assertFalse(navigator.goal_steps)
+                    else:
+                        self.assertEqual(navigator.destination, (0, 3))
+                    with patch.object(navigator, 'waypoint', wraps=navigator.waypoint) as plan:
+                        with patch('core.controller.time.monotonic', return_value=now + .1):
+                            movement.tick(self.state, True, mode)
+                    plan.assert_called_once()
+                    self.assertIsNotNone(navigator.target)
+                    self.assertNotEqual(navigator.target, (0, 4))
 
     def test_camera_feedback_does_not_chase_delayed_character_heading(self):
         self.state["camera_heading"] = 0.0
@@ -725,6 +805,12 @@ class ControllerTests(unittest.TestCase):
                     self.assertTrue(controller.tick(14))
                 self.assertFalse(controller.report_write_blocked)
                 self.assertTrue(any("publication resumed" in message for message in recovery.output))
+                request = control_request()
+                controller.movement.recovery_jump_request = request
+                controller.jump.last_request = request['id']
+                self.assertTrue(controller.tick(15))
+                self.assertEqual(controller.jump.tick.call_args.args[0], request)
+                self.assertIsNone(controller.movement.recovery_jump_request)
             published = json.loads((args.state_dir / "state.json").read_text())
             self.assertEqual(published["controller"], "running")
             self.assertEqual(published["game"], "san_andreas")

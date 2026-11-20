@@ -5,13 +5,20 @@ import struct
 import time
 from pathlib import Path
 
-from games import Capabilities
-from core.files import sha256
-from core.classic import valid_save, read_text_table, player_identity, load_zones as classic_zones, load_destinations as classic_destinations
+from core.classic import (
+    load_destinations as classic_destinations,
+    load_zones as classic_zones,
+    player_identity,
+    read_text_table,
+    valid_save,
+)
 from core.controls import JUMP_SPEED, bind_action_key, can_control
+from core.files import sha256
 from core.navigation import Node, PedestrianGraph
 from core.saves import Autosave as SharedAutosave
 from core.winmemory import Memory as ProcessMemory, RuntimeChanges as SharedChanges
+from games import Capabilities
+
 
 CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True,
     walking_pace=True, first_person=True, respawn=True, jump=True, autosave=True, view=True, hide_hud=True)

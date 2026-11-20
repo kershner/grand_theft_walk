@@ -11,15 +11,15 @@ import sys
 import time
 from pathlib import Path
 
-from core.controls import key_down
 from core.controller import Controller
+from core.controls import configure_window, key_down
+from core.files import atomic_json, read_json
 from core.manager import component_status
 from core.navigation import PedestrianGraph
-from core.files import atomic_json, read_json
-from core.background import configure_window
 from core.runtime import DIRECTIONS, MODES, configure_logging, queue_movement
 from core.winmemory import Memory, elevate, game_pids, process_mutex
 from games import ACTIVE_GAMES, ROOT, get_game
+
 
 logger = logging.getLogger(__name__)
 

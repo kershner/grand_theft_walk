@@ -11,10 +11,11 @@ from types import SimpleNamespace
 
 from flask import Flask, g, jsonify, request, send_from_directory
 
-from games import GAMES, get_game
+from chat.bot import ChatBot
 from core.files import atomic_json
 from core.runtime import WalkerControl, configure_logging
-from chat.bot import ChatBot
+from games import GAMES, get_game
+
 
 logger = logging.getLogger(__name__)
 

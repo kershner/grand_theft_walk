@@ -14,25 +14,24 @@ from games.san_andreas.game import (
     ENTRY_EXIT_POOL,
     ENTRY_EXIT_SIZE,
     FIRST_PERSON,
+    FirstPersonCamera,
     GANG_WARS_ACTIVE,
+    Game,
     PED_POOL,
     PED_SIZE,
     RELATIONSHIP_TABLE,
     ROTATE_PLAYER,
+    RuntimeChanges,
     WALK_ACTION,
     WALK_KEY,
-    ZONE_COUNT,
-    ZONES,
-    FirstPersonCamera,
-    Game,
-    RuntimeChanges,
     WalkingPace,
+    ZONES,
+    ZONE_COUNT,
     apply_peaceful_mode,
     bind_walk_key,
     read_game_text,
     unlock_interiors,
 )
-
 from tests.fixtures import MemoryFixture
 
 

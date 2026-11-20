@@ -19,10 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+
+from build.setup.setup import verify_bundle
+from core.files import sha256, under
 from core.runtime import DEFAULTS
 from games import ACTIVE_GAMES
-from core.files import sha256, under
-from build.setup.setup import verify_bundle
+
 
 GAMES = ACTIVE_GAMES
 

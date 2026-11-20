@@ -7,13 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+# Direct script launches must find the project before importing its packages.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+
 from core.controls import Keys
-from core.session import StartupWait, choose_save as select_save
 from core.files import atomic_json, read_json
+from core.session import StartupWait, choose_save as select_save
 from games.san_andreas.game import Game, MENU, SAVE_PREFIX, valid_save
+
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +192,6 @@ class Startup(StartupWait):
             },
         )
         return path
-
 
 
 def main(argv=None):

@@ -13,8 +13,9 @@ import uuid
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-from core.files import sha256, component_mismatches, under, atomic_json, put_file
+from core.files import atomic_json, component_mismatches, put_file, sha256, under
 from games import ACTIVE_GAMES, get_game
+
 
 STATE_DIR = ".gtw-suite"
 

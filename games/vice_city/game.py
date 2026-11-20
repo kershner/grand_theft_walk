@@ -4,16 +4,26 @@ import math
 import struct
 from pathlib import Path
 
-from games import Capabilities
-from core.files import sha256
-from core.classic import SAVE_SIZE, valid_save, read_text_table, player_identity, main_pedestrian_network, load_zones as classic_zones, load_destinations as classic_destinations
-from core.saves import Autosave as SharedAutosave
-from core.navigation import Node, PedestrianGraph
-from core.winmemory import Memory as ProcessMemory, RuntimeChanges as SharedRuntimeChanges
+from core.classic import (
+    load_destinations as classic_destinations,
+    load_zones as classic_zones,
+    main_pedestrian_network,
+    player_identity,
+    read_text_table,
+    valid_save,
+)
 from core.controls import JUMP_SPEED, bind_action_key, can_control
+from core.files import sha256
+from core.navigation import Node, PedestrianGraph
+from core.saves import Autosave as SharedAutosave
+from core.winmemory import Memory as ProcessMemory, RuntimeChanges as SharedRuntimeChanges
+from games import Capabilities
+
 
 CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, first_person=True, respawn=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
+TURN_MULTIPLIER = 4
+LOOK_MULTIPLIER = -4
 WALK_SPEED_MULTIPLIER = 1.0
 JUMP_ACTION = 11
 JUMP_KEY = 32  # Space; avoid the game's hardcoded replay shortcuts.
@@ -440,6 +450,8 @@ def unlock_interiors(game, changes):
 CAMERA_MODULE = "FirstPerson.asi"
 CAMERA_MODULE_SHA256 = "b63145e7f5c13e893aa4e38a765d58eba3857831f4fd3a45c6f4ea80601806aa"
 PED_ZOOM_INDICATOR = 0x7E4688 + 0x164
+CONTROL_METHOD = MENU + 0x5B
+MOUSE_THIRD_PERSON = 0xA10B4C
 ACTIVE = 0x1D2EA6
 
 
@@ -448,6 +460,7 @@ class FirstPersonCamera:
         self.mem = memory
         self.bound = self.original = self.last_written = None
         self.error = None
+        self.input_changes = RuntimeChanges(memory)
 
     def apply(self, enabled, rotate_player=True):
         # This plugin handles character rotation internally.
@@ -469,6 +482,14 @@ class FirstPersonCamera:
             current = self.mem.unpack(PED_ZOOM_INDICATOR, "f")[0]
             if not math.isfinite(current) or current not in (0, 1, 2, 3, 4):
                 raise RuntimeError("Invalid native camera selector")
+            # The provider disables itself in Classic controls, and the native
+            # third-person camera ignores our mouse deltas when mouse mode is off.
+            # Own both settings temporarily so every camera perspective works.
+            if (self.mem.byte(CONTROL_METHOD) not in (0, 1)
+                    or self.mem.byte(MOUSE_THIRD_PERSON) not in (0, 1)):
+                raise RuntimeError("Invalid native camera input mode")
+            self.input_changes.patch(CONTROL_METHOD, b"\0")
+            self.input_changes.patch(MOUSE_THIRD_PERSON, b"\x01")
             if self.original is None:
                 self.original = current
             third = self.original if self.original in (1, 2) else 2.0
@@ -487,6 +508,7 @@ class FirstPersonCamera:
                 and self.mem.module(CAMERA_MODULE) == self.bound
                 and self.mem.unpack(PED_ZOOM_INDICATOR, "f")[0] == self.last_written):
             self.mem.write(PED_ZOOM_INDICATOR, struct.pack("<f", self.original))
+        self.input_changes.restore()
 
     def report(self):
         available = self.bound is not None and self.mem.module(CAMERA_MODULE) == self.bound

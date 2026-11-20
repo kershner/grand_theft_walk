@@ -6,8 +6,9 @@ import math
 import time
 from pathlib import Path
 
-from games import ACTIVE_GAMES, ROOT
 from core.files import atomic_json, read_json
+from games import ACTIVE_GAMES, ROOT
+
 
 logger = logging.getLogger(__name__)
 

@@ -4,6 +4,7 @@ import math
 import struct
 from pathlib import Path
 
+
 SAVE_SIZE = 201729
 
 
@@ -152,4 +153,3 @@ def load_destinations(game_directory, graph, read_text, load_zones, default_name
                      if all(bounds[i] <= node.position[i] <= bounds[i + 3] for i in range(3))), default_name)
         add(name, node)
     return destinations
-

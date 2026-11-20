@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from core.files import atomic_json
 from core.missions import MissionSystem
 from core.navigation import Node, PedestrianGraph, PedestrianNavigator
-from core.files import atomic_json
 from games.vice_city.game import load_destinations, main_pedestrian_network
 
 

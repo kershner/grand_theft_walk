@@ -3,6 +3,7 @@
 Build dependencies: x86 TinyCC, Python and pefile. WindowedMode v3.0.4's
 official release ZIP must already be downloaded to runtime/windowed-mode.zip.
 """
+
 import hashlib
 import json
 import shutil
@@ -10,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 import pefile
+
 
 ROOT = Path(__file__).resolve().parents[2]
 NATIVE = ROOT / "core/native"

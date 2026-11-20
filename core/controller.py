@@ -1,31 +1,33 @@
 """Shared walking behavior, controller lifecycle, missions and command execution."""
+
 import logging
 import math
 import time
 import uuid
 
 from core.controls import (
-    MOUSE_UNITS_PER_STEP,
     HighJump,
     Hotkeys,
     Keys,
+    MOUSE_UNITS_PER_STEP,
+    NativeInput,
+    Respawn,
     ViewControl,
     can_control,
 )
-from core.missions import MissionSystem
-from core.respawn import Respawn
-from core.navigation import SmoothTurn, angle_delta, heading_to
 from core.exploration import ExploreNavigator
 from core.files import atomic_json
-from core.background import NativeInput
-from core.runtime import DEFAULTS, DIRECTIONS, MODES, read_controls, request_expired
+from core.missions import MissionSystem
+from core.navigation import SmoothTurn, angle_delta, heading_to
+from core.runtime import DEFAULTS, DIRECTIONS, MODES, control_request, read_controls, request_expired
+
 
 logger = logging.getLogger(__name__)
 SECONDS_PER_STEP = 1.0
 WALK_SPEED_MULTIPLIER = 0.75
 RECOVERY_ESCAPE_RADIUS = 8.0
 RECOVERY_ESCALATE_AFTER = 3
-OPEN_GROUND_BACKTRACK_AFTER = 5
+RECOVERY_ABANDON_AFTER = 6
 
 
 def distance(a, b):
@@ -45,6 +47,10 @@ class Walking:
         self.recovery_anchor = None
         self.recovery_attempts = 0
         self.recoveries = 0
+        self.jump_supported = False
+        self.recovery_jump_request = None
+        self.recovery_jump_started = None
+        self.recovery_jump_airborne = False
         self.mode = None
         self.navigator = ExploreNavigator(graph, memory_path=exploration_path)
         self.navigation_error = navigation_error
@@ -85,6 +91,8 @@ class Walking:
         self.recovery_turn = None
         self.recovery_anchor = None
         self.recovery_attempts = 0
+        self.recovery_jump_request = self.recovery_jump_started = None
+        self.recovery_jump_airborne = False
         self.smooth_turn.reset()
         self.manual_turn = 0
         self.manual_direction = None
@@ -114,21 +122,38 @@ class Walking:
         if self.recovery_anchor is None:
             self.recovery_anchor = dict(position)
         self.recovery_attempts += 1
+        self.recovery_jump_request = self.recovery_jump_started = None
+        self.recovery_jump_airborne = False
         open_recovery = self.mode == "explore" and (
             self.navigator.local_target is not None or self.navigator.returning)
         if self.mode == "explore":
             self.navigator.progress_target = None
-        if open_recovery and self.recovery_attempts >= OPEN_GROUND_BACKTRACK_AFTER:
+        abandon_after = RECOVERY_ABANDON_AFTER if self.jump_supported else RECOVERY_ABANDON_AFTER - 1
+        if self.mode in ("mission", "explore") and self.recovery_attempts >= abandon_after:
             self.navigator.avoid_target(now)
+            if open_recovery:
+                self.navigator.open_goal = None
             self.recovery_turn = None
             self.origin = None
             self.aligning = False
+            self.turn_direction = 0
             self.smooth_turn.reset()
-            return "exploring: obstacle recorded; backtracking before another approach"
+            if open_recovery:
+                return "exploring: route abandoned; backtracking before another approach"
+            return "obstacle recovery: route abandoned; choosing another approach"
         persistent = (
             self.mode in ("mission", "explore")
-            and self.recovery_attempts >= RECOVERY_ESCALATE_AFTER
+            and self.recovery_attempts >= RECOVERY_ESCALATE_AFTER + int(self.jump_supported)
         )
+        # Try a small right turn, then jump, before further turning attempts.
+        if self.jump_supported and self.recovery_attempts == 2:
+            self.recovery_jump_request = control_request()
+            self.recovery_jump_started = now
+            self.recovery_turn = None
+            self.origin, self.progress_at = position, now
+            self.aligning = False
+            self.smooth_turn.reset()
+            return "obstacle recovery: jumping"
         self.recovery_steps = 50 if persistent else 20
         self.recovery_turn = self.recovery_steps * MOUSE_UNITS_PER_STEP
         if persistent and self.navigator and not open_recovery:
@@ -145,11 +170,21 @@ class Walking:
                 self.navigator.avoid_target(time.monotonic())
             self.stop()
             return "exploration paused in water; waiting for dry ground"
+        now = time.monotonic()
+        if self.recovery_jump_started is not None and can_control(state) and enabled:
+            age = now - self.recovery_jump_started
+            airborne = state.get("in_air", False) or not state.get("standing", True)
+            self.recovery_jump_airborne |= airborne
+            if age < 10 and (airborne or (not self.recovery_jump_airborne and age < 2.1)):
+                self.keys.set(self.walk_modifier | {"forward"})
+                return "obstacle recovery: jumping"
+            self.recovery_jump_request = self.recovery_jump_started = None
+            self.recovery_turn, self.recovery_steps = 0, 50
+            self.origin, self.progress_at = state["position"], now
         usable = can_control(state) and state["ped_state"] in (0, 1)
         if not usable:
             self.stop()
             return "waiting for active on-foot gameplay"
-        now = time.monotonic()
         if self.manual_direction and now >= self.manual_until:
             self.manual_direction = None
             self.keys.release()
@@ -287,7 +322,9 @@ class Controller:
         self.autosave = autosave_factory(mem, self.state_dir) if self.capabilities.autosave else None
         self.camera = backend.FirstPersonCamera(mem) if self.capabilities.first_person else None
         self.jump = HighJump(self.game, self.bindings, binder=backend.bind_jump_key) if self.capabilities.jump else None
-        self.view = ViewControl(focused=mem.foreground) if self.capabilities.view else None
+        self.movement.jump_supported = self.jump is not None
+        self.view = ViewControl(focused=mem.foreground,
+                                look_multiplier=getattr(backend, "LOOK_MULTIPLIER", 1)) if self.capabilities.view else None
         self.input = NativeInput(mem) if getattr(args, "background", False) else None
         if self.input:
             self.movement.keys = self.input.keys(self.movement.keys.bindings)
@@ -538,7 +575,11 @@ class Controller:
                 self.saved_at = now
             return True
         if self.jump:
-            self.jump.tick(self.settings.get("jump"), state, now, saving=saving)
+            recovery_jump = self.movement.recovery_jump_request
+            request = recovery_jump if isinstance(recovery_jump, dict) else self.settings.get("jump")
+            self.jump.tick(request, state, now, saving=saving)
+            if isinstance(recovery_jump, dict) and self.jump.last_request == recovery_jump["id"]:
+                self.movement.recovery_jump_request = None
         if self.view:
             self.view.tick(self.settings.get("view"), state, now, saving=saving)
         holding = self.missions.tick(state, now, can_control(state), saving)
@@ -627,4 +668,3 @@ class Controller:
             logger.info(
                 "Controller stopped; held keys released and temporary settings restored."
             )
-

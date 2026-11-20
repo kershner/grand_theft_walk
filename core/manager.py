@@ -4,10 +4,10 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
-from core.files import atomic_json
-from core.processes import supervise
-from core.files import component_mismatches, sha256, under
+from core.files import atomic_json, component_mismatches, sha256, under
+from core.winmemory import supervise
 from games import ACTIVE_GAMES, ROOT, get_game
 
 
@@ -117,10 +117,77 @@ def start_session(game, baseline=False, seconds=120):
                          report, lambda value: atomic_json(path, value))
 
 
+def read_game_text(path):
+    data = path.read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", errors="replace")
+
+
+def file_record(path):
+    return {"size": path.stat().st_size, "sha256": sha256(path)}
+
+
+def inspect_install(game, directory=None):
+    profile = get_game(game)
+    directory = Path(directory) if directory is not None else profile.install_dir
+    executable = directory / profile.executable
+    if not executable.is_file():
+        raise FileNotFoundError(f"Game executable not found: {executable}")
+    paths = {executable}
+    # Inventory binaries/configuration and bootstrap/path data, without saves or credentials.
+    for folder in (directory, directory / "scripts"):
+        if folder.is_dir():
+            paths.update(
+                path for path in folder.iterdir()
+                if path.is_file() and path.suffix.lower() in {".asi", ".dll", ".ini"}
+            )
+    for relative in ("version.txt", "data/timecyc.dat", "data/main.scm",
+                     "data/script/main.scm", "data/gta.dat", "data/gta_vc.dat",
+                     "data/gta3.dat", "data/paths/paths.ipl"):
+        path = directory / relative
+        if path.is_file():
+            paths.add(path)
+    files = {
+        path.relative_to(directory).as_posix(): file_record(path)
+        for path in sorted(paths)
+    }
+    # Only archive visual settings. Other mods' INIs can contain account tokens.
+    configs = {
+        path.relative_to(directory).as_posix(): read_game_text(path)
+        for path in sorted(paths)
+        if path.suffix.lower() == ".ini"
+        and (path.stem.lower().startswith("skygfx")
+             or path.stem.lower().startswith("silentpatch")
+             or path.stem.lower().endswith(".widescreenfix"))
+    }
+    version = directory / "version.txt"
+    return {
+        "format": 1,
+        "game": profile.id,
+        "title": profile.title,
+        "install_dir": str(directory.resolve()),
+        "reported_version": read_game_text(version).strip() if version.exists() else None,
+        "verified_executable": bool(
+            profile.verified_executable
+            and files[profile.executable]["sha256"] == profile.verified_executable
+        ),
+        "files": files,
+        "configuration": configs,
+    }
+
+
 def main(argv=None, default_game=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action")
     subparsers.add_parser("status", help="Show all game profiles and readiness")
+    inspect = subparsers.add_parser("inspect", help="Inventory a game installation without changing it")
+    inspect.add_argument("game", choices=ACTIVE_GAMES)
+    inspect.add_argument("--game-dir", type=Path)
+    inspect.add_argument("--output", type=Path)
     for action in ("check", "launch", "test"):
         sub = subparsers.add_parser(action)
         sub.add_argument("game", choices=ACTIVE_GAMES, nargs="?" if default_game else None, default=default_game)
@@ -135,6 +202,16 @@ def main(argv=None, default_game=None):
             print(json.dumps(result, indent=2))
             if not result["executable_matches"] or not result["setup_matches"]:
                 parser.exit(1)
+        elif args.action == "inspect":
+            report = inspect_install(args.game, args.game_dir)
+            rendered = json.dumps(report, indent=2) + "\n"
+            if args.output:
+                if args.output.resolve().is_relative_to(Path(report['install_dir'])):
+                    raise ValueError('The inventory output must be outside the game installation.')
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding='utf-8')
+            else:
+                print(rendered, end='')
         else:
             start_session(args.game, baseline=args.action == "test", seconds=getattr(args, "seconds", 120))
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

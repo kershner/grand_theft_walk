@@ -11,11 +11,12 @@ import requests
 from twitchio.ext import commands
 
 from chat.bot import ChatBot, location_text
+from chat.oauth import OAuthTokens
 from core.config import load_parameters, local_path, twitch_settings
 from core.files import atomic_json
 from core.runtime import WalkerControl, chat_ready, configure_logging
-from chat.auth import OAuthTokens
 from games import ACTIVE_GAMES, ROOT, get_game
+
 
 logger = logging.getLogger(__name__)
 

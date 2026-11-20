@@ -6,7 +6,8 @@ import threading
 import time
 from pathlib import Path
 
-from games import get_game
+from core.files import read_json
+from core.missions import CommandVoting
 from core.runtime import (
     DIRECTIONS,
     MODES,
@@ -19,8 +20,8 @@ from core.runtime import (
     mission_distance,
     require_command,
 )
-from core.voting import CommandVoting
-from core.files import read_json
+from games import get_game
+
 
 HELP = {
     "walk": "!walk • Start autowalking. Alias: !w.",
@@ -60,6 +61,7 @@ ALIASES = {
 }
 logger = logging.getLogger(__name__)
 ANNOUNCEMENT_INTERVAL = 20 * 60
+ROTATION_WARNING_SECONDS = 10 * 60
 
 
 def location_text(state):
@@ -87,6 +89,7 @@ class ChatBot:
         self.announced_session = None
         self.next_announcement_at = None
         self.announcement_index = 0
+        self.warned_rotation = None
         self.runtime_lock = threading.Lock()
         self.runtime_stop = threading.Event()
         self.runtime_thread = None
@@ -115,18 +118,20 @@ class ChatBot:
             state = self.ready_state()
             if state is None:
                 return []
+            warnings = self._rotation_warning()
             session = state.get("session", state.get("pid", "controller"))
             if self.session != session:
                 self.session = session
                 self.announcement_index = 0
                 self.next_announcement_at = now + ANNOUNCEMENT_INTERVAL
                 return [
-                    self._session_announcement(),
+                    "Grand Theft Walk is online!",
                     self._reply("help", []),
                     self._info_reply(state),
+                    *warnings,
                 ]
             if now < self.next_announcement_at:
-                return []
+                return warnings
             reply = (
                 self._reply("help", [])
                 if self.announcement_index == 0
@@ -135,7 +140,7 @@ class ChatBot:
             self.announcement_index = (self.announcement_index + 1) % 2
             missed = int((now - self.next_announcement_at) // ANNOUNCEMENT_INTERVAL) + 1
             self.next_announcement_at += missed * ANNOUNCEMENT_INTERVAL
-            return [reply]
+            return [*warnings, reply]
 
     def poll_events(self, *, include_announcements=True, wait_for_announcement=False, now=None):
         """Collect announcements, vote results, and new mission events for either transport."""
@@ -298,10 +303,21 @@ class ChatBot:
         game = getattr(self.control, "game", None)
         return rotation if game is not None and rotation.get("game") == game.id else {}
 
-    def _session_announcement(self):
-        if self._rotation().get("switched_from"):
-            return f"Switched to {self.control.game.title}!"
-        return "Grand Theft Walk is online!"
+    def _rotation_warning(self):
+        rotation = self._rotation()
+        deadline, next_game = rotation.get("next_switch_at"), rotation.get("next_game")
+        if type(deadline) not in (int, float) or not math.isfinite(deadline) or not next_game:
+            return []
+        remaining = deadline - time.time()
+        identity = (next_game, rotation.get('rotation_id', deadline))
+        if not ROTATION_WARNING_SECONDS - 60 < remaining <= ROTATION_WARNING_SECONDS or self.warned_rotation == identity:
+            return []
+        try:
+            title = get_game(next_game).title
+        except ValueError:
+            return []
+        self.warned_rotation = identity
+        return [f"Switching to {title} in 10 minutes"]
 
     def _info_reply(self, state=None):
         state = self.control.snapshot() if state is None else state

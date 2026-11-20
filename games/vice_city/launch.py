@@ -7,13 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+# Direct script launches must find the project before importing its packages.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 
 from core.controls import Keys
 from core.files import atomic_json, read_json
 from core.session import StartupWait, choose_save as select_save
-from games.vice_city.game import Game, MENU, RuntimeChanges, SAVE_PREFIX, SAVE_SIZE, unlock_regions, valid_save
+from games.vice_city.game import Game, MENU, RuntimeChanges, SAVE_PREFIX, unlock_regions, valid_save
+
 
 logger = logging.getLogger(__name__)
 MAIN_MENU, NEW_GAME, LOAD, SAVE_LIST, SAVING, SAVED, PAUSE = 29, 7, 12, 15, 17, 18, 32
@@ -168,7 +171,6 @@ class Startup(StartupWait):
             raise
         finally:
             self.keys.release()
-
 
 
 def main(argv=None):
