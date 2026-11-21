@@ -681,6 +681,26 @@ class WaterAvoidanceTests(unittest.TestCase):
         self.assertEqual(guard.level(2, 2), 0)
         self.assertIsNone(guard.level(8, 8))
 
+    def test_pending_shoreline_refresh_keeps_recent_checked_approach_moving(self):
+        world = World(lambda x, y: 2)
+        guard = self.guard(world)
+        self.assertIs(guard.danger((0, 15, 3), 0, 0), False)
+        world.pending = True
+        self.assertIs(guard.danger((0, 15.8, 3), 0, .8), False)
+        # Pending results cannot extend their own distance or time allowance.
+        self.assertIsNone(guard.danger((0, 16.1, 3), 0, .9))
+        self.assertIsNone(guard.danger((0, 15.8, 3), 0, 1.5))
+        self.assertIsNone(guard.danger((0, 15.8, 3), .3, 1))
+
+    def test_confirmed_water_overrides_recent_safe_shoreline_probe(self):
+        world = World(lambda x, y: 2)
+        guard = self.guard(world)
+        self.assertIs(guard.danger((0, 15, 3), 0, 0), False)
+        world.height = lambda x, y: None
+        self.assertIs(guard.danger((0, 15.8, 3), 0, .8), True)
+        world.pending = True
+        self.assertIsNone(guard.danger((0, 15.8, 3), 0, .9))
+
     def test_free_walk_rejoins_a_path_ahead_instead_of_returning_to_old_waypoint(self):
         graph = PedestrianGraph([Node((0, i), (0, y, 0),
             tuple(((0, j), False) for j in (i - 1, i + 1) if 0 <= j < 4))

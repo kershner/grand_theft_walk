@@ -441,6 +441,7 @@ class WaterAvoidance:
         self.sensor = sensor
         self.areas = []
         self.probe = self.escape = None
+        self.last_clear = None
         try:
             path = Path(sensor.mem.exe).parent / 'data/water.dat'
             for line in path.read_text(encoding='ascii').splitlines():
@@ -497,13 +498,26 @@ class WaterAvoidance:
             if hit is None:
                 pending = True
             elif hit is False or hit[2] or hit[0][2] <= level + .35:
+                self.last_clear = None
                 return True
-        return None if pending else False
+        if pending:
+            # Renew probes before the old checked approach is exhausted. A
+            # single asynchronous batch must not restart the walking animation
+            # every .75 metres, including on land above water polygons.
+            if self.last_clear is not None:
+                checked, direction, when = self.last_clear
+                if (now - when < 1.5 and math.dist(position, checked) < 1.0
+                        and abs(angle_delta(heading, direction)) < .25):
+                    return False
+            return None
+        self.last_clear = (origin, bearing, now)
+        return False
 
     def tick(self, walk, state, now):
         if (not self.areas or not self.sensor.enabled or state.get('in_water')
                 or state.get('in_air') or not state.get('standing', True)):
             self.probe = self.escape = None
+            self.last_clear = None
             return None
         self.sensor.pump(now)
         position = tuple(state['position'][axis] for axis in ('x', 'y', 'z'))
