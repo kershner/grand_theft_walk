@@ -321,7 +321,7 @@ class ChatBot:
             if activity:
                 self._note_command()
             available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
-            return f"Commands: {available} • !more."
+            return f"Commands: {available} • !more"
         if name == "more":
             if activity:
                 self._note_command()
