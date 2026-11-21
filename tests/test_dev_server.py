@@ -340,7 +340,8 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         message = self.client.get("/chat").json["messages"][-1]
         self.assertIn("Current mission: Travel to Market", message)
         self.assertIn("mode: explore", message)
-        self.assertIn("camera: third person •", message)
+        self.assertNotIn("camera:", message)
+        self.assertTrue(message.endswith("Type !help for commands"))
 
     def test_mission_distance_updates_in_info_replies(self):
         self.state["camera_heading"] = 0
@@ -645,7 +646,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         messages = self.client.get(f"/chat?after={cursor}").json["messages"]
         self.assertEqual(len(messages), 1)
         self.assertEqual(
-            messages[0], f"Game: {get_game(self.game).title} • mode: explore • camera: third person"
+            messages[0], f"Game: {get_game(self.game).title} • mode: explore • Type !help for commands"
         )
         self.assertEqual(self.client.get("/chat?after=invalid").json["cursor"], 2)
         self.assertEqual(self.client.get("/chat?after=-1").json["cursor"], 2)
@@ -674,8 +675,8 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         expected = (
             f"Game: {get_game(self.game).title} • "
             "Las Colinas, Los Santos • Jul 14 4:32 PM • rain, strong wind • "
-            "heading northwest • mode: explore • camera: third person • "
-            "Current mission: Travel to Market • 1.2 mi away"
+            "heading northwest • mode: explore • "
+            "Current mission: Travel to Market • 1.2 mi away • Type !help for commands"
         )
         self.assertEqual(self.client.get("/chat").json["messages"], [expected])
 

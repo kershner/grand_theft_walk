@@ -45,7 +45,7 @@ HELP = {
     "camera": "!camera [first|third]: Toggle the camera or select a perspective.",
     "help": "!help [command] • Show commands or details for a command.",
     "more": "!more • Show the remaining commands.",
-    "info": "!info • Show the current area, game time, weather, navigation mode, camera, mission, and next game countdown.",
+    "info": "!info • Show the current area, game time, weather, navigation mode, mission, and next game countdown.",
     "vote": "!vote <1|2|3> • Vote for the next mission. Your latest vote counts.",
 }
 ALIASES = {
@@ -321,7 +321,7 @@ class ChatBot:
             if activity:
                 self._note_command()
             available = " • ".join(f"!{command}" for command in commands if command_supported(state, command))
-            return f"Commands: {available} • Type !more for more commands."
+            return f"Commands: {available} • !more."
         if name == "more":
             if activity:
                 self._note_command()
@@ -424,13 +424,7 @@ class ChatBot:
         if location:
             parts.append(location)
         settings = state.get("settings", {})
-        perspective = "first" if settings.get("first_person") else "third"
-        parts.extend(
-            (
-                f"mode: {settings.get('mode', 'unknown')}",
-                f"camera: {perspective} person",
-            )
-        )
+        parts.append(f"mode: {settings.get('mode', 'unknown')}")
         mission = state.get("missions", {}).get("active")
         if mission:
             parts.extend(
@@ -442,4 +436,5 @@ class ChatBot:
         countdown = rotation_countdown(self._rotation())
         if countdown:
             parts.append(countdown)
+        parts.append("Type !help for commands")
         return " • ".join(parts)
