@@ -22,8 +22,10 @@ from games import Capabilities
 
 CAPABILITIES = Capabilities(protection=True, unlock_map=True, walk_binding=True, walking_pace=True, first_person=True, respawn=True, jump=True, autosave=True, view=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
-TURN_MULTIPLIER = 4
-LOOK_MULTIPLIER = -4
+# Calibrated native input: roughly 0.2 degrees per mouse unit. Keep the
+# 80-unit shared turn limit near 32 degrees/second, with matching view nudges.
+TURN_MULTIPLIER = 2
+LOOK_MULTIPLIER = -2
 WALK_SPEED_MULTIPLIER = 1.0
 JUMP_ACTION = 11
 JUMP_KEY = 32  # Space; avoid the game's hardcoded replay shortcuts.

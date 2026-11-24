@@ -23,11 +23,10 @@ from games import Capabilities
 CAPABILITIES = Capabilities(protection=True, peaceful=True, unlock_map=True, walk_binding=True,
     walking_pace=True, first_person=True, respawn=True, jump=True, autosave=True, view=True, hide_hud=True)
 WALK_KEYS = {"forward": "w", "back": "s"}
-# FirstPersonIII applies mouse X in 0.1-degree increments. Compensate at the
-# walking controller's output so commands, path alignment and recovery share
-# the same response while retaining the shared acceleration and command timing.
-TURN_MULTIPLIER = 4
-LOOK_MULTIPLIER = -4
+# FirstPersonIII applies native mouse X in 0.1-degree increments. Keep the
+# shared turn limit near 24 degrees/second, with matching view nudges.
+TURN_MULTIPLIER = 3
+LOOK_MULTIPLIER = -3
 MISSION_DEFAULTS = {"radius": 100.0, "height_tolerance": 15.0}
 JUMP_ACTION, JUMP_KEY = 11, 32
 PLAYER_INFO, PED_POOL, PED_SIZE = 0x9414A8, 0x8F2D14, 0x5F0

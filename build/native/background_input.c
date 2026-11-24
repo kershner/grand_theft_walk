@@ -117,6 +117,14 @@ static DWORD disabled, player, state_size, mouse_size, mouse_offset;
 static DWORD last_x, last_y;
 static int owned;
 
+static void apply_mouse(float *movement, LONG dx, LONG dy) {
+    /* These are per-frame deltas, not velocities. Some game/input paths retain
+       the previous mouse state. Replace it even for zero input so a consumed
+       pulse cannot accumulate or keep turning after the command has ended. */
+    movement[0] = dx >= -2000 && dx <= 2000 ? (float)dx : 0;
+    movement[1] = dy >= -2000 && dy <= 2000 ? (float)dy : 0;
+}
+
 static int playable(void) {
     DWORD ped = *(DWORD *)player;
     if (*(BYTE *)(menu + menu_offset) || *(BYTE *)pause_a || *(BYTE *)pause_b)
@@ -167,11 +175,27 @@ static void __cdecl update(void) {
     if (bits & 8) state[15] = 128; /* release a ledge */
     if ((bits & 16) && GTWInput.game == 1) state[21] = 128; /* SA walk */
     movement = (float *)(mouse + mouse_offset);
-    /* A lost/discontinuous command cannot fling the camera on the next frame. */
-    if (dx >= -2000 && dx <= 2000) movement[0] += (float)dx;
-    if (dy >= -2000 && dy <= 2000) movement[1] += (float)dy;
+    apply_mouse(movement, dx, dy);
     GTWInput.applied++;
     owned = 1;
+}
+
+/* DirectInput can re-enter GetMouseSetUp during its first CreateDevice call,
+   before RenderWare exists. Only query the display mode after RW is ready. */
+static DWORD rw_instance = 0xC97B24, display_query = 0x745CA0;
+static unsigned char __cdecl display_exclusive(void) {
+    if (!*(DWORD *)rw_instance) return 0; /* RwEngineInstance, SA 1.0 */
+    return ((unsigned char (__cdecl *)(void))display_query)();
+}
+
+static int redirect_call(DWORD site, DWORD target) {
+    DWORD old_protection;
+    if (!VirtualProtect((void *)site, 5, PAGE_EXECUTE_READWRITE, &old_protection))
+        return 0;
+    *(DWORD *)(site + 1) = target - (site + 5);
+    VirtualProtect((void *)site, 5, old_protection, &old_protection);
+    FlushInstructionCache(GetCurrentProcess(), (void *)site, 5);
+    return 1;
 }
 
 static int install(void) {
@@ -180,7 +204,7 @@ static int install(void) {
                               0x5FFFD9,0x60018F,0x61D9F4,0x61DBB6,0x61DD47};
     static const DWORD iii[] = {0x48AEFB,0x48C950,0x48DEEF,0x48E7D7,0x582DE9,0x582F7C,0x592EBC};
     const DWORD *calls;
-    DWORD count, i, old_protection;
+    DWORD count, i;
     char path[MAX_PATH], *name;
     if (sizeof(void *) != 4 || GetModuleHandleA(NULL) != (HMODULE)0x400000) return 0;
     if (!GetModuleFileNameA(NULL, path, sizeof(path))) return 0;
@@ -211,14 +235,13 @@ static int install(void) {
         if (*(BYTE *)calls[i] != 0xE8 || calls[i] + 5 + *(DWORD *)(calls[i]+1) != update_pads)
             return 0;
     }
+    if (GTWInput.game == 1 && (*(BYTE *)0x53F316 != 0xE8
+            || 0x53F31B + *(DWORD *)0x53F317 != 0x745CA0)) return 0;
     terrain_init(GTWInput.game);
     for (i = 0; i < count; i++) {
-        if (!VirtualProtect((void *)calls[i], 5, PAGE_EXECUTE_READWRITE, &old_protection))
-            return 0;
-        *(DWORD *)(calls[i]+1) = (DWORD)update - (calls[i] + 5);
-        VirtualProtect((void *)calls[i], 5, old_protection, &old_protection);
-        FlushInstructionCache(GetCurrentProcess(), (void *)calls[i], 5);
+        if (!redirect_call(calls[i], (DWORD)update)) return 0;
     }
+    if (GTWInput.game == 1 && !redirect_call(0x53F316, (DWORD)display_exclusive)) return 0;
     return 1;
 }
 

@@ -779,7 +779,7 @@ class ClassicViewTests(unittest.TestCase):
         def look(amount):
             # The classic games' positive mouse Y raises the view; the shared default
             # has the opposite sign. Exercise the actual calibrated output.
-            state['camera_pitch'] += math.radians(amount * .1)
+            state['camera_pitch'] += math.radians(amount * (.2 if backend is vc else .1))
 
         view.keys.look.side_effect = look
         for direction, expected in (('up', 1), ('down', -1)):
@@ -814,7 +814,9 @@ class ClassicTurningTests(unittest.TestCase):
         self.keys.turn.side_effect = self.rotate
 
     def rotate(self, amount):
-        self.state["camera_heading"] -= math.radians(amount * 0.1)
+        # Measured first-person response to a single native mouse pulse.
+        gain = .2 if self.backend is vc else .31334 if self.backend is sa else .1
+        self.state["camera_heading"] -= math.radians(amount * gain)
         self.state["heading"] = self.state["camera_heading"]
 
     def tick(self, now, enabled=False, mode="free"):
@@ -834,7 +836,8 @@ class ClassicTurningTests(unittest.TestCase):
                         for step in range(720):
                             self.tick(step / 120)
                         multiplier = getattr(backend, "TURN_MULTIPLIER", 1)
-                        self.assertAlmostEqual(self.state["camera_heading"], sign * math.radians(25 * multiplier))
+                        gain = .2 if backend is vc else .31334 if backend is sa else .1
+                        self.assertAlmostEqual(self.state["camera_heading"], sign * math.radians(25 * 10 * multiplier * gain))
                         self.assertEqual(self.walking.manual_turn, 0)
                         self.assertLessEqual(max(abs(c.args[0]) for c in self.keys.turn.call_args_list), 8)
                         self.keys.set.assert_not_called()

@@ -421,6 +421,66 @@
         "scripts/III.VC.SA.WindowedMode.asi": "ef36fb8fe0a7a715a2c76377177b07047e85925d153c7b9d6cb13cda9dd65872",
         "scripts/GTWLightOcclusion.asi": null
       }
+    },
+    {
+      "component_id": "vice_city-93c67b855b94a0f0",
+      "files": {
+        "ddraw.dll": "f22b58fbdef93fbe292a741f130db7adfc0c7d0774f762bbf0ea93c8581d03ad",
+        "dinput8.dll": "63b465dbc1bf9c5ab4e33c3ccad099d9edb702f2c51587ac8d4f196497396437",
+        "gta-vc.exe": "04e4db72629eaa786fdd182ac224f4fd6d68806f5f4fe5c1fb5f756dc4da11d7",
+        "SilentPatchVC.asi": "71eaf21c9bcba7010c389dd57badd56cdaae55cf73cc52e1941529d598a6c771",
+        "SilentPatchVC.ini": "3e4bbda1c090db4118f8c73cc0f6ee6f63027573b6c05d6645b064313903a842",
+        "FirstPerson.asi": "b63145e7f5c13e893aa4e38a765d58eba3857831f4fd3a45c6f4ea80601806aa",
+        "FirstPerson.cfg": "550c11e0e345240819cff4fc7d3a32c7ee7702f87c772594917ceec5d023af30",
+        "d3d8.dll": "58b9b73859f107183e4146c2b854f929397892058d46de3691129722a6f29d92",
+        "rwd3d9.dll": "832bbea07f016709969decfba0b0eb2ef48faf709b919fe85fa2a2e7bdf3a5a3",
+        "scripts/GTAVC.WidescreenFix.asi": "ac3a86786537bd0d85a127288dd807362fb9fad9453cbc5ed0a6f86463cd25e9",
+        "scripts/GTAVC.WidescreenFix.ini": "42f0da1072a1b6718e19d7b995e971c1d5761d894fabe0263e817f72a87a8d5f",
+        "scripts/III.VC.SA.LimitAdjuster.asi": "57c3b86c927012cf49f549e53d30c41e6544af515d439f90a62435a74b4d20a4",
+        "scripts/III.VC.SA.LimitAdjuster.ini": "a79658e58b465e569cacd6c79c19679d70a73d863e3c5acbeb104d0dbf2652e8",
+        "scripts/VCLodLights.asi": "b2817e3e758a903d68b1be91f419cbb19916d5223e8c40e9c825d1cfc44eca45",
+        "scripts/VCLodLights.cfg": "42b583a8158e8399f5a4c6df63f68fdcbe662b29e0e2cd436f16cb9bfc304d0a",
+        "scripts/VCLodLights.dat": "3e1e4e043f895007fc541c51aff574bddba19dfe04dbeb972f21bec92d4e68fb",
+        "scripts/neo/carTweakingTable.dat": "f21ed5c96aff7cf3c3da5fc89b621cde89946688d94e2a1df31ab9579494ea10",
+        "scripts/neo/neo.txd": "93118fe57e4ed0e98b97a7c648cc9c56d1bf9d090770390e7d5d6010d06bad7f",
+        "scripts/neo/rimTweakingTable.dat": "0ff2890704e20ab0a9e2bc2ecc2a1fc05e8afeed6d73069ff116ffe6eeb66754",
+        "scripts/neo/worldTweakingTable.dat": "046b48131ba55bc180c0218a7f65bdb07aef7034bab5d8d30cf55a72ae086633",
+        "scripts/skygfx.asi": "f6f5bb623f5a1329ff152184061514fdd97422b9bb4119e69155b6de53850ff2",
+        "scripts/skygfx.ini": "d554b4326c71f23881ceb8bb55687bc2dee61e4ff7b3452e20248bc30910c243",
+        "scripts/GTW.BackgroundInput.asi": "1a7bdffef916eeb4a2f5d3b3c9534e02809bb8fbde80f6eec235352b11f014f1",
+        "scripts/III.VC.SA.WindowedMode.asi": "ef36fb8fe0a7a715a2c76377177b07047e85925d153c7b9d6cb13cda9dd65872",
+        "scripts/GTWLightOcclusion.asi": null
+      }
+    },
+    {
+      "component_id": "vice_city-1e0c771d937314b8",
+      "files": {
+        "ddraw.dll": "f22b58fbdef93fbe292a741f130db7adfc0c7d0774f762bbf0ea93c8581d03ad",
+        "dinput8.dll": "63b465dbc1bf9c5ab4e33c3ccad099d9edb702f2c51587ac8d4f196497396437",
+        "gta-vc.exe": "04e4db72629eaa786fdd182ac224f4fd6d68806f5f4fe5c1fb5f756dc4da11d7",
+        "SilentPatchVC.asi": "71eaf21c9bcba7010c389dd57badd56cdaae55cf73cc52e1941529d598a6c771",
+        "SilentPatchVC.ini": "3e4bbda1c090db4118f8c73cc0f6ee6f63027573b6c05d6645b064313903a842",
+        "FirstPerson.asi": "b63145e7f5c13e893aa4e38a765d58eba3857831f4fd3a45c6f4ea80601806aa",
+        "FirstPerson.cfg": "550c11e0e345240819cff4fc7d3a32c7ee7702f87c772594917ceec5d023af30",
+        "d3d8.dll": "58b9b73859f107183e4146c2b854f929397892058d46de3691129722a6f29d92",
+        "rwd3d9.dll": "832bbea07f016709969decfba0b0eb2ef48faf709b919fe85fa2a2e7bdf3a5a3",
+        "scripts/GTAVC.WidescreenFix.asi": "ac3a86786537bd0d85a127288dd807362fb9fad9453cbc5ed0a6f86463cd25e9",
+        "scripts/GTAVC.WidescreenFix.ini": "42f0da1072a1b6718e19d7b995e971c1d5761d894fabe0263e817f72a87a8d5f",
+        "scripts/III.VC.SA.LimitAdjuster.asi": "57c3b86c927012cf49f549e53d30c41e6544af515d439f90a62435a74b4d20a4",
+        "scripts/III.VC.SA.LimitAdjuster.ini": "a79658e58b465e569cacd6c79c19679d70a73d863e3c5acbeb104d0dbf2652e8",
+        "scripts/VCLodLights.asi": "b2817e3e758a903d68b1be91f419cbb19916d5223e8c40e9c825d1cfc44eca45",
+        "scripts/VCLodLights.cfg": "42b583a8158e8399f5a4c6df63f68fdcbe662b29e0e2cd436f16cb9bfc304d0a",
+        "scripts/VCLodLights.dat": "3e1e4e043f895007fc541c51aff574bddba19dfe04dbeb972f21bec92d4e68fb",
+        "scripts/neo/carTweakingTable.dat": "f21ed5c96aff7cf3c3da5fc89b621cde89946688d94e2a1df31ab9579494ea10",
+        "scripts/neo/neo.txd": "93118fe57e4ed0e98b97a7c648cc9c56d1bf9d090770390e7d5d6010d06bad7f",
+        "scripts/neo/rimTweakingTable.dat": "0ff2890704e20ab0a9e2bc2ecc2a1fc05e8afeed6d73069ff116ffe6eeb66754",
+        "scripts/neo/worldTweakingTable.dat": "046b48131ba55bc180c0218a7f65bdb07aef7034bab5d8d30cf55a72ae086633",
+        "scripts/skygfx.asi": "f6f5bb623f5a1329ff152184061514fdd97422b9bb4119e69155b6de53850ff2",
+        "scripts/skygfx.ini": "d554b4326c71f23881ceb8bb55687bc2dee61e4ff7b3452e20248bc30910c243",
+        "scripts/GTW.BackgroundInput.asi": "84cbe9e6db9e76065c6c7fba3a42aa46dddf6ed882adfab0ca7fe24c711bd486",
+        "scripts/III.VC.SA.WindowedMode.asi": "ef36fb8fe0a7a715a2c76377177b07047e85925d153c7b9d6cb13cda9dd65872",
+        "scripts/GTWLightOcclusion.asi": null
+      }
     }
   ],
   "disabled_hashes": {

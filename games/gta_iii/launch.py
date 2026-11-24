@@ -1,5 +1,6 @@
 """Load an isolated full-map GTA III checkpoint, then use the shared runtime."""
 
+import logging
 import struct
 import sys
 import time
@@ -28,6 +29,7 @@ from games.gta_iii.game import (
 
 
 MAIN_MENU, LOAD, PAUSE = 51, 14, 52
+logger = logging.getLogger(__name__)
 SEED_SHA256 = "3342ae68b1debfc1297c2a15ef557d34b4814ad0af99ffb38451cacffe71e06d"
 SCRIPT_SHA256 = "e4f809e770418842565c86d133edf88f42c85d61a4825d1322cd70c584d17e96"
 
@@ -117,4 +119,10 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        logger.exception("Grand Theft Walk stopped")
+        raise SystemExit(1)
