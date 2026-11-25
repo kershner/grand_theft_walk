@@ -160,3 +160,75 @@ class RuntimeLoggingTests(unittest.TestCase):
                     if worker.is_alive():
                         worker.terminate()
                         worker.join(timeout=5)
+
+
+class ExplorationTrailTests(unittest.TestCase):
+    def test_massive_trail_is_indexed_persistent_and_saved_incrementally(self):
+        import sqlite3
+        from contextlib import closing
+        from core.exploration import ExploreNavigator
+        from core.navigation import RECENT_TRAIL_POINTS
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'exploration.json'
+            navigator = ExploreNavigator(memory_path=path)
+            for index in range(RECENT_TRAIL_POINTS + 5):
+                navigator.recent_ground.append((index * 3, 0, 0))
+            navigator.save_memory(0, force=True)
+            restored = ExploreNavigator(memory_path=path)
+            self.assertEqual(len(restored.recent_ground), RECENT_TRAIL_POINTS)
+            self.assertEqual(restored.recent_ground[0], (15, 0, 0))
+            self.assertTrue(restored.recent_ground.near((30, 0, 0)))
+            self.assertFalse(restored.recent_ground.near((30, 0, 10)))
+            statements, connect = [], restored.store.connect
+            def traced_connect():
+                db = connect()
+                db.set_trace_callback(statements.append)
+                return db
+            restored.recent_ground.append(((RECENT_TRAIL_POINTS + 5) * 3, 0, 0))
+            with patch.object(restored.store, 'connect', side_effect=traced_connect):
+                restored.save_memory(30, force=True)
+            self.assertEqual(sum(sql.startswith('INSERT INTO trail(') for sql in statements), 1)
+            with closing(sqlite3.connect(path.with_suffix('.sqlite3'))) as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM trail').fetchone()[0], RECENT_TRAIL_POINTS)
+                self.assertIsNone(db.execute("SELECT value FROM metadata WHERE name='recent_ground'").fetchone())
+            self.assertFalse(restored.recent_ground.pending)
+            # Respawning must retain old places without inventing a walked connection.
+            restored.observe((30, 1000, 0), 31)
+            restored.observe((30, 2000, 0), 32)
+            self.assertTrue(restored.recent_ground.near((30, 0, 0)))
+            self.assertFalse(restored.recent_ground.near((30, 1500, 0)))
+
+    def test_legacy_history_migrates_and_failed_sql_keeps_pending_trail(self):
+        import json
+        import sqlite3
+        from core.exploration import ExploreNavigator
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'exploration.json'
+            legacy = {'version': 1, 'recent_ground': [[i * 3, 0, 0] for i in range(100)]}
+            path.write_text(json.dumps(legacy))
+            navigator = ExploreNavigator(memory_path=path)
+            self.assertEqual(len(navigator.recent_ground), 100)
+            navigator.recent_ground.append((300, 0, 0))
+            with patch.object(navigator.store, 'connect', side_effect=sqlite3.OperationalError('locked')):
+                with self.assertLogs('core.exploration', level='WARNING'):
+                    navigator.save_memory(1, force=True)
+            self.assertEqual(list(navigator.recent_ground.pending), [(300, 0, 0)])
+            navigator.save_memory(2, force=True)
+            restored = ExploreNavigator(memory_path=path)
+            self.assertEqual(len(restored.recent_ground), 101)
+            self.assertEqual(json.loads(path.read_text()), legacy)
+            restored.recent_ground.clear()
+            restored.save_memory(3, force=True)
+            self.assertFalse(ExploreNavigator(memory_path=path).recent_ground)
+
+    def test_spatial_index_drops_evicted_segments_and_respects_gaps(self):
+        from core.navigation import RecentTrail
+        trail = RecentTrail(limit=3)
+        trail.extend([(0, 0, 0), (10, 0, 0), (20, 0, 0), (30, 0, 0)])
+        self.assertFalse(trail.near((0, 0, 0)))
+        self.assertTrue(trail.near((15, 0, 0)))
+        trail.append((1000, 0, 0))
+        self.assertFalse(trail.near((500, 0, 0)))
+        trail.clear()
+        self.assertFalse(trail.cells)
+        self.assertFalse(trail.near((1000, 0, 0)))

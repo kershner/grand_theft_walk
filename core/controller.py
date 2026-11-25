@@ -32,7 +32,6 @@ JUMP_LANDING_GRACE = 3.0
 JUMP_GROUND_SETTLE = .6
 TERRAIN_WAIT_LIMIT = 1.
 
-
 def distance(a, b):
     return math.hypot(a["x"] - b["x"], a["y"] - b["y"])
 
@@ -69,14 +68,11 @@ class Walking:
         self.jump_landing_since = None
         self.jump_grounded_since = None
         self.jump_grace_until = 0.0
-        # A local jump budget survives pauses and temporary animation states.
         self.jump_sites = deque(maxlen=32)
         self.jump_budget_used = 0
         self.mode = None
         self.navigator = ExploreNavigator(graph, memory_path=exploration_path)
         self.navigation_error = navigation_error
-        # Smooth in final mouse units so III/VC's sensitivity compensation
-        # does not quantize every small correction into a four-unit jump.
         self.smooth_turn = SmoothTurn(speed=80 * turn_multiplier,
                                       acceleration=120 * turn_multiplier)
         self.turn_multiplier = turn_multiplier
@@ -88,7 +84,6 @@ class Walking:
         self.terrain = None
         self.terrain_wait_since = None
         self.free_walk_until = 0.0
-        self.route_retry_at = 0.0
         self.swim = None
         self.water_guard = None
 
@@ -158,6 +153,7 @@ class Walking:
             self.jump_budget_used = 0
             if self.navigator:
                 self.navigator.reset()
+                getattr(self.navigator, 'motion_history', []).clear()
                 self.navigator.exploring = mode == "explore"
                 if mode != "mission":
                     self.navigator.set_destination(None)
@@ -184,13 +180,9 @@ class Walking:
         self.recovery_jump_airborne = False
         self.recovery_jump_id = None
         self.recovery_jump_failed = False
-        # Remember returns to an obstacle, rather than refilling the budget
-        # whenever a short detour crosses the recovery escape radius.
         self.jump_budget_used = sum(now - when < 300 and distance(position, origin) < 12
                                     and abs(position["z"] - origin["z"]) <= 3
                                     for origin, when in self.jump_sites)
-        # Try clearing the obstacle before giving up this approach. Alternate
-        # jumps with replanning so exploration cannot retry one wall forever.
         attempt_jump = self.recovery_attempts % 2 == 1
         grounded = state is None or (state.get("standing", True) and not state.get("in_air", False))
         if self.jump_supported and attempt_jump and grounded and self.jump_budget_used < 2:
@@ -207,18 +199,10 @@ class Walking:
             return "obstacle recovery: backing up for jump"
         if self.mode == "explore":
             self.navigator.avoid_target(now, retreat=False)
-            self.recovery_target = None
-            self.origin = None
-            self.aligning = False
-            self.turn_direction = 0
-            if self.navigator.returning:
-                return "exploring: blocked approach; backtracking before another direction"
-            if self.navigator.route_abandoned:
-                return "exploring: route abandoned; choosing another direction"
-            return "exploring: blocked approach; choosing another direction"
         self.plan_detour(position, now, state)
         self.origin, self.progress_at = dict(position), now
         self.aligning = False
+        self.turn_direction = 0
         return "obstacle recovery: steering around obstacle"
 
     def plan_detour(self, position, now, state):
@@ -349,8 +333,6 @@ class Walking:
                 return "obstacle recovery: backing up for jump"
             self.recovery_jump_setup = ("forward", now, dict(position))
         elif now - started >= 0.25 or distance(position, origin) >= 0.5:
-            # Request only after forward input has had time to turn the ped
-            # around. Keep the approach short so takeoff precedes the wall.
             self.recovery_jump_setup = None
             if state is not None and (not state.get("standing", True) or state.get("in_air", False)):
                 if now - started < 3:
@@ -402,22 +384,30 @@ class Walking:
         return self.swim.status
 
     def begin_free_walk(self, state, now):
-        self.free_walk_until, self.route_retry_at = now + 10, now + 1
-        self.navigator.reset()
-        self.navigator.course = state.get('camera_heading', state['heading'])
-        self.terrain.reset()
+        self.free_walk_until = now + 10
         self.terrain_wait_since = None
-        self.recovery_target = self.last_waypoint = None
-        self.aligning = False
-        self.smooth_turn.reset()
-        self.origin, self.progress_at = dict(state['position']), now
         self.keys.set(self.walk_modifier | {'forward'})
         return 'exploring: walking freely'
 
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
         now = time.monotonic()
-        if self.water_guard and mode == 'explore' and enabled and can_control(state):
+        if (mode == 'explore' and enabled and can_control(state)
+                and state.get('standing', True) and not state.get('in_air')
+                and self.recovery_jump_setup is None and self.recovery_jump_started is None
+                and not self.jump_landing_pending and now >= self.jump_grace_until):
+            facing = state.get('camera_heading')
+            facing = state['heading'] if facing is None else facing
+            if self.navigator.observe_motion(tuple(state['position'][a] for a in ('x', 'y', 'z')), facing, now):
+                self.free_walk_until = 0
+                self.recovery_target = self.last_waypoint = None
+                if self.terrain:
+                    self.terrain.reset()
+                if self.water_guard:
+                    self.water_guard.probe = None
+        else:
+            getattr(self.navigator, 'motion_history', []).clear()
+        if self.water_guard and mode == 'explore' and self.free_walk_until > 0 and enabled and can_control(state):
             guarded = self.water_guard.tick(self, state, now)
             if guarded is not None:
                 return guarded
@@ -461,8 +451,6 @@ class Walking:
         position = state["position"]
         if self.recovery_jump_setup is not None:
             return self.prepare_recovery_jump(position, now, state)
-        # A short sidestep followed by returning to the same obstacle is still
-        # the same stuck episode. Reset only after actually leaving the area.
         if (self.recovery_anchor is not None
                 and distance(position, self.recovery_anchor) >= RECOVERY_ESCAPE_RADIUS):
             self.recovery_anchor = None
@@ -472,6 +460,9 @@ class Walking:
         if self.recovery_target is not None and distance(
                 position, dict(zip(('x', 'y'), self.recovery_target))) <= 1.5:
             self.recovery_target = None
+            if mode == 'explore':
+                self.navigator.resume_after_free_walk(
+                    tuple(position[a] for a in ('x', 'y', 'z')), state['heading'], now)
             self.origin, self.progress_at = dict(position), now
         if self.recovery_target is not None:
             remaining = math.dist(tuple(position[axis] for axis in ('x', 'y', 'z')),
@@ -483,21 +474,8 @@ class Walking:
         status = "walking freely"
         desired_turn = 0.0
         detouring = self.recovery_target is not None
-        if mode == 'explore' and 0 < self.free_walk_until <= now:
-            self.navigator.resume_after_free_walk(
-                tuple(position[axis] for axis in ('x', 'y', 'z')), state['heading'], now)
-            self.free_walk_until = 0
-        freely = mode == 'explore' and now < self.free_walk_until and not detouring
-        if freely and self.terrain and self.terrain.enabled and now >= self.route_retry_at:
-            self.route_retry_at = now + .5
-            point = tuple(position[axis] for axis in ('x', 'y', 'z'))
-            target = self.navigator.join_forward_path(point, state['heading'], now)
-            if target is not None and self.terrain.route(point, target, now) is not None:
-                self.free_walk_until, freely = 0, False
-        if freely:
-            self.navigator.observe(tuple(position[axis] for axis in ('x', 'y', 'z')), now)
-            status = 'exploring: walking freely'
-        if (mode in ("mission", "explore") and not freely) or detouring:
+        freely = mode == 'explore' and self.free_walk_until > 0 and not detouring
+        if mode in ("mission", "explore") or detouring:
             if self.navigator is None:
                 self.navigator = ExploreNavigator()
             waypoint = self.recovery_target if detouring else self.navigator.waypoint(
@@ -519,34 +497,38 @@ class Walking:
                     detouring = True
             if not detouring:
                 self.last_waypoint = waypoint
-            if mode == 'explore' and self.terrain and self.terrain.enabled:
+            # Recovery already committed to a short physical attempt. Requiring
+            # the rejected route again here would prevent even turning away.
+            if (mode == 'explore' and self.terrain and self.terrain.enabled and not detouring
+                    and (not freely or now >= self.free_walk_until)):
                 safe = self.terrain.route(tuple(position[axis] for axis in ('x', 'y', 'z')),
                                           waypoint, now)
                 if safe is None:
-                    self.keys.set(self.walk_modifier)
-                    self.smooth_turn.step(0, now)
                     if self.terrain_wait_since is None:
                         self.terrain_wait_since = now
-                    self.navigator.watchdogs_paused_until = now + 2.5
-                    self.navigator.journey_observed_at = None
-                    self.navigator.progress_at = now
                     timed_out = now - self.terrain_wait_since >= TERRAIN_WAIT_LIMIT
+                    if self.terrain.blocked and not getattr(self.terrain, 'temporary', True):
+                        self.keys.set(self.walk_modifier)
+                        return self.recover(position, now, state)
                     if timed_out or self.terrain.blocked:
-                        # Try ordinary walking before treating a sensor verdict
-                        # as a real obstacle. The movement watchdog stays active.
                         return self.begin_free_walk(state, now)
-                    return 'exploring: ' + self.terrain.status
-                if self.terrain_wait_since is not None:
-                    delay = now - self.terrain_wait_since
-                    self.progress_at += delay
-                    self.recovery_progress_at += delay
-                    self.terrain_wait_since = None
-                waypoint = safe
-                # A valid detour can initially lead away from the graph goal.
-                # Keep the physical movement watchdog active, while excluding
-                # this planned detour from the straight-line goal watchdogs.
-                self.navigator.watchdogs_paused_until = now + .2
-                self.navigator.journey_observed_at = None
+                    if not freely:
+                        self.keys.set(self.walk_modifier)
+                        self.smooth_turn.step(0, now)
+                        self.navigator.watchdogs_paused_until = now + 2.5
+                        self.navigator.journey_observed_at = None
+                        self.navigator.progress_at = now
+                        return 'exploring: ' + self.terrain.status
+                else:
+                    if self.terrain_wait_since is not None:
+                        delay = 0 if freely else now - self.terrain_wait_since
+                        self.progress_at += delay
+                        self.recovery_progress_at += delay
+                        self.terrain_wait_since = None
+                    waypoint = safe
+                    self.free_walk_until, freely = 0, False
+                    self.navigator.watchdogs_paused_until = now + .2
+                    self.navigator.journey_observed_at = None
             facing = state.get("camera_heading")
             if facing is None:
                 facing = state["heading"]
@@ -560,10 +542,13 @@ class Walking:
             else:
                 self.turn_direction = 0
             desired_turn = -error * 140 if abs(error) > 0.04 else 0.0
+            if freely:
+                desired_turn = max(-30, min(30, desired_turn))
             status = ("obstacle recovery: walking around obstacle" if detouring else
+                      'exploring: walking freely' if freely else
                       self.terrain.status if mode == 'explore' and self.terrain and self.terrain.enabled
                       else self.navigator.message)
-            self.aligning = abs(error) > (0.85 if self.aligning else 1.35)
+            self.aligning = not freely and abs(error) > (0.85 if self.aligning else 1.35)
         if mode == "free" and not detouring:
             turn, self.manual_turn = self.smooth_turn.nudge(self.manual_turn, now)
         else:
@@ -578,7 +563,7 @@ class Walking:
             return "turning" if self.manual_turn else "stopped"
         if (mode in ("mission", "explore") or detouring) and self.aligning:
             self.keys.set(self.walk_modifier)
-            self.origin, self.progress_at = position, now
+            self.origin, self.progress_at = dict(position), now
             self.navigator.progress_at = now
             self.navigator.watchdogs_paused_until = now + .1
             self.navigator.journey_observed_at = None
@@ -589,7 +574,7 @@ class Walking:
             return "aligning with pedestrian path"
         self.keys.set(self.walk_modifier | {"forward"})
         if self.origin is None or distance(position, self.origin) >= 0.8:
-            self.origin, self.progress_at = position, now
+            self.origin, self.progress_at = dict(position), now
         elif now - self.progress_at > (2.0 if mode == "explore" else 4.0):
             return self.recover(position, now, state)
         return status
@@ -841,6 +826,7 @@ class Controller:
         )
         navigation.update(
             aligning=movement.aligning,
+            loop_escapes=movement.navigator.loop_escapes,
             terrain=movement.terrain.report() if movement.terrain else {'enabled': False},
             swimming=movement.swim.report() if movement.swim else {'supported': False},
         )

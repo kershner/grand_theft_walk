@@ -517,7 +517,7 @@ class ExplorationTests(unittest.TestCase):
                     position = (x, y, slope * y)
                 self.assertGreater(distance(position, (0, 0, 0)), 800)
 
-    def test_open_terrain_detours_around_a_wall_and_remembers_the_walk_after_restart(self):
+    def test_open_terrain_leaves_blocked_region_and_remembers_walk_after_restart(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'exploration.json'
             navigator = self.navigator(path=path)
@@ -529,17 +529,17 @@ class ExplorationTests(unittest.TestCase):
                 following = tuple(a + (b - a) * min(2 / length, 1)
                                   for a, b in zip(position, target))
                 # A finite wall across the forward route, not a fake waypoint
-                # failure: the walker must find and actually traverse a detour.
+                # failure: the walker must leave the blocked region on new ground.
                 if min(position[1], following[1]) <= 32 and max(position[1], following[1]) >= 30 and abs(following[0]) < 10:
                     navigator.avoid_target(now, retreat=False)
                     obstacles += 1
                     continue
                 heading = heading_to(position, target)
                 position = following
-                if position[1] > 100:
+                if distance(position, (0, 0, 0)) > 100:
                     break
             self.assertGreater(obstacles, 0)
-            self.assertGreater(position[1], 100)
+            self.assertGreater(distance(position, (0, 0, 0)), 100)
             self.assertTrue(navigator.ground_visits)
             navigator.save_memory(251, force=True)
             resumed = self.navigator(path=path)
@@ -548,19 +548,20 @@ class ExplorationTests(unittest.TestCase):
             self.assertEqual(resumed.ground_visits, navigator.ground_visits)
             # The restored trail outweighs a backwards-facing spawn camera.
             target = resumed.waypoint(position, math.pi, 0, 252)
-            self.assertGreater(target[1], position[1])
+            self.assertLess(abs(angle_delta(heading_to(position, target), heading)), math.pi / 2)
 
-    def test_forward_course_beats_unvisited_ground_across_many_goal_renewals(self):
+    def test_new_journeys_prefer_unused_ground_and_keep_turns_gradual(self):
         navigator = self.navigator()
         for cell_y in range(150):
             navigator.coverage[(0, cell_y, 0)] = 100
-        position = (0, 0, 0)
+        position, heading = (0, 0, 0), 0
         for now in range(100):
-            target = navigator.waypoint(position, 0, 0, now)
-            self.assertAlmostEqual(target[0], 0)
-            self.assertGreater(target[1], position[1])
-            position = target
-        self.assertGreater(position[1], 900)
+            target = navigator.waypoint(position, heading, 0, now)
+            self.assertLessEqual(abs(angle_delta(heading_to(position, target), heading)), math.pi / 4 + .01)
+            if now == 0:
+                self.assertGreater(abs(target[0]), 5)
+            heading, position = heading_to(position, target), target
+        self.assertGreater(distance(position, (0, 0, 0)), 100)
 
     def test_open_walk_joins_forward_path_without_turning_back_to_nearest_node(self):
         graph = PedestrianGraph([
@@ -621,10 +622,10 @@ class ExplorationTests(unittest.TestCase):
             movement.tick(state, True, 'explore')
         target = movement.navigator.local_target
         with patch('core.controller.time.monotonic', return_value=2.1):
-            self.assertIn('choosing another direction', movement.tick(state, True, 'explore'))
+            self.assertIn('steering around obstacle', movement.tick(state, True, 'explore'))
         with patch('core.controller.time.monotonic', return_value=2.2):
             movement.tick(state, True, 'explore')
-        replacement = movement.navigator.local_target
+        replacement = movement.recovery_target
         self.assertIsNotNone(replacement)
         self.assertGreaterEqual(abs(angle_delta(heading_to((0, 0, 0), replacement),
                                                heading_to((0, 0, 0), target))), math.pi / 3)
@@ -679,8 +680,8 @@ class ExplorationTests(unittest.TestCase):
         tick(5.7)
         tick(8.8)
         self.assertIsNone(movement.recovery_jump_started)
-        self.assertNotIn('choosing another direction', tick(10.5))
-        self.assertIn('choosing another direction', tick(11.0))
+        self.assertNotIn('steering around obstacle', tick(10.5))
+        self.assertIn('steering around obstacle', tick(11.0))
         self.assertIsNone(movement.navigator.local_target)
         self.assertEqual(sum(movement.navigator.failures.values()), 1)
         tick(11.1)
@@ -769,7 +770,7 @@ class ExplorationTests(unittest.TestCase):
         tick(3.86)
         self.assertEqual(jump.result, 'accepted')
         with self.assertLogs('core.controls', level='WARNING'):
-            self.assertIn('choosing another direction', tick(5.87))
+            self.assertIn('steering around obstacle', tick(5.87))
         self.assertEqual(jump.result, 'failed')
         self.assertIsNone(movement.recovery_jump_started)
         self.assertEqual(movement.recovery_attempts, 2)
@@ -787,9 +788,9 @@ class ExplorationTests(unittest.TestCase):
         state['ped_state'] = 1
         tick(6)
         tick(6.7)
-        self.assertNotIn('choosing another direction', tick(8.1))
+        self.assertNotIn('steering around obstacle', tick(8.1))
         tick(9.8)
-        self.assertIn('choosing another direction', tick(12.0))
+        self.assertIn('steering around obstacle', tick(12.0))
         tick(12.1)
         self.assertIn('backing up', movement.recover(state['position'], 12.2, state))
         self.assertEqual(movement.jump_budget_used, 2)
@@ -815,7 +816,7 @@ class ExplorationTests(unittest.TestCase):
                 movement.navigator.waypoint((0, 0, 0), 0, 0, 0)
                 status = movement.recover(dict(x=0, y=0, z=0), 2,
                                           dict(standing=standing, in_air=airborne))
-                self.assertIn('choosing another direction', status)
+                self.assertIn('steering around obstacle', status)
                 self.assertIsNone(movement.recovery_jump_setup)
                 self.assertEqual(movement.jump_budget_used, 0)
 
@@ -829,12 +830,12 @@ class ExplorationTests(unittest.TestCase):
         navigator.previous, navigator.target = (0, 0), (0, 1)
         navigator.goal = (0, 1)
         status = movement.recover(dict(x=0, y=0, z=0), 3)
-        self.assertIn('choosing another direction', status)
+        self.assertIn('steering around obstacle', status)
         self.assertIsNone(navigator.target)
         self.assertIsNone(navigator.goal)
         self.assertIn(((0, 0), (0, 1)), navigator.blocked)
         self.assertEqual(navigator.edge_failures[((0, 0), (0, 1))], 1)
-        self.assertIsNone(movement.recovery_target)
+        self.assertIsNotNone(movement.recovery_target)
         self.assertTrue(navigator.exploring)
 
     def test_steep_height_change_requests_recovery_before_abandoning_route(self):
@@ -845,7 +846,7 @@ class ExplorationTests(unittest.TestCase):
         self.assertTrue(navigator.recovery_requested)
         self.assertIsNotNone(navigator.local_target)
 
-    def test_exploration_watchdogs_replace_blocked_goals_without_turning_or_jumping(self):
+    def test_exploration_watchdogs_commit_to_detour_without_automatic_backtracking(self):
         for position, now in (((0, 4, 5), 1), ((1, 0, 0), 31)):
             with self.subTest(position=position), patch('core.controller.Keys'):
                 movement = Walking()
@@ -858,18 +859,18 @@ class ExplorationTests(unittest.TestCase):
                 goal, target = movement.navigator.open_goal, movement.navigator.local_target
                 state['position'] = dict(zip(('x', 'y', 'z'), position))
                 with patch('core.controller.time.monotonic', return_value=now):
-                    self.assertIn('choosing another direction', movement.tick(state, True, 'explore'))
+                    self.assertIn('steering around obstacle', movement.tick(state, True, 'explore'))
                 self.assertEqual(movement.navigator.open_goal, goal)
                 self.assertIsNone(movement.navigator.local_target)
                 self.assertEqual(sum(movement.navigator.failures.values()), 1)
-                self.assertIsNone(movement.recovery_target)
+                self.assertIsNotNone(movement.recovery_target)
                 self.assertIsNone(movement.recovery_jump_setup)
                 self.assertFalse(movement.navigator.returning)
                 self.assertFalse(movement.navigator.recovery_requested)
                 with patch('core.controller.time.monotonic', return_value=now + .1):
                     movement.tick(state, True, 'explore')
-                self.assertIsNotNone(movement.navigator.local_target)
-                self.assertNotEqual(movement.navigator.local_target, target)
+                self.assertIsNotNone(movement.recovery_target)
+                self.assertNotEqual(movement.recovery_target, target)
 
     def test_coverage_keeps_overlapping_elevations_separate(self):
         navigator = self.navigator()
@@ -977,9 +978,9 @@ class ExplorationTests(unittest.TestCase):
             goal, target = movement.navigator.open_goal, movement.navigator.local_target
             for attempt in (1, 2):
                 status = movement.recover({'x': 0, 'y': 0, 'z': 0}, attempt)
-                self.assertIn('choosing another direction', status)
+                self.assertIn('steering around obstacle', status)
                 self.assertIsNone(movement.recovery_jump_setup)
-                self.assertIsNone(movement.recovery_target)
+                self.assertIsNotNone(movement.recovery_target)
                 if attempt == 1:
                     self.assertEqual(movement.navigator.open_goal, goal)
                 else:
@@ -988,8 +989,8 @@ class ExplorationTests(unittest.TestCase):
                 self.assertFalse(movement.navigator.returning)
                 movement.navigator.waypoint((0, 0, 0), 0, 0, attempt + .1)
                 self.assertNotEqual(movement.navigator.local_target, target)
-            self.assertIn('choosing another direction', movement.recover({'x': 0, 'y': 0, 'z': 0}, 3))
-            self.assertIsNone(movement.recovery_target)
+            self.assertIn('steering around obstacle', movement.recover({'x': 0, 'y': 0, 'z': 0}, 3))
+            self.assertIsNotNone(movement.recovery_target)
             self.assertIsNone(movement.navigator.local_target)
             self.assertIsNone(movement.navigator.open_goal)
             self.assertEqual(sum(movement.navigator.failures.values()), 3)

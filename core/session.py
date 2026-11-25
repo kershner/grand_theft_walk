@@ -14,7 +14,7 @@ from pathlib import Path
 from core.controller import Controller
 from core.controls import configure_window, key_down
 from core.files import atomic_json, read_json
-from core.manager import component_status
+from core.manager import component_status, validate_components
 from core.navigation import PedestrianGraph
 from core.runtime import DIRECTIONS, MODES, configure_logging, queue_movement
 from core.winmemory import Memory, elevate, game_pids, process_mutex
@@ -180,8 +180,7 @@ def launch(game, startup_type, argv=None):
 
         if sha256(exe) != profile.verified_executable:
             raise RuntimeError(f"Unsupported {profile.title} executable. Run suite setup first.")
-        if not component_status(game, exe.parent)["setup_matches"]:
-            raise RuntimeError(f"{profile.title}'s mod files do not match the pinned setup. Run suite repair.")
+        validate_components(component_status(game, exe.parent), profile.title)
         logger.info("Launching %s... F12 cancels startup.", profile.title)
         try:
             configure_window(exe.parent)

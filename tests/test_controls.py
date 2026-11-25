@@ -23,6 +23,7 @@ from core.controls import (
     configure_window,
 )
 from core.files import atomic_json
+from tests.fixtures import bridge_exports
 from core.navigation import angle_delta, heading_to
 from core.runtime import control_request
 from games import Capabilities
@@ -554,6 +555,22 @@ class BackgroundTests(unittest.TestCase):
             press.assert_not_called()
             mouse.assert_not_called()
 
+    def test_rebuilt_bridge_uses_exports_and_checks_protocol_before_writing(self):
+        _, memory = self.bridge()
+        module = memory.module("GTW.BackgroundInput.asi")
+        address = module["base"] + 0x3000
+        bridge_exports(memory, module["base"], {"GTWInput": 0x3000})
+        memory.write(address, struct.pack("<3I", 1, 1, 3))
+        with patch("core.controls.read_json", return_value={"sha256": "pinned", "state_rva": 0x2000}), \
+                patch("core.controls.sha256", return_value="rebuilt"):
+            bridge = NativeInput(memory)
+            self.assertEqual(bridge.address, address)
+            memory.write(address, struct.pack("<I", 2))
+            with patch.object(memory, "write") as write:
+                with self.assertRaisesRegex(RuntimeError, "refusing desktop input"):
+                    NativeInput(memory)
+                write.assert_not_called()
+
     def test_background_hotkeys_do_not_handle_another_applications_function_keys(self):
         controller = Controller.__new__(Controller)
         controller.hotkeys = Mock()
@@ -801,6 +818,69 @@ class ClassicViewTests(unittest.TestCase):
 
 
 class ClassicTurningTests(unittest.TestCase):
+    def test_planner_retries_keep_walking_until_a_blockage_is_confirmed(self):
+        for backend in (iii, vc, sa):
+            with self.subTest(game=backend.__name__):
+                self.configure(backend)
+                walk = self.walking
+                walk.set_mode('explore')
+                walk.navigator.waypoint = Mock(return_value=(0, 100, 0))
+                walk.terrain = SimpleNamespace(enabled=True, blocked=False, temporary=False,
+                    route=Mock(return_value=None), reset=Mock(), status='pending')
+                walk.begin_free_walk(self.state, 0)
+                for now in (0, 9.9, 10, 10.5, 11.1, 21.2):
+                    self.state['position'] = dict(x=0, y=now, z=0)
+                    self.tick(now, True, 'explore')
+                    self.keys.set.assert_called_with({'forward'})
+                walk.terrain.reset.assert_not_called()
+                walk.terrain.route.return_value = (0, 100, 0)
+                self.tick(21.3, True, 'explore')
+                self.assertEqual(walk.free_walk_until, 0)
+                self.keys.set.assert_called_with({'forward'})
+                walk.terrain.route.return_value = None
+                walk.terrain.blocked = True
+                self.tick(21.4, True, 'explore')
+                self.keys.set.assert_called_with(set())
+                self.assertIsNotNone(walk.recovery_target)
+
+    def test_circle_escape_survives_sensor_timeout_and_curves_forward_in_all_games(self):
+        for backend in (iii, vc, sa):
+            with self.subTest(game=backend.__name__):
+                self.configure(backend)
+                walk = self.walking
+                walk.set_mode('explore')
+                navigator = walk.navigator
+                navigator.open_goal = (-100, 0, 0)  # Stale goal pointed sideways.
+                navigator.local_origin, navigator.local_target = (0, 0, 0), (-10, 0, 0)
+                navigator.rng.choice = Mock(return_value=1)
+                for frame in range(81):
+                    angle = frame * math.tau / 80
+                    navigator.motion_history.append((frame / 4,
+                        (4 * math.sin(angle), 4 * math.cos(angle) - 4, 0)))
+                walk.terrain = SimpleNamespace(enabled=True, blocked=False, temporary=False,
+                    route=Mock(return_value=None), reset=Mock(), status='pending')
+                self.tick(20, True, 'explore')
+                self.assertEqual(navigator.loop_escapes, 1)
+                self.assertAlmostEqual(abs(angle_delta(navigator.course, 0)), math.pi / 2)
+                goal = navigator.open_goal
+                self.assertAlmostEqual(abs(goal[0]), 100)
+                self.assertAlmostEqual(goal[1], 0)
+                self.tick(21.1, True, 'explore')
+                self.assertEqual(navigator.open_goal, goal)
+                self.keys.reset_mock()
+                for frame in range(1, 361):
+                    self.tick(21.1 + frame / 120, True, 'explore')
+                    self.keys.set.assert_called_with({'forward'})
+                    facing = self.state['camera_heading']
+                    self.assertGreaterEqual(math.cos(facing), 0)
+                    self.state['position']['x'] -= math.sin(facing) / 60
+                    self.state['position']['y'] += math.cos(facing) / 60
+                self.assertGreater(self.state['position']['y'], 3)
+                self.assertGreater(abs(self.state['position']['x']), .3)
+                self.assertLessEqual(abs(walk.smooth_turn.velocity), 30 * walk.turn_multiplier)
+                self.assertEqual(navigator.open_goal, goal)
+                self.assertEqual(walk.recoveries, 0)
+
     def configure(self, backend):
         self.backend = backend
         with patch("core.controller.Keys"):

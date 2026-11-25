@@ -414,7 +414,7 @@ class MetadataTests(unittest.TestCase):
                 with patch("chat.bot.time.time", return_value=10001):
                     metadata.update(self.state, now=60)
                 self.assertEqual(len(metadata.last_title), 140)
-                self.assertTrue(metadata.last_title.endswith(" • Next game in: 0h00m"))
+                self.assertTrue(metadata.last_title.endswith(" • Next game in: 0m"))
                 atomic_json(path, {"game": "vice_city", "next_switch_at": 10000})
                 metadata.update(self.state, now=90)
                 self.assertNotIn("Next game in:", metadata.last_title)

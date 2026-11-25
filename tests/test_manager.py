@@ -78,6 +78,17 @@ class ManagerTests(unittest.TestCase):
             ):
                 session_command("san_andreas", baseline)
 
+    def test_changed_hashes_warn_and_allow_managed_and_baseline_launch(self):
+        status = {"executable_matches": True, "setup_matches": False,
+                  "mismatches": [{"path": "scripts/GTW.BackgroundInput.asi",
+                                  "expected": "bundled", "actual": "rebuilt"}],
+                  "controller_ready": True, "executable": "classic.exe"}
+        for baseline in (False, True):
+            with self.subTest(baseline=baseline), patch("core.manager.installation_status", return_value=status):
+                with self.assertLogs("core.manager", level="WARNING"):
+                    command, _ = session_command("vice_city", baseline)
+                self.assertTrue(command)
+
     def test_unbounded_baseline_test_is_rejected_before_starting_a_session(self):
         with patch("core.manager.session_command") as select:
             for seconds in (-1, 0, 9, 301):
@@ -112,7 +123,9 @@ class ComponentTests(unittest.TestCase):
 
     def test_changed_settings_are_detected(self):
         (self.game / "skygfx.ini").write_bytes(b"different preset")
-        self.assertFalse(component_status("san_andreas", self.game, self.root)["setup_matches"])
+        status = component_status("san_andreas", self.game, self.root)
+        self.assertFalse(status["setup_matches"])
+        self.assertTrue(status["launch_ready"])
 
     def test_missing_manifest_does_not_silently_reduce_check_to_executable(self):
         (self.root / "suite-manifest.json").unlink()
@@ -121,7 +134,9 @@ class ComponentTests(unittest.TestCase):
     def test_unfinished_repair_blocks_launch_even_if_files_match(self):
         (self.game / ".gtw-suite").mkdir(parents=True)
         (self.game / ".gtw-suite/pending.json").write_text("{}")
-        self.assertFalse(component_status("san_andreas", self.game, self.root)["setup_matches"])
+        status = component_status("san_andreas", self.game, self.root)
+        self.assertFalse(status["setup_matches"])
+        self.assertFalse(status["launch_ready"])
 
 
 class GameProfileTests(unittest.TestCase):

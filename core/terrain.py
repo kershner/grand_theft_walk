@@ -13,7 +13,7 @@ from pathlib import Path
 
 from core.files import read_json, sha256
 from core.navigation import angle_delta, closest_point_on_segment, heading_to
-from core.winmemory import k32
+from core.winmemory import k32, module_export
 
 
 logger = logging.getLogger(__name__)
@@ -42,14 +42,17 @@ class NativeTerrain:
             manifest = read_json(Path(__file__).parent / 'native/background.json')
             module = memory.module('GTW.BackgroundInput.asi') if hasattr(memory, 'module') else None
             rva = manifest.get('terrain_rva')
-            if not module or rva is None:
+            if not module:
                 return
-            if sha256(module['path']) != manifest['sha256']:
-                self.reason = 'terrain bridge update pending; using movement feedback'
-                return
-            if not 0 <= rva <= module['size'] - HEADER.size - MAX_RAYS * RAY.size:
-                raise ValueError('Invalid terrain mailbox bounds')
-            address = module['base'] + rva
+            length = HEADER.size + MAX_RAYS * RAY.size
+            if sha256(module['path']) == manifest['sha256']:
+                if rva is None:
+                    return
+                if not 0 <= rva <= module['size'] - length:
+                    raise ValueError('Invalid terrain mailbox bounds')
+                address = module['base'] + rva
+            else:
+                address = module_export(memory, module, 'GTWTerrain', length)
             protocol, game, ready, request, complete, _, _ = memory.unpack(address, '7I')
             expected = {'san_andreas': 1, 'vice_city': 2, 'gta_iii': 3}[memory.profile.id]
             if (protocol, game, ready) != (1, expected, 1):
@@ -61,7 +64,7 @@ class NativeTerrain:
             self.sequence = request
             self.address = address
             self.reason = 'collision sensing ready'
-        except (OSError, ValueError, TypeError, KeyError) as error:
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
             self.reason = f'terrain sensing unavailable: {error}'
             logger.warning(self.reason)
 
@@ -440,7 +443,7 @@ class WaterAvoidance:
     def __init__(self, sensor):
         self.sensor = sensor
         self.areas = []
-        self.probe = self.escape = None
+        self.probe = None
         self.last_clear = None
         try:
             path = Path(sensor.mem.exe).parent / 'data/water.dat'
@@ -497,7 +500,11 @@ class WaterAvoidance:
             hit = self.sensor.ray((x, y, origin[2] + 1), (x, y, origin[2] - 14), 2, now)
             if hit is None:
                 pending = True
-            elif hit is False or hit[2] or hit[0][2] <= level + .35:
+            # A missed ray high above mapped water can be a wall or unstreamed
+            # geometry on dry land. Let terrain routing handle that uncertainty;
+            # it is not evidence that we should reverse toward our last steps.
+            elif ((hit is False and origin[2] <= level + 4)
+                  or (hit is not False and (hit[2] or hit[0][2] <= level + .35))):
                 self.last_clear = None
                 return True
         if pending:
@@ -514,41 +521,28 @@ class WaterAvoidance:
         return False
 
     def tick(self, walk, state, now):
+        """Veto a wet fallback direction; shared navigation owns all movement."""
         if (not self.areas or not self.sensor.enabled or state.get('in_water')
                 or state.get('in_air') or not state.get('standing', True)):
-            self.probe = self.escape = None
-            self.last_clear = None
             return None
         self.sensor.pump(now)
         position = tuple(state['position'][axis] for axis in ('x', 'y', 'z'))
         facing = state.get('camera_heading')
         facing = state['heading'] if facing is None else facing
-        if self.escape is not None and math.dist(position[:2], self.escape[:2]) < 1.5:
-            self.escape = self.probe = None
-            walk.free_walk_until = 0  # Prefer a safe route after leaving the shore.
-        if self.escape is None:
-            danger = self.danger(position, facing, now)
-            self.sensor.pump(now)
-            if danger is False:
-                return None
-            if danger is None:
-                walk.keys.set(walk.walk_modifier)
-                walk.suspend_progress(state['position'], now)
-                return 'exploring: checking shoreline ahead'
-            self.escape = (position[0] + math.sin(facing) * 8,
-                           position[1] - math.cos(facing) * 8, position[2])
-            walk.recovery_target = walk.recovery_jump_setup = None
-            walk.recovery_jump_request = walk.recovery_jump_started = None
-            walk.navigator.reset()
-            walk.smooth_turn.reset()
-        error = angle_delta(heading_to(position, self.escape), facing)
-        turn = walk.smooth_turn.step(-error * 140 * walk.turn_multiplier, now)
-        if turn:
-            walk.keys.turn(turn)
-        # Turn on dry ground; never jump toward a shoreline.
-        walk.keys.set(walk.walk_modifier | ({'forward'} if abs(error) < .3 else set()))
-        walk.suspend_progress(state['position'], now)
-        return 'exploring: turning away from water'
+        danger = self.danger(position, facing, now)
+        self.sensor.pump(now)
+        if danger is not True:
+            return None
+        walk.navigator.observe(position, now)
+        walk.navigator.avoid_target(now, retreat=False)
+        walk.navigator.failed_approaches.append((position, facing, now + 120))
+        walk.navigator.commit_fresh_course(position, (facing + math.pi / 2, facing - math.pi / 2), now)
+        walk.recovery_target = None
+        walk.free_walk_until = 0
+        if walk.terrain:
+            walk.terrain.reset()
+        walk.keys.set(walk.walk_modifier)
+        return 'exploring: choosing less-used ground away from water'
 
 
 class SwimNavigator:

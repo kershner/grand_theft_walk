@@ -13,6 +13,7 @@ from core.controller import Walking
 from core.exploration import ExploreNavigator
 from core.navigation import Node, PedestrianGraph
 from core.terrain import HEADER, MAX_RAYS, RAY, NativeTerrain, SwimNavigator, TerrainNavigator, WaterAvoidance
+from tests.fixtures import bridge_exports
 
 
 class World:
@@ -291,10 +292,11 @@ class TerrainTests(unittest.TestCase):
             jumps = 0
             for attempt in range(6):
                 state['position']['y'] = attempt * 10
-                # Simulate each recovery finishing at the same blocked site.
+                # Keep making physical progress while sensor replies are pending.
                 walk.recovery_jump_setup = None
                 with patch('core.controller.time.monotonic', return_value=attempt * 16):
                     walk.tick(state, True, 'explore')
+                state['position']['y'] += 9
                 with patch('core.controller.time.monotonic', return_value=attempt * 16 + 15):
                     result = walk.tick(state, True, 'explore')
                 jumps += 'backing up for jump' in result
@@ -361,9 +363,14 @@ class TerrainTests(unittest.TestCase):
                              position=dict(x=0, y=0, z=0))
                 with patch('core.controller.time.monotonic', return_value=0):
                     walk.tick(state, True, 'explore')
-                self.assertFalse(walk.navigator.failures)
-                walk.keys.set.assert_called_with({'walk', 'forward'})
-                self.assertEqual(walk.free_walk_until, 10)
+                if temporary:
+                    self.assertFalse(walk.navigator.failures)
+                    walk.keys.set.assert_called_with({'walk', 'forward'})
+                    self.assertEqual(walk.free_walk_until, 10)
+                else:
+                    self.assertTrue(walk.navigator.failures)
+                    walk.keys.set.assert_called_with({'walk'})
+                    self.assertEqual(walk.free_walk_until, 0)
 
     def test_async_twelve_ray_frame_budget_eventually_finds_u_fence_exit(self):
         class BufferedWorld(World):
@@ -432,13 +439,13 @@ class TerrainTests(unittest.TestCase):
                     self.assertEqual(walk.terrain.route.call_count, 2)
                     self.assertEqual(walk.recoveries, 0)
 
-    def test_free_search_keeps_moving_while_pending_and_rejoins_as_soon_as_path_is_tested(self):
+    def test_sensor_fallback_keeps_steering_and_retries_without_resetting_the_plan(self):
         with patch('core.controller.Keys'):
             walk = Walking()
             walk.set_mode('explore')
             target = (0, 20, 0)
             walk.terrain = SimpleNamespace(enabled=True, reset=Mock(), status='tested route',
-                route=Mock(side_effect=(None, target, target)))
+                route=Mock(return_value=target))
             walk.navigator.join_forward_path = Mock(return_value=target)
             walk.navigator.waypoint = Mock(return_value=target)
             state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
@@ -450,13 +457,13 @@ class TerrainTests(unittest.TestCase):
                 with patch('core.controller.time.monotonic', return_value=now):
                     self.assertIn('walking freely', walk.tick(state, True, 'explore'))
                 walk.keys.set.assert_called_with({'walk', 'forward'})
-            walk.terrain.route.assert_called_once()
-            walk.navigator.waypoint.assert_not_called()
+            walk.terrain.route.assert_not_called()
+            self.assertEqual(walk.navigator.waypoint.call_count, 3)
             state['position']['y'] = 1.5
-            with patch('core.controller.time.monotonic', return_value=1.5):
+            with patch('core.controller.time.monotonic', return_value=10.1):
                 self.assertEqual(walk.tick(state, True, 'explore'), 'tested route')
             self.assertEqual(walk.free_walk_until, 0)
-            walk.navigator.waypoint.assert_called_once()
+            self.assertEqual(walk.navigator.waypoint.call_count, 4)
             self.assertEqual(walk.recoveries, 0)
 
 
@@ -484,6 +491,16 @@ class Memory:
 
 
 class MailboxTests(unittest.TestCase):
+    def test_rebuilt_bridge_uses_relocated_terrain_export(self):
+        mem = Memory()
+        bridge_exports(mem, 0, {"GTWTerrain": 0x1000})
+        mem.write(0x1000, HEADER.pack(1, 1, 1, 0, 0, 0, 0))
+        with patch('core.terrain.read_json', return_value={'terrain_rva': 64, 'sha256': 'pinned'}), \
+                patch('core.terrain.sha256', return_value='rebuilt'):
+            sensor = NativeTerrain(mem)
+        self.assertTrue(sensor.enabled)
+        self.assertEqual(sensor.address, 0x1000)
+
     def sensor(self):
         mem = Memory()
         with patch('core.terrain.read_json', return_value={'terrain_rva': 64, 'sha256': 'pinned'}), \
@@ -648,6 +665,13 @@ class SwimTests(unittest.TestCase):
 
 
 class WaterAvoidanceTests(unittest.TestCase):
+    def test_missed_probe_above_mapped_water_does_not_reverse_on_dry_land(self):
+        guard = self.guard(World(lambda x, y: None), '6, -100, -100, 100, 100')
+        self.assertIs(guard.danger((0, 0, 11.65), 0, 0), False)
+        # Confirmed submerged support still vetoes movement from a high ledge.
+        guard.sensor.height = lambda x, y: 5
+        self.assertIs(guard.danger((0, 0, 11.65), 0, 1), True)
+
     def guard(self, world, contents='0, -100, 10, 100, 100'):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -716,38 +740,141 @@ class WaterAvoidanceTests(unittest.TestCase):
         self.assertEqual(navigator.travel, 28)
         self.assertFalse(navigator.returning)
 
-    def test_free_exploration_turns_on_dry_ground_and_leaves_shore_without_jumping(self):
-        world = World(lambda x, y: 2 if y < 10 else None)
-        guard = self.guard(world)
-        with patch('core.controller.Keys'):
-            walk = Walking(turn_multiplier=4)
-            walk.set_mode('explore')
-            walk.free_walk_until = 30
-            walk.water_guard = guard
-            state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
-                in_vehicle=False, health=100, player_state=0, ped_state=1, standing=True,
-                in_air=False, in_water=False, interior=0, heading=0,
-                camera_heading=0, position=dict(x=0., y=6., z=3.))
-            def rotate(amount):
-                state['heading'] -= math.radians(amount * .1)
-                state['camera_heading'] = state['heading']
-            walk.keys.turn.side_effect = rotate
-            for frame in range(2400):
-                with patch('core.controller.time.monotonic', return_value=frame / 120):
-                    status = walk.tick(state, True, 'explore')
-                if 'forward' in walk.keys.set.call_args.args[0]:
-                    state['position']['x'] -= math.sin(state['heading']) * .02
-                    state['position']['y'] += math.cos(state['heading']) * .02
-                self.assertLess(state['position']['y'], 10)
-                if guard.escape is None:
-                    break
-            self.assertLess(frame, 2399)
-            self.assertLess(state['position']['y'], 0)
-            self.assertEqual(walk.recoveries, 0)
-            self.assertIsNone(walk.recovery_jump_request)
+    def test_fallback_water_check_commits_to_less_used_ground_without_forced_retreat(self):
+        for recent in (True, False):
+            with self.subTest(recent=recent), patch('core.controller.Keys'):
+                world = World(lambda x, y: 2 if y < 10 else None)
+                guard = self.guard(world)
+                graph = PedestrianGraph([
+                    Node((0, 0), (0, 6, 3), (((0, 1), False),)),
+                    Node((0, 1), (0, -4, 3), (((0, 0), False),))])
+                walk = Walking(graph, turn_multiplier=4)
+                walk.set_mode('explore')
+                walk.free_walk_until = 30
+                walk.water_guard = guard
+                for step, x in enumerate(range(-36, 1, 3)):
+                    walk.navigator.observe((x, 6, 3), step)
+                if not recent:
+                    walk.navigator.recent_ground.clear()  # Saved counters still guide us.
+                state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
+                    in_vehicle=False, health=100, player_state=0, ped_state=1, standing=True,
+                    in_air=False, in_water=False, interior=0, heading=0,
+                    camera_heading=0, position=dict(x=0., y=6., z=3.))
+                with patch('core.controller.time.monotonic', return_value=20):
+                    self.assertIn('less-used ground', walk.tick(state, True, 'explore'))
+                target = walk.navigator.local_target
+                self.assertGreater(target[0], 9)
+                self.assertAlmostEqual(target[1], 6)
+                self.assertGreater(walk.navigator.open_goal[0], 90)
+                # A nearby familiar sidewalk behind us cannot override the decision.
+                self.assertEqual(walk.navigator.waypoint((0, 6, 3), math.pi, 0, 20.1), target)
+                self.assertFalse(walk.navigator.returning)
+                self.assertEqual(walk.recoveries, 0)
+                self.assertIsNone(walk.recovery_jump_request)
 
 
 class RecoveryTimingTests(unittest.TestCase):
+    def test_blocked_corridor_turns_and_moves_even_when_sensor_keeps_rejecting_routes(self):
+        from games.gta_iii import game as iii
+        from games.san_andreas import game as sa
+        from games.vice_city import game as vc
+
+        for backend in (iii, sa, vc):
+            for jumping in (True, False):
+                with self.subTest(game=backend.__name__, jumping=jumping), patch('core.controller.Keys'):
+                    multiplier = getattr(backend, 'TURN_MULTIPLIER', 1)
+                    walk = Walking(turn_multiplier=multiplier)
+                    walk.set_mode('explore')
+                    walk.jump_supported = jumping
+                    walk.terrain = SimpleNamespace(enabled=True, blocked=True, temporary=False,
+                        route=Mock(return_value=None), reset=Mock(), status='blocked')
+                    state = self.state()
+                    with patch('core.controller.time.monotonic', return_value=0):
+                        status = walk.tick(state, True, 'explore')
+                    if jumping:
+                        self.assertIn('backing up for jump', status)
+                        walk.keys.set.assert_called_with({'walk', 'back'})
+                        for now in (1.6, 2.):
+                            with patch('core.controller.time.monotonic', return_value=now):
+                                walk.tick(state, True, 'explore')
+                        walk.jump_feedback(walk.recovery_jump_id, 'failed')
+                        with patch('core.controller.time.monotonic', return_value=2.1):
+                            status = walk.tick(state, True, 'explore')
+                    self.assertIn('steering around obstacle', status)
+                    self.assertIsNotNone(walk.recovery_target)
+                    self.assertFalse(walk.navigator.returning)
+
+                    def rotate(amount):
+                        state['heading'] -= math.radians(amount * .4 / multiplier)
+
+                    walk.keys.turn.side_effect = rotate
+                    for frame in range(1, 601):
+                        with patch('core.controller.time.monotonic', return_value=2.1 + frame / 120):
+                            walk.tick(state, True, 'explore')
+                        if 'forward' in walk.keys.set.call_args.args[0]:
+                            state['position']['x'] -= math.sin(state['heading']) / 60
+                            state['position']['y'] += math.cos(state['heading']) / 60
+                        if math.hypot(state['position']['x'], state['position']['y']) >= 1:
+                            break
+                    self.assertLess(frame, 600)
+                    walk.keys.turn.assert_called()
+                    self.assertEqual(walk.terrain.route.call_count, 1)
+                    self.assertLessEqual(walk.recoveries, 2)
+                    landing = walk.recovery_target
+                    state['position'] = dict(zip(('x', 'y', 'z'), landing))
+                    walk.terrain.route.side_effect = lambda position, target, now: target
+                    with patch('core.controller.time.monotonic', return_value=8):
+                        walk.tick(state, True, 'explore')
+                    self.assertIsNone(walk.recovery_target)
+                    self.assertEqual(walk.navigator.local_origin, landing)
+
+    def test_circling_survives_planner_resets_and_paused_waypoint_checks(self):
+        navigator = ExploreNavigator()
+        navigator.exploring = True
+        for frame in range(121):
+            now = frame / 4
+            angle = now * math.tau / 20
+            position = (4 * math.sin(angle), 4 * math.cos(angle), 0)
+            navigator.reset()  # Terrain/free-walk/shoreline transitions.
+            navigator.watchdogs_paused_until = now + 1
+            if navigator.observe_motion(position, angle, now):
+                break
+        self.assertEqual(navigator.loop_escapes, 1)
+        self.assertTrue(navigator.route_abandoned)
+        self.assertFalse(navigator.returning)
+        self.assertTrue(navigator.obstacle_regions)
+
+    def test_motion_watchdog_allows_forward_progress_turning_pauses_and_teleports(self):
+        for kind in ('straight', 'stationary', 'pause', 'teleport'):
+            with self.subTest(kind=kind):
+                navigator = ExploreNavigator()
+                for frame in range(161):
+                    now = frame / 4
+                    position = (0, now if kind == 'straight' else 0, 0)
+                    if kind == 'pause' and frame >= 80:
+                        now += 100
+                    if kind == 'teleport' and frame >= 80:
+                        position = (1000, 1000, 0)
+                    self.assertFalse(navigator.observe_motion(position, 0, now))
+                self.assertEqual(navigator.loop_escapes, 0)
+
+    def test_graph_continues_forward_before_seeking_unused_ground_behind(self):
+        graph = PedestrianGraph([
+            Node((0, i), (0, y, 0), tuple(((0, j), False) for j in (i - 1, i + 1)
+                 if 0 <= j < 4)) for i, y in enumerate((-20, 0, 20, 40))])
+        navigator = ExploreNavigator(graph, open_terrain_chance=0)
+        navigator.exploring = True
+        navigator.edge_visits[((0, 1), (0, 2))] = 5
+        self.assertEqual(navigator.waypoint((0, 0, 0), 0, 0, 0), (0, 20, 0))
+
+    def test_joining_a_sidewalk_does_not_chase_the_nearest_node_behind(self):
+        graph = PedestrianGraph([
+            Node((0, 0), (0, -5, 0), (((0, 1), False),)),
+            Node((0, 1), (0, 15, 0), (((0, 0), False),))])
+        navigator = ExploreNavigator(graph, open_terrain_chance=0)
+        navigator.exploring = True
+        self.assertEqual(navigator.waypoint((0, 0, 0), 0, 0, 0), (0, 15, 0))
+
     def state(self, **updates):
         state = dict(ready=True, foreground=True, paused=False, controls_disabled=False,
                      in_vehicle=False, health=100, player_state=0, ped_state=1,

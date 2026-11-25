@@ -96,7 +96,8 @@ def rotation_countdown(rotation):
         return ""
     minutes = max(0, math.ceil((deadline - time.time()) / 60))
     hours, minutes = divmod(minutes, 60)
-    return f"Next game in: {hours}h{minutes:02d}m"
+    duration = f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+    return f"Next game in: {duration}"
 
 
 class ChatBot:

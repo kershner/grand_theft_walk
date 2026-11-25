@@ -14,7 +14,7 @@ import keyboard
 from core.files import read_json, sha256
 from core.navigation import SmoothTurn
 from core.runtime import request_expired
-from core.winmemory import k32
+from core.winmemory import k32, module_export
 
 
 logger = logging.getLogger(__name__)
@@ -406,11 +406,15 @@ class NativeInput:
         self.mem = memory
         manifest = read_json(Path(__file__).parent / "native/background.json")
         module = memory.module(MODULE)
-        if not module or sha256(module["path"]) != manifest["sha256"]:
-            raise RuntimeError("The background input bridge is missing or changed; run suite repair.")
-        self.address = module["base"] + manifest["state_rva"]
-        if manifest["state_rva"] + 40 > module["size"]:
-            raise RuntimeError("Invalid background input bridge layout")
+        if not module:
+            raise RuntimeError("The background input bridge is missing; run suite repair.")
+        if sha256(module["path"]) == manifest["sha256"]:
+            if not 0 <= manifest["state_rva"] <= module["size"] - 40:
+                raise RuntimeError("Invalid background input bridge layout")
+            self.address = module["base"] + manifest["state_rva"]
+        else:
+            logger.warning("Background input bridge differs from the bundled build; checking its exported protocol.")
+            self.address = module_export(memory, module, "GTWInput", 40)
         protocol, status, game = memory.unpack(self.address, "3I")
         expected = {"san_andreas": 1, "vice_city": 2, "gta_iii": 3}[memory.profile.id]
         if (protocol, status, game) != (1, 1, expected):

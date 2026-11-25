@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,8 +17,9 @@ from core.controller import Controller
 from core.files import atomic_json
 from core.navigation import Node, PedestrianGraph
 from core.runtime import control_request
-from core.winmemory import ProcessJob, spawn, stop_processes, watch
+from core.winmemory import ProcessJob, module_export, spawn, stop_processes, watch
 from games import ACTIVE_GAMES, Capabilities, get_game
+from tests.fixtures import MemoryFixture, bridge_exports
 
 
 class ControllerSessionTests(unittest.TestCase):
@@ -150,11 +152,19 @@ class LaunchTests(unittest.TestCase):
             self.launch(extra=["--prepare-only"])
         self.memory.close.assert_called_once()
 
-    def test_component_mismatch_blocks_process_creation(self):
+    def test_missing_components_block_process_creation(self):
         self.status.return_value = {"setup_matches": False}
-        with self.assertRaisesRegex(RuntimeError, "mod files"):
+        with self.assertRaisesRegex(RuntimeError, "mod setup is incomplete"):
             self.launch()
         self.spawn.assert_not_called()
+
+    def test_changed_component_hashes_allow_direct_launch(self):
+        self.status.return_value = {"setup_matches": False, "mismatches": [
+            {"path": "scripts/GTW.BackgroundInput.asi", "expected": "bundled", "actual": "rebuilt"}]}
+        with self.assertLogs("core.manager", level="WARNING"):
+            self.launch()
+        self.spawn.assert_called_once()
+        self.run.assert_called_once()
 
     def test_unverified_executable_blocks_process_creation(self):
         self.digest.return_value = "unverified"
@@ -176,6 +186,29 @@ class LaunchTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.launch(extra=[flag, value])
         self.spawn.assert_not_called()
+
+
+class ModuleExportTests(unittest.TestCase):
+    def test_relocated_and_decorated_exports_are_resolved(self):
+        mem = MemoryFixture()
+        module = {"base": 0x10000000, "size": 0x10000}
+        bridge_exports(mem, module["base"], {"_GTWInput": 0x3000, "GTWTerrain": 0x4000})
+        self.assertEqual(module_export(mem, module, "GTWInput", 40), module["base"] + 0x3000)
+        self.assertEqual(module_export(mem, module, "GTWTerrain", 3868), module["base"] + 0x4000)
+        with self.assertRaisesRegex(RuntimeError, "is missing"):
+            module_export(mem, module, "Other", 40)
+
+    def test_invalid_and_forwarded_exports_are_rejected(self):
+        for target in (0, 0x210, 0xFFF0, 0x20000):
+            mem = MemoryFixture()
+            module = {"base": 0x10000000, "size": 0x10000}
+            bridge_exports(mem, module["base"], {"GTWInput": target})
+            with self.subTest(target=target), self.assertRaises(RuntimeError):
+                module_export(mem, module, "GTWInput", 40)
+        bridge_exports(mem, module["base"], {"GTWInput": 0x3000})
+        mem.write(module["base"] + 0x3C, struct.pack("<I", 0xFFFFFFFF))
+        with self.assertRaisesRegex(RuntimeError, "bounds"):
+            module_export(mem, module, "GTWInput", 40)
 
 
 class LaunchWatchdogTests(unittest.TestCase):

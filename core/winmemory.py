@@ -123,6 +123,46 @@ def game_pids(game="san_andreas"):
         k32.CloseHandle(snapshot)
 
 
+def module_export(memory, module, symbol, length):
+    """Resolve a data export from the loaded PE32 image, including rebuilt mods."""
+    base, size = module["base"], module["size"]
+
+    def read(rva, count):
+        if not 0 <= rva <= size - count or count <= 0:
+            raise RuntimeError("Invalid native bridge export bounds")
+        return memory.read(base + rva, count)
+
+    if read(0, 2) != b"MZ":
+        raise RuntimeError("Invalid native bridge DOS header")
+    pe = struct.unpack("<I", read(0x3C, 4))[0]
+    header = read(pe, 128)
+    if (header[:4] != b"PE\0\0" or struct.unpack_from("<H", header, 4)[0] != 0x14C
+            or struct.unpack_from("<H", header, 24)[0] != 0x10B):
+        raise RuntimeError("Native bridge must be a PE32 image")
+    exports, export_size = struct.unpack_from("<II", header, 120)
+    if not exports or export_size < 40:
+        raise RuntimeError("Native bridge exports are missing")
+    directory = read(exports, 40)
+    functions, names, addresses, name_table, ordinals = struct.unpack_from("<5I", directory, 20)
+    if not 0 < names <= functions <= 4096:
+        raise RuntimeError("Invalid native bridge export table")
+    targets = struct.unpack(f"<{functions}I", read(addresses, functions * 4))
+    strings = struct.unpack(f"<{names}I", read(name_table, names * 4))
+    indexes = struct.unpack(f"<{names}H", read(ordinals, names * 2))
+    accepted = (symbol.encode("ascii"), ("_" + symbol).encode("ascii"))
+    for name, index in zip(strings, indexes):
+        if read(name, min(64, size - name)).split(b"\0", 1)[0] not in accepted:
+            continue
+        if index >= functions:
+            raise RuntimeError("Invalid native bridge export ordinal")
+        target = targets[index]
+        if not target or exports <= target < exports + export_size:
+            raise RuntimeError("Native bridge data export is forwarded or missing")
+        read(target, length)
+        return base + target
+    raise RuntimeError(f"Native bridge export {symbol} is missing")
+
+
 class Memory:
     def __init__(self, writable=False, pid=None, game="san_andreas"):
         self.profile = get_game(game)

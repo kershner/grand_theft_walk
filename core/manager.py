@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,23 @@ from pathlib import Path
 from core.files import atomic_json, component_mismatches, sha256, under
 from core.winmemory import supervise
 from games import ACTIVE_GAMES, ROOT, get_game
+
+
+logger = logging.getLogger(__name__)
+
+
+def validate_components(status, title):
+    """Allow edited/rebuilt components, but require a complete installation."""
+    if status["setup_matches"]:
+        return
+    mismatches = status.get("mismatches", [])
+    blocked = [entry["path"] for entry in mismatches
+               if entry.get("actual") is None or entry.get("expected") is None]
+    if status.get("setup_error") or status.get("recovery_pending") or blocked or not mismatches:
+        reason = status.get("setup_error") or ", ".join(blocked[:5]) or "manifest/recovery state"
+        raise RuntimeError(f"{title}'s mod setup is incomplete ({reason}). Run suite repair.")
+    logger.warning("%s has changed mod files: %s. Continuing with runtime compatibility checks.",
+                   title, ", ".join(entry["path"] for entry in mismatches))
 
 
 def definition(game, root=ROOT):
@@ -49,7 +67,7 @@ def definition(game, root=ROOT):
 def component_status(game, directory, root=ROOT):
     profile = definition(game, root)
     if not profile or not profile.get("files"):
-        return {"setup_matches": False, "component_count": 0, "mismatches": [],
+        return {"setup_matches": False, "launch_ready": False, "component_count": 0, "mismatches": [],
                 "setup_error": "Pinned component manifest is missing. Install or re-extract the suite."}
     seen = set()
     for entry in profile["files"]:
@@ -60,6 +78,8 @@ def component_status(game, directory, root=ROOT):
     mismatches = component_mismatches(profile, directory)
     pending = under(directory, ".gtw-suite/pending.json").exists()
     return {"setup_matches": not mismatches and not pending,
+            "launch_ready": not pending and all(entry["actual"] is not None and entry["expected"] is not None
+                                                for entry in mismatches),
             "component_count": len(profile["files"]), "mismatches": mismatches,
             "recovery_pending": pending}
 
@@ -76,7 +96,7 @@ def installation_status(game):
         "executable": str(executable), "sha256": digest,
         "executable_matches": matches,
         **components,
-        "controller_ready": bool(matches and components["setup_matches"] and profile.controller_ready and profile.verified_executable),
+        "controller_ready": bool(matches and components["launch_ready"] and profile.controller_ready and profile.verified_executable),
     }
 
 
@@ -85,9 +105,7 @@ def session_command(game, baseline=False):
     status = installation_status(game)
     if not status["executable_matches"]:
         raise RuntimeError(f"{profile.title} does not match its pinned classic executable profile.")
-    if not status["setup_matches"]:
-        changed = ", ".join(entry["path"] for entry in status["mismatches"][:5])
-        raise RuntimeError(f"{profile.title}'s mod setup is incomplete or changed ({changed or 'manifest/recovery state'}). Run build\\setup\\Setup.cmd -Action Repair -Game {game} before launching.")
+    validate_components(status, profile.title)
     if baseline:
         return [status["executable"]], profile.install_dir
     if not status["controller_ready"]:

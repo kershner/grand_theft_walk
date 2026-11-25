@@ -13,6 +13,8 @@ from core.files import read_json
 from core.navigation import (
     PedestrianGraph,
     PedestrianNavigator,
+    RECENT_TRAIL_POINTS,
+    RecentTrail,
     angle_delta,
     closest_point_on_segment,
     distance,
@@ -44,7 +46,7 @@ class ExploreNavigator(PedestrianNavigator):
             setattr(self, name, MemoryCounter())
         self.store = ExplorationStore(self.memory_path.with_suffix('.sqlite3')) if self.memory_path else None
         self.recent_edges = deque(maxlen=64)
-        self.recent_ground = deque(maxlen=100)
+        self.recent_ground = RecentTrail()
         self.failed_approaches = deque(maxlen=32)
         self.obstacle_regions = deque(maxlen=32)
         self.route_abandoned = False
@@ -76,7 +78,37 @@ class ExploreNavigator(PedestrianNavigator):
         self.saved_at = float('-inf')
         self.dirty = False
         self.memory_seeded = False
+        self.motion_history = deque(maxlen=160)
+        self.loop_escapes = 0
         self.load_memory()
+
+    def observe_motion(self, position, heading, now):
+        """Catch circling even when terrain, turns or replanning pause goal checks."""
+        history = self.motion_history
+        if history and (now - history[-1][0] > 2 or math.dist(position, history[-1][1]) > 20):
+            history.clear()
+        if not history or now - history[-1][0] >= .25:
+            history.append((now, position))
+        while history and now - history[0][0] > 30:
+            history.popleft()
+        points = list(history)
+        if len(points) < 2 or now - points[0][0] < 20:
+            return False
+        travelled = sum(distance(a[1], b[1]) for a, b in zip(points, points[1:]))
+        displacement = distance(position, points[0][1])
+        if travelled < 18 or displacement > 6:
+            return False
+        goal = (position[0] - math.sin(heading) * 10,
+                position[1] + math.cos(heading) * 10, position[2])
+        self.observe(position, now)
+        self.avoid_target(now, retreat=False)
+        self.abandon_journey(position, goal, now)
+        self.commit_fresh_course(position, (self.course, self.course + math.pi), now)
+        history.clear()
+        self.loop_escapes += 1
+        logger.info('Circling detected: %.1fm walked, %.1fm displacement; choosing a new course',
+                    travelled, displacement)
+        return True
 
     @staticmethod
     def coverage_cell(position):
@@ -120,7 +152,7 @@ class ExploreNavigator(PedestrianNavigator):
                            or any(type(v) is not int for v in edge) for edge in recent)):
                 raise ValueError('Invalid recent exploration route')
             ground = data.get('recent_ground', [])
-            if (not isinstance(ground, list) or len(ground) > 100
+            if (not isinstance(ground, list) or len(ground) > RECENT_TRAIL_POINTS
                     or any(not isinstance(point, list) or len(point) != 3
                            or any(type(v) not in (int, float) or not -1e7 <= v <= 1e7
                                   for v in point) for point in ground)):
@@ -131,7 +163,7 @@ class ExploreNavigator(PedestrianNavigator):
                 ((tuple(edge[:2]), tuple(edge[2:])) for edge in recent
                  if tuple(edge[:2]) in self.graph.nodes and tuple(edge[2:]) in self.graph.nodes),
                 maxlen=64)
-            self.recent_ground = deque(map(tuple, ground), maxlen=100)
+            self.recent_ground = RecentTrail(ground)
             if migrate:
                 for name in MEMORY_COUNTERS:
                     counter = getattr(self, name)
@@ -184,7 +216,8 @@ class ExploreNavigator(PedestrianNavigator):
 
     def save_memory(self, now, force=False):
         counters = {name: getattr(self, name) for name in MEMORY_COUNTERS}
-        changed = self.dirty or any(counter.pending for counter in counters.values())
+        changed = (self.dirty or self.recent_ground.pending or self.recent_ground.cleared
+                   or any(counter.pending for counter in counters.values()))
         if self.store is None or not changed or (not force and now - self.saved_at < 30):
             return
         self.saved_at = now
@@ -224,7 +257,6 @@ class ExploreNavigator(PedestrianNavigator):
             if moved > 50 or abs(position[2] - self.last_position[2]) > 15:
                 # Respawn/teleport: do not invent a traversable connection.
                 self.reset()
-                self.recent_ground.clear()
             elif moved <= 20:
                 self.travel += moved
                 self.excursion_travel += moved if self.excursion_anchor is not None else 0
@@ -254,10 +286,7 @@ class ExploreNavigator(PedestrianNavigator):
 
     def repeats_ground(self, origin, target):
         """Check the entire short approach, including intermediate cell borders."""
-        recent = list(self.recent_ground)
-        if any(distance(target, point := closest_point_on_segment(target, a, b)) < 6
-               and abs(target[2] - point[2]) <= 3
-               for a, b in zip(recent, recent[1:])):
+        if self.recent_ground.near(target):
             return True
         previous = self.coverage_cell(origin)
         steps = max(1, math.ceil(distance(origin, target) / 2))
@@ -413,12 +442,40 @@ class ExploreNavigator(PedestrianNavigator):
         self.journey_observed_at = None
         self.route_abandoned = True
 
-    def choose_goal(self, start, now):
-        """Find an unused physical connection anywhere in the reachable network.
+    def commit_fresh_course(self, position, headings, now):
+        """Pick less-used ground at a course change, then keep that decision."""
+        def score(heading):
+            target = (position[0] - math.sin(heading) * 36,
+                      position[1] + math.cos(heading) * 36, position[2])
+            known, crossings, frequency = self.ground_usage(position, target)
+            coverage = sum(self.coverage[self.coverage_cell(tuple(
+                a + (b - a) * step / 3 for a, b in zip(position, target)))]
+                for step in (1, 2, 3))
+            return (self.approach_blocked(position, target, now),
+                    self.repeats_ground(position, target), known / max(1, crossings),
+                    frequency / max(1, crossings), coverage)
 
-        Distance and node popularity may break ties, but can never make a
-        familiar destination beat a reachable unused connection.
-        """
+        self.course = min(headings, key=score)
+        self.target = self.previous = self.goal = self.goal_edge = None
+        self.goal_steps = {}
+        self.local_origin = position
+        self.local_target = (position[0] - math.sin(self.course) * 10,
+                             position[1] + math.cos(self.course) * 10, position[2])
+        self.open_goal = (position[0] - math.sin(self.course) * 100,
+                          position[1] + math.cos(self.course) * 100, position[2])
+
+    def choose_goal(self, start, now, heading=None):
+        """Continue ahead first, then seek unused connections along that route."""
+        ahead = set()
+        if heading is not None:
+            node = self.graph.nodes[start]
+            ahead = {key for key, _ in node.links
+                     if key in self.graph.nodes
+                     and self.blocked.get((start, key), 0) <= now
+                     and self.avoided.get(key, 0) <= now
+                     and not self.approach_blocked(node.position, self.graph.nodes[key].position, now)
+                     and abs(angle_delta(heading_to(node.position, self.graph.nodes[key].position),
+                                         heading)) <= math.pi / 2 + .01}
         costs = {start: (0.0, 0.0)}
         parents = {}
         queue = [(costs[start], start)]
@@ -434,6 +491,8 @@ class ExploreNavigator(PedestrianNavigator):
                 break  # No remaining route can improve the best unused link.
             node = self.graph.nodes[key]
             for target, _ in node.links:
+                if key == start and ahead and target not in ahead:
+                    continue
                 if (target not in self.graph.nodes or self.blocked.get((key, target), 0) > now
                         or self.avoided.get(target, 0) > now):
                     continue
@@ -586,8 +645,9 @@ class ExploreNavigator(PedestrianNavigator):
             if joined is not None:
                 return joined
             if self.open_goal is None or goal_finished:
-                self.open_goal = (position[0] - math.sin(direction) * 100,
-                                  position[1] + math.cos(direction) * 100, position[2])
+                self.commit_fresh_course(position, (direction, direction + math.pi / 4,
+                                                   direction - math.pi / 4), now)
+                direction = self.course
             options = []
             near_node = self.graph.nearest(position, radius=12)
             failed_bearings = []
@@ -742,6 +802,11 @@ class ExploreNavigator(PedestrianNavigator):
         if nearby is None:
             self.target = self.previous = self.goal = None
             return self.off_path(position, heading, now)
+        if (self.target is None and distance(position, nearby.position) > 4
+                and abs(angle_delta(heading_to(position, nearby.position), heading)) > math.pi / 2):
+            # A nearby node behind us is not a reason to turn around to join it.
+            joined = self.join_forward_path(position, heading, now)
+            return joined if joined is not None else self.off_path(position, heading, now)
         node = self.graph.nodes.get(self.target, nearby)
         if self.target is None or distance(position, node.position) <= 2:
             departure = self.try_open_departure(node, position, heading)
@@ -757,7 +822,7 @@ class ExploreNavigator(PedestrianNavigator):
             if reached_goal:
                 self.visits[self.goal] += 1
             start = self.target if self.target in self.graph.nodes else nearby.key
-            self.choose_goal(start, now)
+            self.choose_goal(start, now, heading)
         # The committed edge sequence can include a cycle-closing connector
         # whose endpoint is a node already crossed on the way there.
         # Follow that sequence rather than letting mission routing stop early.
@@ -847,6 +912,8 @@ class ExplorationStore:
                        'PRIMARY KEY (name, key)) WITHOUT ROWID')
             db.execute('CREATE TABLE IF NOT EXISTS metadata ('
                        'name TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID')
+            db.execute('CREATE TABLE IF NOT EXISTS trail ('
+                       'id INTEGER PRIMARY KEY AUTOINCREMENT, x REAL, y REAL, z REAL)')
             db.execute('PRAGMA user_version = 1')
             metadata = dict(db.execute('SELECT name, value FROM metadata'))
             if 'version' not in metadata:
@@ -854,6 +921,12 @@ class ExplorationStore:
             result = {name: json.loads(value) for name, value in metadata.items()}
             if result['version'] != 1:
                 raise sqlite3.DatabaseError('Unsupported exploration metadata version')
+            if result.get('trail_version') not in (None, 1):
+                raise sqlite3.DatabaseError('Unsupported exploration trail version')
+            if result.get('trail_version') == 1:
+                result['recent_ground'] = [list(row) for row in db.execute(
+                    'SELECT x,y,z FROM (SELECT id,x,y,z FROM trail ORDER BY id DESC LIMIT ?) '
+                    'ORDER BY id', (RECENT_TRAIL_POINTS,))]
             for name, key, count in db.execute('SELECT name, key, value FROM counters'):
                 result.setdefault(name, []).append(json.loads(key) + [count])
             return result
@@ -871,8 +944,8 @@ class ExplorationStore:
                 else:
                     removed.append((name, encoded))
         metadata = {'version': 1,
-                    'recent_edges': [list(a + b) for a, b in recent_edges],
-                    'recent_ground': list(recent_ground)}
+                    'recent_edges': [list(a + b) for a, b in recent_edges], 'trail_version': 1}
+        pending = list(recent_ground.pending)
         # The rollback journal exists only for this transaction. No growing
         # append-only history or WAL is left behind between checkpoints.
         with closing(self.connect()) as db, db:
@@ -881,6 +954,16 @@ class ExplorationStore:
             version = db.execute("SELECT value FROM metadata WHERE name='version'").fetchone()
             if version is not None and version[0] != '1':
                 raise sqlite3.DatabaseError('Existing exploration metadata version left unchanged')
+            seeded = db.execute("SELECT value FROM metadata WHERE name='trail_version'").fetchone()
+            if seeded is not None and seeded[0] != '1':
+                raise sqlite3.DatabaseError('Unsupported exploration trail version')
+            if seeded is None or recent_ground.cleared:
+                db.execute('DELETE FROM trail')
+                pending = list(recent_ground)
+            db.executemany('INSERT INTO trail(x,y,z) VALUES (?,?,?)', pending)
+            db.execute('DELETE FROM trail WHERE id <= '
+                       '(SELECT COALESCE(MAX(id),0) FROM trail) - ?', (RECENT_TRAIL_POINTS,))
+            db.execute("DELETE FROM metadata WHERE name='recent_ground'")
             db.executemany('INSERT INTO counters VALUES (?, ?, ?) '
                            'ON CONFLICT(name, key) DO UPDATE SET value=excluded.value', rows)
             db.executemany('DELETE FROM counters WHERE name=? AND key=?', removed)
@@ -891,3 +974,5 @@ class ExplorationStore:
         # Keep pending updates after any failed/rolled-back transaction.
         for name, keys in batches.items():
             counters[name].pending.difference_update(keys)
+        recent_ground.pending.clear()
+        recent_ground.cleared = False

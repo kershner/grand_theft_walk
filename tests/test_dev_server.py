@@ -867,7 +867,7 @@ class RotationChatTests(unittest.TestCase):
                 with patch("chat.bot.time.time", return_value=10001):
                     self.assertEqual(bot.poll_events(now=5), [])
             with patch("chat.bot.time.time", return_value=10001):
-                self.assertIn("Next game in: 0h00m", bot._info_reply(state))
+                self.assertIn("Next game in: 0m", bot._info_reply(state))
 
     def test_single_game_and_unmanaged_chat_omit_countdown(self):
         with tempfile.TemporaryDirectory() as folder:

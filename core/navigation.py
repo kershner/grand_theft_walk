@@ -5,12 +5,13 @@ import logging
 import math
 import random
 import struct
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
+RECENT_TRAIL_POINTS = 100000
 
 
 def angle_delta(target, current):
@@ -36,6 +37,67 @@ def closest_point_on_segment(position, start, end):
     ) / length_squared
     progress = max(0.0, min(1.0, progress))
     return tuple(a + progress * (b - a) for a, b in zip(start, end))
+
+
+class RecentTrail(deque):
+    """Bounded long-term trail with nearby-segment lookups and pending SQL rows."""
+
+    def __init__(self, points=(), *, limit=RECENT_TRAIL_POINTS):
+        super().__init__(maxlen=limit)
+        self.cells = defaultdict(dict)
+        self.serial = 0
+        self.pending = deque(maxlen=limit)
+        self.cleared = False
+        self.extend(points)
+        self.pending.clear()
+
+    @staticmethod
+    def cell(point):
+        return math.floor(point[0] / 50), math.floor(point[1] / 50), math.floor(point[2] / 6)
+
+    def append(self, point):
+        point = tuple(point)
+        previous = self[-1] if self else point
+        if len(self) == self.maxlen:
+            key = self.cell(self[0])
+            self.cells[key].pop(self.serial - len(self))
+            if not self.cells[key]:
+                del self.cells[key]
+            if len(self) > 1:
+                first = self[1]
+                self.cells[self.cell(first)][self.serial - len(self) + 1] = (first, first)
+            else:
+                previous = point
+        # A loading/teleport gap is not evidence of a walked connection.
+        if distance(previous, point) > 20 or abs(previous[2] - point[2]) > 15:
+            previous = point
+        super().append(point)
+        self.cells[self.cell(point)][self.serial] = (previous, point)
+        self.serial += 1
+        self.pending.append(point)
+
+    def extend(self, points):
+        for point in points:
+            self.append(point)
+
+    def clear(self):
+        super().clear()
+        self.cells.clear()
+        self.pending.clear()
+        self.serial = 0
+        self.cleared = True
+
+    def near(self, target):
+        """Only inspect buckets within one maximum observed step of the target."""
+        x, y, z = self.cell(target)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in range(-3, 4):
+                    for start, end in self.cells.get((x + dx, y + dy, z + dz), {}).values():
+                        point = closest_point_on_segment(target, start, end)
+                        if distance(target, point) < 6 and abs(target[2] - point[2]) <= 3:
+                            return True
+        return False
 
 
 class SmoothTurn:
