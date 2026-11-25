@@ -131,6 +131,8 @@ class Walking:
             self.jump_grounded_since = None
         if self.terrain:
             self.terrain.reset()
+        if self.water_guard:
+            self.water_guard.probe = self.water_guard.turn_target = None
         if self.swim:
             self.swim.observed_at = None
         self.recovery_jump_setup = None
@@ -407,7 +409,7 @@ class Walking:
                     self.water_guard.probe = None
         else:
             getattr(self.navigator, 'motion_history', []).clear()
-        if self.water_guard and mode == 'explore' and self.free_walk_until > 0 and enabled and can_control(state):
+        if self.water_guard and mode == 'explore' and enabled and can_control(state):
             guarded = self.water_guard.tick(self, state, now)
             if guarded is not None:
                 return guarded

@@ -444,7 +444,7 @@ class WaterAvoidance:
         self.sensor = sensor
         self.areas = []
         self.probe = None
-        self.last_clear = None
+        self.turn_target = None
         try:
             path = Path(sensor.mem.exe).parent / 'data/water.dat'
             for line in path.read_text(encoding='ascii').splitlines():
@@ -489,56 +489,61 @@ class WaterAvoidance:
             self.probe = (position, heading)
         origin, bearing = self.probe
         pending = False
-        for length in (1.5, 3., 5.):
-            x = origin[0] - math.sin(bearing) * length
-            y = origin[1] + math.cos(bearing) * length
-            level = self.level(x, y)
-            if level is None:
-                continue
-            # Water polygons also extend under bridges and some dry ground.
-            # Only reject a course when actual support is missing or submerged.
-            hit = self.sensor.ray((x, y, origin[2] + 1), (x, y, origin[2] - 14), 2, now)
-            if hit is None:
-                pending = True
-            # A missed ray high above mapped water can be a wall or unstreamed
-            # geometry on dry land. Let terrain routing handle that uncertainty;
-            # it is not evidence that we should reverse toward our last steps.
-            elif ((hit is False and origin[2] <= level + 4)
-                  or (hit is not False and (hit[2] or hit[0][2] <= level + .35))):
-                self.last_clear = None
-                return True
-        if pending:
-            # Renew probes before the old checked approach is exhausted. A
-            # single asynchronous batch must not restart the walking animation
-            # every .75 metres, including on land above water polygons.
-            if self.last_clear is not None:
-                checked, direction, when = self.last_clear
-                if (now - when < 1.5 and math.dist(position, checked) < 1.0
-                        and abs(angle_delta(heading, direction)) < .25):
-                    return False
-            return None
-        self.last_clear = (origin, bearing, now)
-        return False
+        for length in (2., 4., 6., 8., 10.):
+            for side in (-.4, 0., .4):
+                x = origin[0] - math.sin(bearing) * length + math.cos(bearing) * side
+                y = origin[1] + math.cos(bearing) * length + math.sin(bearing) * side
+                level = self.level(x, y)
+                if level is None:
+                    continue
+                # The map extends under dry ground and bridges. Require actual
+                # support above the surface, including beside the centre line.
+                if not self.sensor.enabled:
+                    pending = True
+                    continue
+                hit = self.sensor.ray((x, y, origin[2] + 1), (x, y, origin[2] - 14), 2, now)
+                if hit is None:
+                    pending = True
+                elif hit is False or hit[2] or hit[0][2] <= level + .35:
+                    return True
+        return None if pending else False
 
     def tick(self, walk, state, now):
-        """Veto a wet fallback direction; shared navigation owns all movement."""
-        if (not self.areas or not self.sensor.enabled or state.get('in_water')
+        """Check ahead without pausing; turn in place only for confirmed danger."""
+        if (not self.areas or state.get('interior', 0) or state.get('in_water')
                 or state.get('in_air') or not state.get('standing', True)):
             return None
         self.sensor.pump(now)
         position = tuple(state['position'][axis] for axis in ('x', 'y', 'z'))
         facing = state.get('camera_heading')
         facing = state['heading'] if facing is None else facing
+        if self.turn_target is not None:
+            error = angle_delta(self.turn_target, facing)
+            if abs(error) > .2:
+                walk.suspend_progress(state['position'], now)
+                walk.keys.set(walk.walk_modifier)
+                walk.keys.turn(walk.smooth_turn.step(-error * 140 * walk.turn_multiplier, now))
+                return 'exploring: turning away from water'
+            self.turn_target = None
+            self.probe = None
+            walk.smooth_turn.reset()
         danger = self.danger(position, facing, now)
         self.sensor.pump(now)
         if danger is not True:
             return None
+        walk.suspend_progress(state['position'], now)
+        walk.keys.set(walk.walk_modifier)
         walk.navigator.observe(position, now)
         walk.navigator.avoid_target(now, retreat=False)
         walk.navigator.failed_approaches.append((position, facing, now + 120))
         walk.navigator.commit_fresh_course(position, (facing + math.pi / 2, facing - math.pi / 2), now)
         walk.recovery_target = None
+        walk.recovery_jump_setup = walk.recovery_jump_request = None
+        walk.recovery_jump_started = walk.recovery_jump_id = None
+        walk.jump_takeoff_until = walk.jump_grace_until = 0.
         walk.free_walk_until = 0
+        target = walk.navigator.local_target
+        self.turn_target = heading_to(position, target) if target is not None else facing + math.pi
         if walk.terrain:
             walk.terrain.reset()
         walk.keys.set(walk.walk_modifier)
