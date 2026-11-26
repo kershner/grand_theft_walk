@@ -1,5 +1,7 @@
 """Common launch selection and readiness gates, without starting any game."""
 
+from core.files import write_state
+from tests.fixtures import StateTestCase
 import hashlib
 import json
 import os
@@ -16,7 +18,7 @@ from core.runtime import WalkerControl
 from games import ACTIVE_GAMES, GAMES, get_game, load_profile
 
 
-class ManagerTests(unittest.TestCase):
+class ManagerTests(StateTestCase):
     def test_direct_entry_points_bootstrap_imports_before_parsing_arguments(self):
         root = Path(__file__).resolve().parents[1]
         scripts = [root / 'games' / game / 'launch.py' for game in ACTIVE_GAMES]
@@ -97,7 +99,7 @@ class ManagerTests(unittest.TestCase):
             select.assert_not_called()
 
 
-class ComponentTests(unittest.TestCase):
+class ComponentTests(StateTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -139,7 +141,7 @@ class ComponentTests(unittest.TestCase):
         self.assertFalse(status["launch_ready"])
 
 
-class GameProfileTests(unittest.TestCase):
+class GameProfileTests(StateTestCase):
     def test_runtime_directories_are_isolated_under_the_games_folder(self):
         folders = {game.state_dir for game in GAMES.values()}
         self.assertEqual(len(folders), len(GAMES))
@@ -162,36 +164,21 @@ class GameProfileTests(unittest.TestCase):
             self.assertEqual(get_game("synthetic_legacy").title, "GTA III")
         self.assertNotIn("synthetic_legacy", GAMES)
 
-    def test_only_san_andreas_accepts_legacy_untagged_state(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "state.json"
-            state = {"updated": time.time(), "controller": "running", "ready": True}
-            path.write_text(json.dumps(state), encoding="utf-8")
-            self.assertTrue(WalkerControl(folder).snapshot()["ready"])
-            for game in ("vice_city",):
-                with self.subTest(game=game), self.assertRaisesRegex(RuntimeError, "another game"):
-                    WalkerControl(folder, game=game).snapshot()
 
     def test_new_backends_require_protocol_and_all_reject_unknown_versions(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "state.json"
+            path = Path(folder) / "state"
             for game in GAMES:
                 for protocol in (None, 2, True):
                     state = {"game": game, "updated": time.time(), "controller": "running"}
                     if protocol is not None:
                         state["protocol"] = protocol
-                    path.write_text(json.dumps(state), encoding="utf-8")
-                    if protocol is None and game == "san_andreas":
+                    write_state(path, state)
+                    with self.subTest(game=game, protocol=protocol), self.assertRaisesRegex(RuntimeError, "protocol"):
                         WalkerControl(folder, game=game).snapshot()
-                    else:
-                        with (
-                            self.subTest(game=game, protocol=protocol),
-                            self.assertRaisesRegex(RuntimeError, "protocol"),
-                        ):
-                            WalkerControl(folder, game=game).snapshot()
 
 
-class InstallInspectionTests(unittest.TestCase):
+class InstallInspectionTests(StateTestCase):
     def test_inventory_fingerprints_without_changing_files_or_archiving_tokens(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

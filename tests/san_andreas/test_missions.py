@@ -1,5 +1,6 @@
 """Mission persistence, ballot rules, arrival and directed routing."""
 
+from tests.fixtures import StateTestCase
 import random
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ import zlib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core.files import atomic_json
+from core.files import write_state, delete_state
 from core.missions import CommandVoting, MissionSystem
 from core.navigation import Node, PedestrianGraph, PedestrianNavigator
 from games.san_andreas import game as backend
@@ -24,7 +25,7 @@ def graph_fixture():
     )
 
 
-class MissionTests(unittest.TestCase):
+class MissionTests(StateTestCase):
     def test_backend_loads_named_destinations_for_controller_startup(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -50,7 +51,7 @@ class MissionTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
         # Keep the small routing fixture's destinations outside the arrival area.
-        atomic_json(self.root / "mission_config.json", {
+        write_state(self.root / "mission_config", {
             "radius": 3.0, "height_tolerance": 3.0,
         })
         self.graph = graph_fixture()
@@ -76,7 +77,7 @@ class MissionTests(unittest.TestCase):
 
     def ballot(self, viewer, choice, issued, poll=None):
         path = self.root / "mission_votes" / f"{random.random()}.json"
-        atomic_json(
+        write_state(
             path,
             {
                 "viewer": viewer,
@@ -183,7 +184,7 @@ class MissionTests(unittest.TestCase):
         self.state["position"] = {"x": 0, "y": 10, "z": 0}
 
     def test_larger_default_radius_keeps_height_check_and_custom_radius(self):
-        (self.root / "mission_config.json").unlink()
+        delete_state(self.root / "mission_config")
         self.system = MissionSystem(self.root, self.graph, self.destinations)
         self.activate()
         self.assertEqual(self.system.config["radius"], 300)
@@ -195,12 +196,12 @@ class MissionTests(unittest.TestCase):
         self.assertTrue(self.system.at_destination(self.state))
         self.state["position"]["z"] = 30.1
         self.assertFalse(self.system.at_destination(self.state))
-        atomic_json(self.root / "mission_config.json", {"radius": 50})
+        write_state(self.root / "mission_config", {"radius": 50})
         self.system = MissionSystem(self.root, self.graph, self.destinations)
         self.assertEqual(self.system.config["radius"], 50)
 
     def test_vice_city_airport_height_difference_does_not_block_arrival(self):
-        (self.root / "mission_config.json").unlink()
+        delete_state(self.root / "mission_config")
         self.system = MissionSystem(self.root, self.graph, self.destinations)
         self.system.data["active"] = {
             "name": "Escobar International: meeting point 36",
@@ -299,19 +300,19 @@ class MissionTests(unittest.TestCase):
         self.assertAlmostEqual(self.system.standing_seconds, 0.1)
 
     def test_configurable_duration_and_invalid_config(self):
-        atomic_json(self.root / "mission_config.json", {"hold_seconds": 1})
+        write_state(self.root / "mission_config", {"hold_seconds": 1})
         self.system = MissionSystem(self.root, self.graph, self.destinations)
         self.activate()
         for i in range(12):
             self.tick(i / 10)
         self.assertEqual(self.system.data["completed"], 1)
         for value in (-1, True, "30", float("inf")):
-            atomic_json(self.root / "mission_config.json", {"hold_seconds": value})
             with self.assertRaises(ValueError):
+                write_state(self.root / "mission_config", {"hold_seconds": value})
                 MissionSystem(self.root, self.graph, self.destinations)
 
 
-class MissionRoutingTests(unittest.TestCase):
+class MissionRoutingTests(StateTestCase):
     def test_disconnected_mission_keeps_walking_and_resumes_when_reconnected(self):
         graph = graph_fixture()
         graph = PedestrianGraph(list(graph.nodes.values()) + [
@@ -366,7 +367,7 @@ class MissionRoutingTests(unittest.TestCase):
         self.assertNotIn((0, 1), graph.distances_to((0, 0)))
 
 
-class CommandVotingTests(unittest.TestCase):
+class CommandVotingTests(StateTestCase):
     def setUp(self):
         self.execute = Mock(return_value="Applied")
         self.timer = Mock()
@@ -411,7 +412,7 @@ class CommandVotingTests(unittest.TestCase):
         self.assertFalse(self.system.vote.active)
 
 
-class HalfwayReminderTests(unittest.TestCase):
+class HalfwayReminderTests(StateTestCase):
     def setUp(self):
         self.execute = Mock(return_value=None)
         self.timer_factory = Mock(side_effect=lambda *args: Mock())

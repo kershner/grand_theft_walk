@@ -1,15 +1,13 @@
 """Persistent coverage and adaptive pedestrian/off-path exploration."""
 
 import heapq
-import json
 import logging
 import math
 import sqlite3
 from collections import Counter, deque
-from contextlib import closing
 from pathlib import Path
 
-from core.files import read_json
+from core.files import ExplorationStore
 from core.navigation import (
     PedestrianGraph,
     PedestrianNavigator,
@@ -44,7 +42,7 @@ class ExploreNavigator(PedestrianNavigator):
         self.memory_path = Path(memory_path) if memory_path is not None else None
         for name in MEMORY_COUNTERS:
             setattr(self, name, MemoryCounter())
-        self.store = ExplorationStore(self.memory_path.with_suffix('.sqlite3')) if self.memory_path else None
+        self.store = ExplorationStore(self.memory_path, RECENT_TRAIL_POINTS) if self.memory_path else None
         self.recent_edges = deque(maxlen=64)
         self.recent_ground = RecentTrail()
         self.failed_approaches = deque(maxlen=32)
@@ -120,59 +118,25 @@ class ExploreNavigator(PedestrianNavigator):
             return
         try:
             data = self.store.load()
-            migrate = data is None
-            if migrate:
-                data = read_json(self.memory_path)
-            if not isinstance(data, dict) or data.get('version') != 1:
-                return
-            counters = {}
-            for name, width in (('coverage', 3), ('failures', 6), ('ground_visits', 6), ('visits', 2),
-                                ('edge_visits', 4), ('edge_failures', 4)):
-                entries = data.get(name, [])
-                if not isinstance(entries, list):
-                    raise ValueError('Invalid exploration memory size')
-                counter = Counter()
-                for entry in entries:
-                    if (not isinstance(entry, list) or len(entry) != width + 1
-                            or any(type(v) is not int for v in entry)
-                            or not 0 < entry[-1] <= 1000000000):
-                        raise ValueError('Invalid exploration memory entry')
-                    key = tuple(entry[:-1])
+            for name in MEMORY_COUNTERS:
+                counter = MemoryCounter()
+                for *coordinates, count in data.get(name, []):
+                    key = tuple(coordinates)
                     if name.startswith('edge_'):
                         key = (key[:2], key[2:])
-                        if any(k not in self.graph.nodes for k in key):
+                        if any(node not in self.graph.nodes for node in key):
                             continue
                     elif name == 'visits' and key not in self.graph.nodes:
                         continue
-                    counter[key] = entry[-1]
-                counters[name] = counter
-            recent = data.get('recent_edges', [])
-            if (not isinstance(recent, list) or len(recent) > 64
-                    or any(not isinstance(edge, list) or len(edge) != 4
-                           or any(type(v) is not int for v in edge) for edge in recent)):
-                raise ValueError('Invalid recent exploration route')
-            ground = data.get('recent_ground', [])
-            if (not isinstance(ground, list) or len(ground) > RECENT_TRAIL_POINTS
-                    or any(not isinstance(point, list) or len(point) != 3
-                           or any(type(v) not in (int, float) or not -1e7 <= v <= 1e7
-                                  for v in point) for point in ground)):
-                raise ValueError('Invalid recent exploration ground')
-            for name, counter in counters.items():
-                setattr(self, name, MemoryCounter(counter))
+                    counter[key] = count
+                counter.pending.clear()
+                setattr(self, name, counter)
+            recent = data['recent_edges']
             self.recent_edges = deque(
                 ((tuple(edge[:2]), tuple(edge[2:])) for edge in recent
                  if tuple(edge[:2]) in self.graph.nodes and tuple(edge[2:]) in self.graph.nodes),
                 maxlen=64)
-            self.recent_ground = RecentTrail(ground)
-            if migrate:
-                for name in MEMORY_COUNTERS:
-                    counter = getattr(self, name)
-                    counter.pending.update(counter)
-                self.store.save({name: getattr(self, name) for name in MEMORY_COUNTERS},
-                                self.recent_edges, self.recent_ground)
-                logger.info('Imported exploration history into %s; original JSON retained', self.store.path)
-        except FileNotFoundError:
-            pass
+            self.recent_ground = RecentTrail(data['recent_ground'])
         except (OSError, ValueError, TypeError, sqlite3.Error) as error:
             logger.warning('Exploration memory unavailable: %s', error)
 
@@ -892,87 +856,3 @@ class MemoryCounter(Counter):
     def clear(self):
         self.pending.update(self)
         super().clear()
-
-
-class ExplorationStore:
-    def __init__(self, path):
-        self.path = path
-
-    def connect(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(self.path, timeout=.1)
-
-    def load(self):
-        with closing(self.connect()) as db, db:
-            version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1):
-                raise ValueError('Unsupported exploration database version')
-            db.execute('CREATE TABLE IF NOT EXISTS counters ('
-                       'name TEXT NOT NULL, key TEXT NOT NULL, value INTEGER NOT NULL, '
-                       'PRIMARY KEY (name, key)) WITHOUT ROWID')
-            db.execute('CREATE TABLE IF NOT EXISTS metadata ('
-                       'name TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID')
-            db.execute('CREATE TABLE IF NOT EXISTS trail ('
-                       'id INTEGER PRIMARY KEY AUTOINCREMENT, x REAL, y REAL, z REAL)')
-            db.execute('PRAGMA user_version = 1')
-            metadata = dict(db.execute('SELECT name, value FROM metadata'))
-            if 'version' not in metadata:
-                return None
-            result = {name: json.loads(value) for name, value in metadata.items()}
-            if result['version'] != 1:
-                raise sqlite3.DatabaseError('Unsupported exploration metadata version')
-            if result.get('trail_version') not in (None, 1):
-                raise sqlite3.DatabaseError('Unsupported exploration trail version')
-            if result.get('trail_version') == 1:
-                result['recent_ground'] = [list(row) for row in db.execute(
-                    'SELECT x,y,z FROM (SELECT id,x,y,z FROM trail ORDER BY id DESC LIMIT ?) '
-                    'ORDER BY id', (RECENT_TRAIL_POINTS,))]
-            for name, key, count in db.execute('SELECT name, key, value FROM counters'):
-                result.setdefault(name, []).append(json.loads(key) + [count])
-            return result
-
-    def save(self, counters, recent_edges, recent_ground):
-        batches = {name: set(counter.pending) for name, counter in counters.items()}
-        rows, removed = [], []
-        for name, keys in batches.items():
-            counter = counters[name]
-            for key in keys:
-                flat = key[0] + key[1] if name.startswith('edge_') else key
-                encoded = json.dumps(flat, separators=(',', ':'))
-                if counter[key] > 0:
-                    rows.append((name, encoded, counter[key]))
-                else:
-                    removed.append((name, encoded))
-        metadata = {'version': 1,
-                    'recent_edges': [list(a + b) for a, b in recent_edges], 'trail_version': 1}
-        pending = list(recent_ground.pending)
-        # The rollback journal exists only for this transaction. No growing
-        # append-only history or WAL is left behind between checkpoints.
-        with closing(self.connect()) as db, db:
-            if db.execute('PRAGMA user_version').fetchone()[0] != 1:
-                raise sqlite3.DatabaseError('Existing exploration database version left unchanged')
-            version = db.execute("SELECT value FROM metadata WHERE name='version'").fetchone()
-            if version is not None and version[0] != '1':
-                raise sqlite3.DatabaseError('Existing exploration metadata version left unchanged')
-            seeded = db.execute("SELECT value FROM metadata WHERE name='trail_version'").fetchone()
-            if seeded is not None and seeded[0] != '1':
-                raise sqlite3.DatabaseError('Unsupported exploration trail version')
-            if seeded is None or recent_ground.cleared:
-                db.execute('DELETE FROM trail')
-                pending = list(recent_ground)
-            db.executemany('INSERT INTO trail(x,y,z) VALUES (?,?,?)', pending)
-            db.execute('DELETE FROM trail WHERE id <= '
-                       '(SELECT COALESCE(MAX(id),0) FROM trail) - ?', (RECENT_TRAIL_POINTS,))
-            db.execute("DELETE FROM metadata WHERE name='recent_ground'")
-            db.executemany('INSERT INTO counters VALUES (?, ?, ?) '
-                           'ON CONFLICT(name, key) DO UPDATE SET value=excluded.value', rows)
-            db.executemany('DELETE FROM counters WHERE name=? AND key=?', removed)
-            db.executemany('INSERT INTO metadata VALUES (?, ?) '
-                           'ON CONFLICT(name) DO UPDATE SET value=excluded.value',
-                           [(name, json.dumps(value, separators=(',', ':')))
-                            for name, value in metadata.items()])
-        # Keep pending updates after any failed/rolled-back transaction.
-        for name, keys in batches.items():
-            counters[name].pending.difference_update(keys)
-        recent_ground.pending.clear()
-        recent_ground.cleared = False

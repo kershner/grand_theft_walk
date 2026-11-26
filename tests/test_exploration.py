@@ -1,5 +1,6 @@
 """Exercise exploration coverage, routing, memory, and observed-ground recovery."""
 
+from tests.fixtures import StateTestCase
 import json
 import math
 import random
@@ -28,7 +29,7 @@ def network():
     ])
 
 
-class ExplorationTests(unittest.TestCase):
+class ExplorationTests(StateTestCase):
     def navigator(self, graph=None, path=None, *, open_terrain_chance=0):
         # Graph-routing regressions isolate path following from voluntary departures.
         navigator = ExploreNavigator(graph, memory_path=path, rng=random.Random(3),
@@ -90,54 +91,16 @@ class ExplorationTests(unittest.TestCase):
             self.assertEqual(navigator.goal_edge, ((0, 2), (0, 0)))
             position = expected
 
-    def test_sqlite_migrates_history_once_and_saves_only_modified_counters(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / 'exploration.json'
-            original = json.dumps({'version': 1, 'coverage': [[i, 0, 0, 1] for i in range(1000)],
-                                   'edge_visits': [[0, 0, 0, 1, 7]]})
-            path.write_text(original)
-            navigator = self.navigator(network(), path)
-            self.assertEqual(path.read_text(), original)
-            self.assertEqual(navigator.edge_visits[((0, 0), (0, 1))], 7)
-            statements = []
-            connect = navigator.store.connect
-
-            def traced_connect():
-                db = connect()
-                db.set_trace_callback(statements.append)
-                return db
-
-            navigator.coverage[(42, 0, 0)] += 1
-            with patch.object(navigator.store, 'connect', side_effect=traced_connect):
-                navigator.save_memory(30, force=True)
-            inserts = [s for s in statements if s.startswith('INSERT INTO counters')]
-            self.assertEqual(len(inserts), 1)
-            self.assertFalse(navigator.coverage.pending)
-            # A stale legacy writer must never replace the migrated database.
-            path.write_text('{"version":1,"coverage":[]}')
-            resumed = self.navigator(network(), path)
-            self.assertEqual(len(resumed.coverage), 1000)
-            self.assertEqual(resumed.coverage[(42, 0, 0)], 2)
-            self.assertEqual(resumed.edge_visits[((0, 0), (0, 1))], 7)
-            with closing(sqlite3.connect(path.with_suffix('.sqlite3'))) as db, db:
-                self.assertEqual(db.execute('SELECT count(*) FROM counters').fetchone()[0], 1001)
-                db.execute('PRAGMA user_version=2')
-            with self.assertLogs('core.exploration', level='WARNING'):
-                future = self.navigator(network(), path)
-                future.observe((0, 0, 0), 0)
-            with closing(sqlite3.connect(path.with_suffix('.sqlite3'))) as db:
-                self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 2)
-                self.assertEqual(db.execute('SELECT count(*) FROM counters').fetchone()[0], 1001)
 
     def test_sqlite_locked_and_failed_checkpoints_preserve_history_and_retry(self):
         for failure in ('locked', 'rollback'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
-                path = Path(folder) / 'exploration.json'
+                path = Path(folder) / 'exploration'
                 navigator = self.navigator(path=path)
                 navigator.observe((0, 0, 0), 0)
                 navigator.coverage[(10, 0, 0)] = 2
                 navigator.failures[(0, 0, 0, 1, 0, 0)] = 1
-                with closing(sqlite3.connect(path.with_suffix('.sqlite3'))) as db, db:
+                with closing(navigator.store.connect()) as db, db:
                     if failure == 'locked':
                         db.execute('BEGIN EXCLUSIVE')
                     else:
@@ -146,7 +109,7 @@ class ExplorationTests(unittest.TestCase):
                     with self.assertLogs('core.exploration', level='WARNING'):
                         navigator.save_memory(30, force=True)
                     self.assertTrue(navigator.coverage.pending)
-                    self.assertEqual(db.execute('SELECT count(*) FROM counters').fetchone()[0], 1)
+                    self.assertEqual(db.execute('SELECT count(*) FROM counters WHERE scope=?', (navigator.store.scope,)).fetchone()[0], 1)
                     if failure == 'locked':
                         db.rollback()
                     else:
@@ -519,7 +482,7 @@ class ExplorationTests(unittest.TestCase):
 
     def test_open_terrain_leaves_blocked_region_and_remembers_walk_after_restart(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / 'exploration.json'
+            path = Path(folder) / 'exploration'
             navigator = self.navigator(path=path)
             position, heading, obstacles = (0, 0, 0), 0, 0
             for now in range(250):
@@ -895,7 +858,7 @@ class ExplorationTests(unittest.TestCase):
 
     def test_memory_survives_restart_including_blocked_connections(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / 'exploration.json'
+            path = Path(folder) / 'exploration'
             navigator = self.navigator(network(), path)
             navigator.waypoint((0, 0, 0), 0, 0, 0)
             navigator.waypoint((0, 10, 0), 0, 0, .5)
@@ -914,15 +877,6 @@ class ExplorationTests(unittest.TestCase):
             resumed.waypoint((0, 0, 0), 0, 0, 100)
             self.assertGreater(resumed.blocked[((0, 0), (0, 1))], 100)
 
-    def test_corrupt_memory_does_not_prevent_navigation(self):
-        with tempfile.TemporaryDirectory() as folder:
-            for index, content in enumerate(('{', '[]', '{"version":1,"coverage":[[0,0,0,-1]]}',
-                            '{"version":1,"recent_ground":[[0,0,NaN]]}',
-                            '{"version":1,"recent_edges":[[0,1]]}')):
-                path = Path(folder) / f'exploration-{index}.json'
-                path.write_text(content)
-                navigator = self.navigator(path=path)
-                self.assertIsNotNone(navigator.waypoint((0, 0, 0), 0, 0, 0))
 
     def test_stationary_goal_is_not_recorded_as_visited(self):
         navigator = self.navigator(network())
@@ -960,14 +914,6 @@ class ExplorationTests(unittest.TestCase):
         self.assertFalse(navigator.returning)
         self.assertIsNotNone(navigator.waypoint((0, 4, 0), 0, 0, 5))
 
-    def test_three_modes_and_saved_setting_migration(self):
-        self.assertEqual(MODES, ('free', 'explore', 'mission'))
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / 'control.json'
-            path.write_text(json.dumps({'mode': 'sidewalk'}))
-            settings = {}
-            read_controls(path, settings)
-            self.assertEqual(settings['mode'], 'explore')
 
     def test_repeated_off_path_failures_abandon_course_without_automatic_backtracking(self):
         with patch('core.controller.Keys'):

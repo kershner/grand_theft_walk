@@ -1,5 +1,6 @@
 """Exercise installs, repairs, interrupted writes and restoration on fake games."""
 
+from tests.fixtures import StateTestCase
 import contextlib
 import copy
 import hashlib
@@ -10,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.files import read_state
 from build import build_suite
 from build.build_suite import validate_graphics_capacity
 from build.setup import setup
@@ -19,7 +21,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-class InstallerTests(unittest.TestCase):
+class InstallerTests(StateTestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -209,7 +211,7 @@ class InstallerTests(unittest.TestCase):
             setup.main(["install", "--bundle", str(self.bundle), "--game", "vice_city",
                         "--vice-city-dir", str(self.game / self.definition["executable"])])
         self.assertTrue(self.installer.check()["ok"])
-        locations = json.loads((self.bundle / "runtime/installations.json").read_text())
+        locations = read_state(self.bundle / "runtime/installations")
         self.assertEqual(locations["vice_city"], str(self.game.absolute()))
         self.installer.apply("restore")
         self.assertEqual((self.game / self.definition["executable"]).read_bytes(), b"original executable")
@@ -290,7 +292,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(upgraded.check()["ok"])
 
 
-class StagingCleanupTests(unittest.TestCase):
+class StagingCleanupTests(StateTestCase):
     def test_cleanup_preserves_build_sources(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -308,7 +310,7 @@ class StagingCleanupTests(unittest.TestCase):
             self.assertFalse(stage.exists())
 
 
-class RetiredComponentTests(unittest.TestCase):
+class RetiredComponentTests(StateTestCase):
     def test_retired_component_has_no_payload_and_only_accepts_known_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -337,7 +339,7 @@ class RetiredComponentTests(unittest.TestCase):
                     build_suite.add_component(root / 'stage', 'vice_city')
 
 
-class GraphicsCapacityTests(unittest.TestCase):
+class GraphicsCapacityTests(StateTestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -2,6 +2,7 @@
 
 import logging
 import math
+import sqlite3
 import time
 import uuid
 from collections import deque
@@ -17,11 +18,11 @@ from core.controls import (
     can_control,
 )
 from core.exploration import ExploreNavigator
-from core.files import atomic_json
+from core.files import write_state
 from core.missions import MissionSystem
 from core.navigation import SmoothTurn, angle_delta, heading_to
 from core.runtime import DEFAULTS, DIRECTIONS, MODES, control_request, read_controls, request_expired
-from core.terrain import NativeTerrain, SwimNavigator, TerrainNavigator, WaterAvoidance
+from core.terrain import NativeTerrain, TerrainNavigator, WaterAvoidance
 
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,6 @@ class Walking:
         self.terrain = None
         self.terrain_wait_since = None
         self.free_walk_until = 0.0
-        self.swim = None
         self.water_guard = None
 
     def steer(self, direction, mode, state, amount=1):
@@ -133,8 +133,6 @@ class Walking:
             self.terrain.reset()
         if self.water_guard:
             self.water_guard.probe = self.water_guard.turn_target = None
-        if self.swim:
-            self.swim.observed_at = None
         self.recovery_jump_setup = None
         self.recovery_jump_request = self.recovery_jump_started = None
         self.recovery_jump_airborne = False
@@ -148,6 +146,8 @@ class Walking:
         self.aligning = False
 
     def set_mode(self, mode):
+        if mode == 'mission' and self.navigator is not None and self.navigator.destination is None:
+            mode = 'explore'
         if mode != self.mode:
             self.stop()
             self.last_waypoint = None
@@ -351,40 +351,6 @@ class Walking:
         self.keys.set(self.walk_modifier | {"forward"})
         return "obstacle recovery: approaching jump"
 
-    def swim_motion(self, state, enabled, now):
-        if self.swim is None:
-            return None
-        was_swimming = self.swim.active
-        usable = self.mode == 'explore' and enabled and can_control(state)
-        if not self.swim.observe(state, now, usable):
-            if was_swimming and not self.swim.active:
-                self.navigator.reset()
-                if self.terrain:
-                    self.terrain.reset()
-            return None
-        self.recovery_jump_setup = self.recovery_jump_request = None
-        self.recovery_jump_started = self.recovery_jump_id = None
-        self.recovery_jump_failed = self.jump_landing_pending = False
-        self.jump_takeoff_event = False
-        self.jump_grace_until = self.jump_takeoff_until = 0.
-        position = state['position']
-        self.suspend_progress(position, now)
-        target = self.swim.waypoint(tuple(position[axis] for axis in ('x', 'y', 'z')), now)
-        if target is False:
-            self.keys.set(self.walk_modifier)
-        else:
-            if target is not None:
-                facing = state.get('camera_heading')
-                facing = state['heading'] if facing is None else facing
-                error = angle_delta(heading_to((position['x'], position['y']), target), facing)
-                amount = self.smooth_turn.step(-error * 140 * self.turn_multiplier, now)
-                self.keys.turn(amount)
-                if abs(error) > 1.2:
-                    self.keys.set(self.walk_modifier)
-                    return 'swimming: aligning toward shore'
-            self.keys.set(self.walk_modifier | {'forward'})
-        return self.swim.status
-
     def begin_free_walk(self, state, now):
         self.free_walk_until = now + 10
         self.terrain_wait_since = None
@@ -393,9 +359,10 @@ class Walking:
 
     def tick(self, state, enabled, mode="free"):
         self.set_mode(mode)
+        mode = self.mode
         now = time.monotonic()
         if (mode == 'explore' and enabled and can_control(state)
-                and state.get('standing', True) and not state.get('in_air')
+                and (state.get('standing', True) or state.get('in_water')) and not state.get('in_air')
                 and self.recovery_jump_setup is None and self.recovery_jump_started is None
                 and not self.jump_landing_pending and now >= self.jump_grace_until):
             facing = state.get('camera_heading')
@@ -413,9 +380,6 @@ class Walking:
             guarded = self.water_guard.tick(self, state, now)
             if guarded is not None:
                 return guarded
-        swimming = self.swim_motion(state, enabled, now)
-        if swimming is not None:
-            return swimming
         if can_control(state) and enabled:
             jumping = self.jump_motion(state, now)
             if jumping is not None:
@@ -436,7 +400,7 @@ class Walking:
             if mode == "explore":
                 self.navigator.progress_target = None
             self.suspend_progress(state['position'], now)
-        usable = can_control(state) and state["ped_state"] in (0, 1)
+        usable = can_control(state) and (state["ped_state"] in (0, 1) or state.get("in_water", False))
         if not usable:
             transient = (state.get("ready") and state.get("health", 0) > 0
                          and state.get("player_state") == 0 and not state.get("in_vehicle"))
@@ -504,7 +468,7 @@ class Walking:
             if (mode == 'explore' and self.terrain and self.terrain.enabled and not detouring
                     and (not freely or now >= self.free_walk_until)):
                 safe = self.terrain.route(tuple(position[axis] for axis in ('x', 'y', 'z')),
-                                          waypoint, now)
+                                          waypoint, now, in_water=state.get('in_water', False))
                 if safe is None:
                     if self.terrain_wait_since is None:
                         self.terrain_wait_since = now
@@ -543,7 +507,9 @@ class Walking:
                 self.turn_direction = 1 if error > 0 else -1
             else:
                 self.turn_direction = 0
-            desired_turn = -error * 140 if abs(error) > 0.04 else 0.0
+            desired_turn = -error * 140 if abs(error) > .08 else 0.0
+            if not desired_turn:
+                self.smooth_turn.reset()
             if freely:
                 desired_turn = max(-30, min(30, desired_turn))
             status = ("obstacle recovery: walking around obstacle" if detouring else
@@ -589,7 +555,7 @@ class Controller:
         self.mem = mem
         self.game = backend.Game(mem)
         self.state_dir = args.state_dir
-        self.control_path = self.state_dir / "control.json"
+        self.control_path = self.state_dir / "control"
         self.session = uuid.uuid4().hex
         self.startup_ready = False
         self.protection = backend.RuntimeChanges(mem) if self.capabilities.protection else None
@@ -608,13 +574,11 @@ class Controller:
         self.movement = Walking(graph, self.navigation_error, focused=mem.foreground,
                                 bindings=getattr(backend, "WALK_KEYS", None),
                                 turn_multiplier=getattr(backend, "TURN_MULTIPLIER", 1),
-                                exploration_path=self.state_dir / "exploration.json")
+                                exploration_path=self.state_dir / "exploration")
         sensor = NativeTerrain(mem)
-        self.movement.water_guard = WaterAvoidance(sensor)
+        self.movement.terrain = TerrainNavigator(sensor, can_swim=mem.profile.id == 'san_andreas')
+        self.movement.water_guard = None if self.movement.terrain.can_swim else WaterAvoidance(sensor)
         self.movement.navigator.open_terrain_chance = .15
-        self.movement.terrain = TerrainNavigator(sensor)
-        if mem.profile.id == 'san_andreas':
-            self.movement.swim = SwimNavigator(sensor, self.movement.navigator.graph)
         destinations = []
         if graph:
             try:
@@ -649,7 +613,7 @@ class Controller:
         if getattr(args, "mode", None) in MODES:
             self.settings["mode"] = args.mode
         self.limit_settings()
-        atomic_json(self.control_path, self.settings)
+        write_state(self.control_path, self.settings)
         self.saved_at = self.world_at = self.peace_at = self.camera_at = 0.0
         self.bindings_at = float("-inf")
         self.barriers = self.interiors = self.neutral_npcs = 0
@@ -733,7 +697,7 @@ class Controller:
                         state,
                         25,
                     )
-            atomic_json(self.control_path, self.settings)
+            write_state(self.control_path, self.settings)
 
     def update_game(self, state, now, saving):
         if saving:
@@ -830,7 +794,6 @@ class Controller:
             aligning=movement.aligning,
             loop_escapes=movement.navigator.loop_escapes,
             terrain=movement.terrain.report() if movement.terrain else {'enabled': False},
-            swimming=movement.swim.report() if movement.swim else {'supported': False},
         )
         self.report["navigation"] = navigation
         self.report["missions"] = self.missions.report()
@@ -838,8 +801,8 @@ class Controller:
 
     def publish_report(self):
         try:
-            atomic_json(self.state_dir / "state.json", self.report)
-        except PermissionError as error:
+            write_state(self.state_dir / "state", self.report)
+        except (PermissionError, sqlite3.Error) as error:
             if not getattr(self, "report_write_blocked", False):
                 logger.warning("Status file is locked; continuing gameplay and retrying the next report: %s", error)
             self.report_write_blocked = True

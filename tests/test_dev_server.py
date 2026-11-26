@@ -1,5 +1,6 @@
 """Exercise HTTP chat commands through to the walker's file protocol."""
 
+from tests.fixtures import StateTestCase
 import asyncio
 import json
 import tempfile
@@ -11,12 +12,12 @@ from unittest.mock import Mock, patch
 
 from chat.bot import ANNOUNCEMENT_INTERVAL, ChatBot
 from chat.dev import create_app
-from core.files import atomic_json
+from core.files import write_state, read_state, state_paths
 from core.runtime import UnsupportedCommandError, WalkerControl
 from games import Capabilities, get_game
 
 
-class ChatFixture(unittest.TestCase):
+class ChatFixture(StateTestCase):
     game = "san_andreas"
 
     def setUp(self):
@@ -30,7 +31,7 @@ class ChatFixture(unittest.TestCase):
             "autosave": True,
             "quit": False,
         }
-        self.write("control.json", self.settings)
+        self.write("control", self.settings)
         self.state = {
             "game": self.game,
             "protocol": 1,
@@ -45,7 +46,7 @@ class ChatFixture(unittest.TestCase):
             "interior": 0,
             "capabilities": {name: True for name in Capabilities().report()},
         }
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.app = create_app(self.root, start_runtime=False, game=self.game)
         self.client = self.app.test_client()
         self.voting = self.app.extensions["gtw_bot"].command_voting
@@ -59,13 +60,13 @@ class ChatFixture(unittest.TestCase):
     def set_mode(self, mode):
         settings = self.control()
         settings["mode"] = mode
-        self.write("control.json", settings)
+        self.write("control", settings)
 
     def write(self, name, value):
-        (self.root / name).write_text(json.dumps(value), encoding="utf-8")
+        write_state(self.root / name, value)
 
     def control(self):
-        return json.loads((self.root / "control.json").read_text())
+        return read_state(self.root / "control")
 
     def command(self, text):
         response = self.client.get("/cmd/" + text)
@@ -100,17 +101,17 @@ class ChatProtocolContract:
     def test_respawn_vote_rechecks_session_and_capability_when_it_passes(self):
         for changed in ({"session": "replacement"}, {"capabilities": {}}):
             with self.subTest(changed=changed):
-                self.write("state.json", self.state)
+                self.write("state", self.state)
                 before = self.control()
                 self.command("respawn")
-                self.write("state.json", dict(self.state, **changed))
+                self.write("state", dict(self.state, **changed))
                 self.timer.call_args.args[1]()
                 self.assertEqual(self.control(), before)
                 self.assertTrue(any("Could not apply voted command" in message for message in self.client.get("/chat").json["messages"]))
 
     def test_other_game_state_cannot_receive_commands_or_votes(self):
         self.state["game"] = "vice_city" if self.game == "san_andreas" else "san_andreas"
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         for command in ("walk", "camera first", "vote 1"):
             self.command(command)
         self.assertEqual(self.control(), self.settings)
@@ -119,7 +120,7 @@ class ChatProtocolContract:
 
     def test_help_lists_only_available_commands_and_updates_with_capabilities(self):
         self.state["capabilities"].update(jump=False, first_person=False, view=False)
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("help")
         self.command("more")
         self.command("help yes")
@@ -130,7 +131,7 @@ class ChatProtocolContract:
         self.assertNotIn("camera", messages[2])
         self.assertIn("Vote yes", messages[2])
         self.state["capabilities"]["view"] = True
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("more")
         self.command("help u")
         messages = self.client.get("/chat").json["messages"]
@@ -140,7 +141,7 @@ class ChatProtocolContract:
 
     def test_missing_capabilities_keep_only_original_san_andreas_compatibility(self):
         self.state.pop("capabilities")
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         control = self.app.extensions["gtw_bot"].control
         if self.game == "san_andreas":
             control.request("up", [])
@@ -150,7 +151,7 @@ class ChatProtocolContract:
                 control.request("up", [])
             self.assertEqual(self.control(), self.settings)
         self.state["capabilities"] = {"view": "true"}
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         with self.assertRaises(UnsupportedCommandError):
             control.request("up", [])
 
@@ -202,7 +203,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
                 with self.subTest(walking=walking, direction=direction):
                     settings = self.control()
                     settings["walking"] = walking
-                    self.write("control.json", settings)
+                    self.write("control", settings)
                     self.command(f"{alias} 100")
                     self.assertEqual(self.control()["walking"], walking)
                     self.assertEqual(self.control()["steering"]["direction"], direction)
@@ -230,7 +231,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
                     walking=walking,
                     steering={"id": "queued-turn", "direction": "left"},
                 )
-                self.write("control.json", settings)
+                self.write("control", settings)
                 for command, direction, amount in (
                     ("up", "up", 1),
                     ("u 100", "up", 100),
@@ -313,13 +314,13 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
                 ],
             },
         }
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("camera")
         self.command("vote 2")
         self.command("vote 3")
         ballots = [
-            json.loads(p.read_text())
-            for p in (self.root / "mission_votes").glob("*.json")
+            read_state(p)
+            for p in state_paths(self.root / "mission_votes")
         ]
         self.assertEqual(len(ballots), 2)
         self.assertEqual(len({b["viewer"] for b in ballots}), 1)
@@ -335,7 +336,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
 
     def test_info_includes_current_mission(self):
         self.state["missions"] = {"active": {"name": "Market"}}
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("info")
         message = self.client.get("/chat").json["messages"][-1]
         self.assertIn("Current mission: Travel to Market", message)
@@ -359,25 +360,25 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
             ({"x": -12199, "y": 402, "z": 10}, "→ 7.8 mi"),
         ):
             self.state["position"] = position
-            self.write("state.json", self.state)
+            self.write("state", self.state)
             self.command("info")
             message = self.client.get("/chat").json["messages"][-1]
             self.assertIn(f" • {expected} away", message)
         self.state["ready"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("info")
         self.assertIn(
             "Game loading; please wait.", self.client.get("/chat").json["messages"][-1]
         )
 
     def test_jump_is_silent_and_does_not_change_walking_or_steering(self):
-        self.write("control.json", dict(self.settings, mode="free"))
+        self.write("control", dict(self.settings, mode="free"))
         self.command("l 3")
         steering = self.control()["steering"]
         for command, walking in (("jump", False), ("j", True)):
             settings = self.control()
             settings["walking"] = walking
-            self.write("control.json", settings)
+            self.write("control", settings)
             self.command(command)
             self.assertEqual(self.control()["walking"], walking)
             self.assertEqual(self.control()["steering"], steering)
@@ -390,7 +391,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.assertEqual(self.control(), expected)
 
     def test_drop_queues_a_silent_request_and_rejects_unsupported_games(self):
-        self.write("control.json", dict(self.settings, walking=True))
+        self.write("control", dict(self.settings, walking=True))
         self.command("drop")
         request = self.control()["jump"]
         self.assertEqual(request["direction"], "drop")
@@ -401,14 +402,14 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
             self.command("drop 2")
         self.assertEqual(self.control(), before)
         self.state["capabilities"]["ledge_drop"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("drop")
         self.assertEqual(self.control(), before)
         self.assertIn("not available", self.client.get("/chat").json["messages"][-1].lower())
 
     def test_unsupported_respawn_does_not_open_a_vote_or_write_controls(self):
         self.state["capabilities"]["respawn"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         before = self.control()
         self.command("respawn")
         self.assertFalse(self.voting.vote.active)
@@ -464,7 +465,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         ]
         for changes in unavailable_states:
             with self.subTest(changes=changes):
-                self.write("state.json", dict(self.state, **changes))
+                self.write("state", dict(self.state, **changes))
                 self.command("walk")
                 self.assertEqual(self.control(), self.settings)
         self.assertEqual(
@@ -474,7 +475,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
 
     def test_startup_locks_help_info_votes_and_input_until_ready(self):
         self.state["startup_ready"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         bot = self.app.extensions["gtw_bot"]
         for command in (
             "help",
@@ -498,7 +499,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
             ["Game loading; please wait."] * 10,
         )
         self.state["startup_ready"] = True
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         startup = bot.poll_announcements(10)
         self.assertEqual(
             startup,
@@ -519,7 +520,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
             [bot._reply("help", [])],
         )
         self.state["location"] = {"places": ["Market", "Los Santos"]}
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.assertEqual(
             bot.poll_announcements(100 + ANNOUNCEMENT_INTERVAL * 2), [bot._info_reply()]
         )
@@ -532,13 +533,13 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         bot = self.app.extensions["gtw_bot"]
         bot.poll_announcements(0)
         self.state["ready"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.assertEqual(bot.poll_announcements(1), [])
         self.state["ready"] = True
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.assertEqual(bot.poll_announcements(2), [])
         self.state["session"] = "session-b"
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.assertEqual(len(bot.poll_announcements(3)), 3)
         self.assertEqual(bot.next_announcement_at, 3 + ANNOUNCEMENT_INTERVAL)
 
@@ -569,7 +570,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
     ):
         old = {"id": "previous-event", "text": "Mission complete: old destination!"}
         self.state["missions"] = {"events": [old]}
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         app = create_app(self.root, start_runtime=False, game=self.game)
         self.addCleanup(app.extensions["gtw_bot"].close)
         client = app.test_client()
@@ -577,7 +578,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.state["missions"]["events"].append(
             {"id": "new-event", "text": "Choose our next mission!"}
         )
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.assertEqual(
             client.get("/chat").json["messages"], ["Choose our next mission!"]
         )
@@ -594,7 +595,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
                 arrival,
             ],
         }
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         app = create_app(self.root, start_runtime=False, game=self.game)
         self.addCleanup(app.extensions["gtw_bot"].close)
         client = app.test_client()
@@ -610,7 +611,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.state["missions"] = {
             "events": [{"id": "fresh-vote", "text": "Choose our next mission!"}]
         }
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.assertEqual(client.get("/chat").json["messages"], [])
         startup = bot.poll_announcements(0)
         send = start.call_args.args[0]
@@ -668,7 +669,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.state["missions"] = {
             "active": {"name": "Market", "position": [1932, 2, 3]}
         }
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("location")
         self.command("loc")
         self.command("info")
@@ -706,7 +707,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         for walking in (False, True):
             settings = self.control()
             settings['walking'] = walking
-            self.write('control.json', settings)
+            self.write('control', settings)
             for mode in ('free', 'explore', 'mission'):
                 self.command(mode)
                 self.assertEqual(self.control()['mode'], mode)
@@ -716,7 +717,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
 
     def test_navigation_endpoint_exposes_map_without_control_mutations(self):
         self.state['navigation'] = {'exploration': {'visited_cells': 7}}
-        self.write('state.json', self.state)
+        self.write('state', self.state)
         before = self.control()
         response = self.client.get('/navigation')
         self.assertEqual(response.status_code, 200)
@@ -728,7 +729,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.command("camera first")
         self.assertTrue(self.control()["first_person"])
         self.state["session"] = "replacement-session"
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("camera third")
         self.assertFalse(self.control()["first_person"])
         self.timer.assert_not_called()
@@ -738,7 +739,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
 
     def test_partial_backend_rejects_jump_and_camera_before_writing_or_starting_votes(self):
         self.state["capabilities"].update(jump=False, first_person=False)
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         for command in ("jump", "j", "camera", "camera first", "help jump", "help j", "help camera"):
             self.command(command)
             self.assertEqual(self.control(), self.settings)
@@ -750,7 +751,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
 
     def test_unsupported_view_commands_and_aliases_receive_explicit_replies(self):
         self.state["capabilities"]["view"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         for command in ("up", "u 20", "down", "d", "center", "help u"):
             self.command(command)
             self.assertEqual(self.control(), self.settings)
@@ -760,7 +761,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
 
     def test_direct_control_requests_cannot_bypass_capability_checks(self):
         self.state["capabilities"].update(jump=False, first_person=False, view=False)
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         control = self.app.extensions["gtw_bot"].control
         for command in ("up", "down", "center", "jump", "camera"):
             with self.assertRaises(UnsupportedCommandError):
@@ -772,7 +773,7 @@ class ChatIntegrationTests(ChatProtocolContract, ChatFixture):
         self.assertTrue(self.control()["first_person"])
         expected = self.control()
         self.state["capabilities"]["first_person"] = False
-        self.write("state.json", self.state)
+        self.write("state", self.state)
         self.command("camera third")
         self.assertEqual(self.control(), expected)
         messages = self.client.get("/chat").json["messages"]
@@ -792,10 +793,10 @@ class GTAIIIChatIntegrationTests(ChatProtocolContract, ChatFixture):
     game = "gta_iii"
 
 
-class ChatEventTests(unittest.TestCase):
+class ChatEventTests(StateTestCase):
     def test_startup_precedes_pending_arrival_and_old_events_are_not_replayed(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "state.json"
+            path = Path(folder) / "state"
             state = {
                 "game": "vice_city", "protocol": 1, "controller": "running",
                 "ready": True, "updated": time.time(), "session": "session-a",
@@ -806,7 +807,7 @@ class ChatEventTests(unittest.TestCase):
                                {"id": "arrival", "text": "Destination reached"}],
                 },
             }
-            atomic_json(path, state)
+            write_state(path, state)
             bot = ChatBot(WalkerControl(folder, game="vice_city"))
             self.addCleanup(bot.close)
             messages = bot.poll_events(now=0)
@@ -815,70 +816,44 @@ class ChatEventTests(unittest.TestCase):
             self.assertNotIn("Old completion", messages)
             self.assertEqual(bot.poll_events(now=1), [])
             state["missions"]["events"].append({"id": "next", "text": "Choose the next mission"})
-            atomic_json(path, state)
+            write_state(path, state)
             self.assertEqual(bot.poll_events(now=2), ["Choose the next mission"])
             self.assertEqual(bot.poll_events(now=3), [])
 
     def test_new_session_announces_before_its_mission_events(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "state.json"
-            state = {"game": "san_andreas", "controller": "running", "ready": True,
+            path = Path(folder) / "state"
+            state = {"game": "san_andreas", "protocol": 1, "controller": "running", "ready": True,
                      "updated": time.time(), "session": "first", "missions": {"events": []}}
-            atomic_json(path, state)
+            write_state(path, state)
             bot = ChatBot(WalkerControl(folder))
             self.addCleanup(bot.close)
             bot.poll_events(now=0)
             state.update(session="second", missions={"events": [{"id": "new", "text": "New mission"}]})
-            atomic_json(path, state)
+            write_state(path, state)
             messages = bot.poll_events(now=1)
             self.assertEqual(messages[0], "Grand Theft Walk is online!")
             self.assertEqual(messages[-1], "New mission")
 
 
-class RotationChatTests(unittest.TestCase):
-    def test_switch_warning_precedes_rotation_once_and_info_countdown_clamps_at_zero(self):
+class ScheduleChatTests(StateTestCase):
+    def test_live_countdown_and_break_notice_use_the_saved_schedule(self):
         with tempfile.TemporaryDirectory() as folder:
-            state = {"game": "vice_city", "protocol": 1, "controller": "running",
-                     "ready": True, "updated": time.time(), "session": "new", "settings": {}}
-            atomic_json(Path(folder) / "state.json", state)
-            rotation = Path(folder) / "rotation.json"
-            atomic_json(rotation, {"game": "vice_city", "switched_from": "san_andreas",
-                                   "next_game": "gta_iii", "next_switch_at": 10000,
-                                   "rotation_id": "round-a"})
-            bot = ChatBot(WalkerControl(folder, game="vice_city"), rotation_file=rotation)
+            state = {'game':'vice_city','protocol':1,'controller':'running','ready':True,
+                     'updated':time.time(),'session':'new','settings':{}}
+            record = Path(folder) / 'schedule'
+            write_state(record, {'game':'vice_city','phase':'live','deadline':10000,
+                                 'next_game':'gta_iii','next_start_at':17200,'slot_id':'round-a'})
+            bot = ChatBot(WalkerControl(folder,game='vice_city'),schedule_record=record)
             self.addCleanup(bot.close)
-            with patch("chat.bot.time.time", return_value=5320), patch.object(bot.control, "snapshot", return_value=state):
-                messages = bot.poll_events(now=0)
-                self.assertEqual(messages[0], "Grand Theft Walk is online!")
-                self.assertFalse(any('Switched to' in message for message in messages))
-                self.assertIn("Next game in: 1h18m", messages[2])
-                self.assertIn("Next game in: 1h18m", bot._reply("info", []))
-                self.assertEqual(bot.poll_events(now=1), [])
-            with patch.object(bot.control, "snapshot", return_value=state):
-                with patch("chat.bot.time.time", return_value=9399):
-                    self.assertEqual(bot.poll_events(now=2), [])
-                with patch("chat.bot.time.time", return_value=9400):
-                    self.assertEqual(bot.poll_events(now=3), ["Switching to GTA III in 10 minutes."])
-                    self.assertEqual(bot.poll_events(now=4), [])
-                atomic_json(rotation, {"game": "vice_city", "next_game": "gta_iii",
-                                       "next_switch_at": 10001, "rotation_id": "round-a"})
-                with patch("chat.bot.time.time", return_value=9401):
-                    self.assertEqual(bot.poll_events(now=5), [])
-                with patch("chat.bot.time.time", return_value=10001):
-                    self.assertEqual(bot.poll_events(now=5), [])
-            with patch("chat.bot.time.time", return_value=10001):
-                self.assertIn("Next game in: 0m", bot._info_reply(state))
-
-    def test_single_game_and_unmanaged_chat_omit_countdown(self):
-        with tempfile.TemporaryDirectory() as folder:
-            state = {"ready": True, "settings": {}}
-            rotation = Path(folder) / "rotation.json"
-            atomic_json(rotation, {"game": "vice_city", "next_switch_at": None})
-            bot = ChatBot(WalkerControl(folder, game="vice_city"), rotation_file=rotation)
-            self.addCleanup(bot.close)
-            self.assertNotIn("Next game in:", bot._info_reply(state))
-            rotation.unlink()
-            self.assertNotIn("Next game in:", bot._info_reply(state))
+            with patch.object(bot.control,'snapshot',return_value=state):
+                with patch('chat.bot.time.time',return_value=5320):
+                    self.assertIn('Stream ends in 1h18m',bot._info_reply(state))
+                with patch('chat.bot.time.time',return_value=9400):
+                    self.assertEqual(bot._schedule_warning(),['Stream ends in 10 minutes, followed by at least a two-hour break.'])
+                    self.assertEqual(bot._schedule_warning(),[])
+                with patch('chat.bot.time.time',return_value=10001):
+                    self.assertIn('Stream ends in 0m',bot._info_reply(state))
 
 
 class WaterIdleVoteTests(ChatFixture):
@@ -886,7 +861,7 @@ class WaterIdleVoteTests(ChatFixture):
         super().setUp()
         self.bot = self.app.extensions['gtw_bot']
         self.state.update(in_water=True, standing=False, in_air=False, health=100)
-        self.write('state.json', self.state)
+        self.write('state', self.state)
 
     def poll(self, now):
         with patch('chat.bot.time.monotonic', return_value=now):
@@ -927,7 +902,7 @@ class WaterIdleVoteTests(ChatFixture):
         with patch('chat.bot.time.monotonic', return_value=121):
             self.voting.cast('viewer', 'yes')
         self.state['in_water'] = False
-        self.write('state.json', self.state)
+        self.write('state', self.state)
         self.timer.call_args.args[1]()
         self.assertNotIn('respawn', self.control())
         self.assertIn('back on land', self.voting.drain_events()[-1])
@@ -935,17 +910,17 @@ class WaterIdleVoteTests(ChatFixture):
     def test_paused_time_does_not_spend_the_swimming_budget(self):
         self.advance(0, 100)
         self.state['paused'] = True
-        self.write('state.json', self.state)
+        self.write('state', self.state)
         self.assertEqual(self.advance(101, 220), [])
         self.state['paused'] = False
-        self.write('state.json', self.state)
+        self.write('state', self.state)
         self.assertEqual(self.advance(221, 239), [])
         self.assertIn('Vote started!', self.poll(240)[0])
 
     def test_other_games_do_not_start_automatic_water_votes(self):
         self.state['game'] = 'vice_city'
         self.bot.control.game = get_game('vice_city')
-        self.write('state.json', self.state)
+        self.write('state', self.state)
         self.assertEqual(self.advance(0, 130), [])
         self.assertFalse(self.voting.vote.active)
 

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from core.files import atomic_json, component_mismatches, sha256, under
+from core.files import write_state, component_mismatches, sha256, under
 from core.winmemory import supervise
 from games import ACTIVE_GAMES, ROOT, get_game
 
@@ -130,9 +130,9 @@ def start_session(game, baseline=False, seconds=120):
             "controller": "disabled" if baseline else "enabled",
             "timeout_seconds": seconds if baseline else None,
         }
-        path = profile.state_dir / "manager.json"
+        path = profile.state_dir / "manager"
         return supervise(command, directory, seconds if baseline else None,
-                         report, lambda value: atomic_json(path, value))
+                         report, lambda value: write_state(path, value))
 
 
 def read_game_text(path):

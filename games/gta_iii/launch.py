@@ -12,7 +12,7 @@ if __package__ in (None, ""):
 
 
 from core.controls import Keys
-from core.files import atomic_json, read_json, sha256
+from core.files import write_state, read_json, read_state, state_exists, sha256
 from core.saves import seed_checkpoint
 from core.session import StartupWait, choose_save
 from games.gta_iii.game import (
@@ -87,20 +87,20 @@ class Startup(StartupWait):
             prefix = self.mem.read(SAVE_PREFIX, 260).split(b"\0", 1)[0].decode("mbcs")
             if not Path(prefix).is_absolute() or Path(prefix).name.casefold() != "gta3sf":
                 raise RuntimeError("GTA III did not provide a valid normal save folder")
-            record_path = state_dir / "launch.json"
-            record = read_json(record_path) if record_path.exists() else None
+            record_path = state_dir / "launch"
+            record = read_state(record_path) if state_exists(record_path) else None
             # With no owned checkpoint, reserve an empty slot instead of adopting
             # and eventually autosaving over somebody's personal game progress.
             validator = valid_save if record is not None else lambda path: False
             slot, path, create = choose_save(prefix, validator, record)
             if create:
                 seed_checkpoint(self.mem.exe.parent / "GTW/walker-seed.b", path, SEED_SHA256, valid_save)
-                atomic_json(record_path, {"slot": slot, "path": str(path),
+                write_state(record_path, {"slot": slot, "path": str(path),
                     "sha256": sha256(path)})
             state = self.load_save(slot)
             unlock_regions(self.game, self.world)
             self.world.patch(0x5F2D58, b"\x01")
-            atomic_json(record_path, {"slot": slot, "path": str(path),
+            write_state(record_path, {"slot": slot, "path": str(path),
                 "sha256": sha256(path),
                 "loaded_identity": state["identity"], "loaded_game_time_ms": state["game_time_ms"],
                 "loaded_position": state["position"], "full_map": True})

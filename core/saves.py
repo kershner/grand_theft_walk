@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from core.files import atomic_json, read_json
+from core.files import write_state, read_json, read_state
 
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class Autosave:
         self.duration_ms = None
 
     def target(self):
-        record = read_json(self.state_dir / "launch.json")
+        record = read_state(self.state_dir / "launch")
         slot = record.get("slot")
         if type(slot) is not int or slot not in range(8):
             raise ValueError("Invalid walker save slot")
@@ -165,7 +165,7 @@ class Autosave:
                         "sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
                         "last_autosave": time.time(),
                     }
-                    atomic_json(self.state_dir / "launch.json", record)
+                    write_state(self.state_dir / "launch", record)
                     self.last_saved = record["last_autosave"]
                     self.count += 1
                     self.duration_ms = result.get("duration_ms")

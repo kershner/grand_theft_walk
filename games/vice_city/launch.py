@@ -13,7 +13,7 @@ if __package__ in (None, ""):
 
 
 from core.controls import Keys
-from core.files import atomic_json, read_json
+from core.files import write_state, read_json, read_state, state_exists
 from core.session import StartupWait, choose_save as select_save
 from games.vice_city.game import Game, MENU, RuntimeChanges, SAVE_PREFIX, unlock_regions, valid_save
 
@@ -120,8 +120,8 @@ class Startup(StartupWait):
             prefix = self.mem.read(SAVE_PREFIX, 260).split(b"\0", 1)[0].decode("mbcs")
             if not prefix or not Path(prefix).is_absolute() or Path(prefix).name.casefold() != "gtavcsf":
                 raise RuntimeError("Vice City did not provide a valid normal save folder.")
-            record_path = state_dir / "launch.json"
-            record = read_json(record_path) if record_path.exists() else None
+            record_path = state_dir / "launch"
+            record = read_state(record_path) if state_exists(record_path) else None
             slot, path, create = choose_save(prefix, record)
             logger.info("Normal save slot %s: %s", slot + 1, path)
             if create:
@@ -157,7 +157,7 @@ class Startup(StartupWait):
             # A loaded checkpoint must also have full map access before navigation.
             barriers = unlock_regions(self.game, self.world)
             logger.info("Opened %s island roadblocks and gates after load.", barriers)
-            atomic_json(record_path, {
+            write_state(record_path, {
                 "slot": slot, "path": str(path),
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "loaded_identity": state["identity"], "loaded_game_time_ms": state["game_time_ms"],

@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from core.files import atomic_json, read_json
+from core.files import read_state
 from core.missions import CommandVoting
 from core.runtime import (
     DIRECTIONS,
@@ -45,7 +45,7 @@ HELP = {
     "camera": "!camera [first|third]: Toggle the camera or select a perspective.",
     "help": "!help [command] • Show commands or details for a command.",
     "more": "!more • Show the remaining commands.",
-    "info": "!info • Show the current area, game time, weather, navigation mode, mission, and next game countdown.",
+    "info": "!info • Show the current area, game time, weather, navigation mode, mission, and stream countdown.",
     "vote": "!vote <1|2|3> • Vote for the next mission. Your latest vote counts.",
 }
 ALIASES = {
@@ -61,7 +61,7 @@ ALIASES = {
 }
 logger = logging.getLogger(__name__)
 ANNOUNCEMENT_INTERVAL = 20 * 60
-ROTATION_WARNING_SECONDS = 10 * 60
+STREAM_WARNING_SECONDS = 10 * 60
 WATER_IDLE_VOTE_SECONDS = 120
 
 
@@ -80,36 +80,45 @@ def location_text(state):
     return " • ".join(parts)
 
 
-def read_rotation(path, game):
+def read_schedule(path):
     if path is None:
         return {}
     try:
-        rotation = read_json(path)
+        schedule = read_state(path)
     except (OSError, ValueError):
         return {}
-    return rotation if isinstance(rotation, dict) and rotation.get("game") == game else {}
+    return schedule if isinstance(schedule, dict) and schedule.get('phase') else {}
 
 
-def rotation_countdown(rotation):
-    deadline = rotation.get("next_switch_at")
-    if type(deadline) not in (int, float) or not math.isfinite(deadline):
-        return ""
-    minutes = max(0, math.ceil((deadline - time.time()) / 60))
-    hours, minutes = divmod(minutes, 60)
-    duration = f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
-    return f"Next game in: {duration}"
+def schedule_countdown(schedule):
+    if schedule.get('phase'):
+        phase = schedule['phase']
+        deadline = schedule.get('deadline') if phase == 'live' else schedule.get('next_start_at')
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            return ''
+        hours, minutes = divmod(max(0, math.ceil((deadline - time.time()) / 60)), 60)
+        duration = (f'{hours}h' if hours else '') + (f'{minutes}m' if minutes or not hours else '')
+        label = 'Stream ends in' if phase == 'live' else 'Next stream in'
+        if phase == 'preparing':
+            return 'Preparing the next broadcast'
+        text = f'{label} {duration}'
+        if phase != 'live':
+            text += f" · {get_game(schedule['game']).title}"
+        return text
+    return ''
 
 
 class ChatBot:
-    def __init__(self, control=None, rotation_file=None):
-        self.rotation_file = Path(rotation_file) if rotation_file is not None else None
+    def __init__(self, control=None, schedule_record=None):
+        self.schedule_record = Path(schedule_record) if schedule_record is not None else None
         self.control = control if control is not None else WalkerControl()
         self.command_voting = CommandVoting(self._execute)
         self.session = None
         self.announced_session = None
         self.next_announcement_at = None
         self.announcement_index = 0
-        self.warned_rotation = None
+        self.warned_slot = None
+        self.announced_ending = None
         self.runtime_lock = threading.Lock()
         self.runtime_stop = threading.Event()
         self.runtime_thread = None
@@ -123,7 +132,7 @@ class ChatBot:
         state_dir = getattr(self.control, "state_dir", None)
         if isinstance(state_dir, (str, Path)):
             try:
-                previous = read_json(Path(state_dir) / "state.json")
+                previous = read_state(Path(state_dir) / "state")
             except (OSError, ValueError):
                 previous = {}
             missions = previous.get("missions", {})
@@ -131,6 +140,9 @@ class ChatBot:
             self.seen_events = {event["id"] for event in missions.get("events", []) if event["id"] != pending}
 
     def ready_state(self):
+        schedule = self._schedule()
+        if schedule.get('phase') and schedule['phase'] != 'live':
+            return None
         try:
             state = self.control.snapshot()
         except RuntimeError:
@@ -140,7 +152,7 @@ class ChatBot:
     def poll_announcements(self, now=None):
         now = time.monotonic() if now is None else now
         with self.runtime_lock:
-            warnings = self._rotation_warning()
+            warnings = self._schedule_warning()
             state = self.ready_state()
             if state is None:
                 return warnings
@@ -197,7 +209,6 @@ class ChatBot:
                 try:
                     for message in self.poll_events():
                         send(message)
-                        self.acknowledge_rotation(message)
                     self.announced_session = self.session
                 except (OSError, ValueError, RuntimeError):
                     logger.exception("Scheduled chat announcement failed")
@@ -226,6 +237,10 @@ class ChatBot:
         args = [arg.lower() for arg in parts[1:]]
         logger.debug("Chat command: !%s %s", name[:100], " ".join(args)[:200])
         if self.ready_state() is None:
+            schedule = self._schedule()
+            if schedule.get('phase') and schedule['phase'] != 'live':
+                await ctx.send(schedule_countdown(schedule) + ' · 2 hours live, 2 hours off')
+                return
             await ctx.send("Game loading; please wait.")
             return
         try:
@@ -381,39 +396,25 @@ class ChatBot:
             perspective = "first" if settings["first_person"] else "third"
             return f"Camera: {perspective} person."
 
-    def _rotation(self):
-        game = getattr(self.control, "game", None)
-        return read_rotation(self.rotation_file, game.id) if game is not None else {}
+    def _schedule(self):
+        return read_schedule(self.schedule_record)
 
-    def acknowledge_rotation(self, message):
-        """Acknowledge only after the transport successfully sends the message."""
-        rotation = self._rotation()
-        if rotation.get("status") != "switching" or rotation.get("switch_announced"):
-            return
-        try:
-            expected = f"Switching to {get_game(rotation.get('next_game')).title}..."
-        except ValueError:
-            return
-        if message == expected:
-            atomic_json(self.rotation_file, dict(rotation, switch_announced=True))
-
-    def _rotation_warning(self):
-        rotation = self._rotation()
-        deadline, next_game = rotation.get("next_switch_at"), rotation.get("next_game")
-        if type(deadline) not in (int, float) or not math.isfinite(deadline) or not next_game:
+    def _schedule_warning(self):
+        schedule = self._schedule()
+        if schedule.get('phase'):
+            if schedule['phase'] != 'live':
+                return []
+            remaining = schedule['deadline'] - time.time()
+            identity = schedule.get('slot_id')
+            if schedule.get('ending') and self.announced_ending != identity:
+                self.announced_ending = identity
+                from chat.twitch import offline_title
+                return [offline_title(schedule.get('transition', schedule))]
+            if STREAM_WARNING_SECONDS - 60 < remaining <= STREAM_WARNING_SECONDS and self.warned_slot != identity:
+                self.warned_slot = identity
+                return ['Stream ends in 10 minutes, followed by at least a two-hour break.']
             return []
-        try:
-            title = get_game(next_game).title
-        except ValueError:
-            return []
-        if rotation.get("status") == "switching":
-            return [] if rotation.get("switch_announced") else [f"Switching to {title}..."]
-        remaining = deadline - time.time()
-        identity = (next_game, rotation.get('rotation_id', deadline))
-        if not ROTATION_WARNING_SECONDS - 60 < remaining <= ROTATION_WARNING_SECONDS or self.warned_rotation == identity:
-            return []
-        self.warned_rotation = identity
-        return [f"Switching to {title} in 10 minutes."]
+        return []
 
     def _info_reply(self, state=None):
         state = self.control.snapshot() if state is None else state
@@ -434,7 +435,7 @@ class ChatBot:
                     mission_distance(state, mission),
                 )
             )
-        countdown = rotation_countdown(self._rotation())
+        countdown = schedule_countdown(self._schedule())
         if countdown:
             parts.append(countdown)
         parts.append("Type !help for commands")

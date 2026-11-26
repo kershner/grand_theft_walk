@@ -1,10 +1,7 @@
 """Twitch browser authorization, token validation, and automatic renewal."""
 
 import argparse
-import json
-import os
 import secrets
-import tempfile
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,9 +9,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
+import portalocker
 
-from core.config import load_parameters, local_path, twitch_settings
-from core.files import atomic_json, read_json
+from core.config import load_parameters, twitch_settings
+from core.files import StateStore
 from games import ROOT
 
 
@@ -116,21 +114,16 @@ def exchange_and_validate(client_id, client_secret, code, expected_login, scopes
     }
 
 
-def save_tokens(path, tokens):
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=".twitch-auth-",
-            suffix=".tmp", delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            json.dump(tokens, handle, indent=2, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+def save_tokens(params, tokens):
+    StateStore().write(OAuthTokens(params).key, tokens)
+
+
+def authorize(params):
+    scopes = REQUIRED_SCOPES | ({'channel:manage:schedule'} if params.get('SCHEDULE', {}).get('twitch_calendar') else set())
+    code = wait_for_code(params['CLIENT_ID'], scopes)
+    tokens = exchange_and_validate(params['CLIENT_ID'], params['CLIENT_SECRET'], code, params['TWITCH_BOT_LOGIN'], scopes)
+    save_tokens(params, tokens)
+    return tokens
 
 
 def main():
@@ -143,22 +136,13 @@ def main():
         client_secret = str(params.get("CLIENT_SECRET") or "").strip()
         if not client_id or not client_secret:
             raise RuntimeError("parameters.json must contain CLIENT_ID and CLIENT_SECRET.")
-        path = local_path(args.parameters, params.get("TOKENS_FILE", "oauth_tokens.json"))
-        scopes = set(REQUIRED_SCOPES)
-        if path.exists():
-            old = json.loads(path.read_text(encoding="utf-8-sig"))
-            saved_scopes = old.get("scopes") or old.get("scope") or []
-            scopes.update(saved_scopes.split() if isinstance(saved_scopes, str) else saved_scopes)
-        print("Stop any running Twitch bot processes before continuing.")
         print("In the existing Twitch app settings, add this OAuth Redirect URL:")
         print(REDIRECT_URI)
         print("https://dev.twitch.tv/console/apps")
         print(f"Use the existing app with Client ID: {client_id}")
-        input("Press Enter once the bot is stopped and that redirect URL is saved: ")
-        code = wait_for_code(client_id, scopes)
-        tokens = exchange_and_validate(client_id, client_secret, code, params["TWITCH_BOT_LOGIN"], scopes)
-        save_tokens(path, tokens)
-        print(f"Success: verified {params['TWITCH_BOT_LOGIN']} and saved {path}.")
+        input("Press Enter once that redirect URL is saved: ")
+        authorize(params)
+        print(f"Success: verified {params['TWITCH_BOT_LOGIN']} and saved authorization in SQLite.")
         print("You can now start Grand Theft Walk in prod mode. Tokens renew automatically.")
     except RuntimeError as error:
         print(f"Authorization failed: {error}")
@@ -177,14 +161,21 @@ REQUIRED_SCOPES = {"chat:read", "chat:edit", "channel:manage:broadcast"}
 
 
 class OAuthTokens:
-    def __init__(self, params, path):
-        self.params, self.path = params, path
-        self.tokens = None
+    def __init__(self, params):
+        self.params = params
+        self.key = 'authorization:' + params.get('CLIENT_ID', '') + ':' + params.get('TWITCH_BOT_LOGIN', '').lower()
         self.validated_at = 0
 
     def ensure_fresh(self):
+        # Serialize refresh-token rotation across the supervisor and chat bot.
+        lock_path = StateStore().path.with_suffix('.oauth.lock')
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(str(lock_path), timeout=60):
+            return self._ensure_fresh()
+
+    def _ensure_fresh(self):
         try:
-            tokens = self.tokens or read_json(self.path)
+            tokens = StateStore().read(self.key)
         except FileNotFoundError:
             raise RuntimeError(
                 "Twitch authorization is missing. Run venv\\Scripts\\python.exe "
@@ -209,7 +200,7 @@ class OAuthTokens:
             tokens = dict(payload, refresh_token=payload.get("refresh_token") or tokens["refresh_token"],
                           expires_at=int(now) + int(payload["expires_in"]))
             # Save rotated refresh tokens immediately, even if later validation fails.
-            atomic_json(self.path, tokens)
+            save_tokens(self.params, tokens)
             self.validated_at = 0
         if not self.validated_at or now - self.validated_at >= 3600:
             response = requests.get("https://id.twitch.tv/oauth2/validate", headers={
@@ -222,7 +213,9 @@ class OAuthTokens:
                     or not REQUIRED_SCOPES.issubset(account.get("scopes", []))):
                 raise RuntimeError("Twitch token has the wrong app, login, or permissions; run venv\\Scripts\\python.exe -m chat.oauth to reauthorize.")
             self.validated_at = now
-        self.tokens = tokens
+            if tokens.get('scopes') != account.get('scopes', []):
+                tokens['scopes'] = account.get('scopes', [])
+                save_tokens(self.params, tokens)
         return tokens
 
 

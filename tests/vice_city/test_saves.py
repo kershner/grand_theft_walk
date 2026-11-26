@@ -1,5 +1,7 @@
 """Vice City startup, checkpoint selection, autosaves, and recovery."""
 
+from core.files import read_state, write_state
+from tests.fixtures import StateTestCase
 import hashlib
 import json
 import struct
@@ -14,7 +16,7 @@ from games.vice_city.launch import MAIN_MENU, NEW_GAME, Startup, choose_save
 from tests.fixtures import FakeBridge, MemoryFixture, classic_checkpoint as checkpoint
 
 
-class AutosaveTests(unittest.TestCase):
+class AutosaveTests(StateTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -24,8 +26,8 @@ class AutosaveTests(unittest.TestCase):
         self.path = root / "GTAVCsf1.b"
         self.original = checkpoint()
         self.path.write_bytes(self.original)
-        self.record = self.state_dir / "launch.json"
-        self.record.write_text(json.dumps({"slot": 0, "path": str(self.path)}))
+        self.record = self.state_dir / "launch"
+        write_state(self.record, {"slot": 0, "path": str(self.path)})
         self.mem = MemoryFixture()
         self.mem.write(SAVE_PREFIX, str(root / "GTAVCsf").encode("mbcs") + b"\0")
         self.bridge = FakeBridge()
@@ -50,7 +52,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.saver.count, 1)
         self.assertEqual(self.saver.duration_ms, 9)
         self.assertAlmostEqual(self.saver.next_at, 120.2)
-        self.assertEqual(json.loads(self.record.read_text())["sha256"], hashlib.sha256(new).hexdigest())
+        self.assertEqual(read_state(self.record)["sha256"], hashlib.sha256(new).hexdigest())
 
     def test_unsafe_gameplay_never_starts_a_save(self):
         for key, value in (("ready", False), ("health", 0), ("in_vehicle", True),
@@ -110,7 +112,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.saver.backup.read_bytes(), self.original)
 
     def test_slot_mismatch_preserves_files_and_never_dispatches(self):
-        self.record.write_text(json.dumps({"slot": 1, "path": str(self.path)}))
+        write_state(self.record, {"slot": 1, "path": str(self.path)})
         with self.assertLogs("core.saves", level="WARNING"):
             self.assertFalse(self.saver.tick(self.state, 60))
         self.assertEqual(self.path.read_bytes(), self.original)
@@ -133,7 +135,7 @@ class AutosaveTests(unittest.TestCase):
                 request.start(slot)
 
 
-class SaveTests(unittest.TestCase):
+class SaveTests(StateTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -183,7 +185,7 @@ class SaveTests(unittest.TestCase):
             self.assertFalse(valid_save(self.path()), kind)
 
 
-class NewGameTests(unittest.TestCase):
+class NewGameTests(StateTestCase):
     def setUp(self):
         self.startup = Startup.__new__(Startup)
         self.startup.mem = Mock()

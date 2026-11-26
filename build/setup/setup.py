@@ -13,7 +13,7 @@ import uuid
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-from core.files import atomic_json, component_mismatches, put_file, sha256, under
+from core.files import atomic_json, component_mismatches, put_file, sha256, under, read_state, write_state, state_exists
 from games import ACTIVE_GAMES, get_game
 
 
@@ -353,8 +353,8 @@ def run_setup(args, bundle):
         ensure_closed()
     results = []
     locations = {}
-    config = args.bundle / "runtime/installations.json"
-    existing = json.loads(config.read_text(encoding="utf-8")) if config.exists() else {}
+    config = args.bundle / "runtime/installations"
+    existing = read_state(config) if state_exists(config) else {}
     for game, definition in manifest["games"].items():
         if args.game not in ("all", game):
             continue
@@ -376,7 +376,7 @@ def run_setup(args, bundle):
     if not results:
         raise ValueError("No installed games found. Supply the game paths to build/setup/Setup.ps1.")
     if args.action in {"install", "repair"}:
-        atomic_json(config, existing | locations)
+        write_state(config, existing | locations)
     print(json.dumps(results, indent=2))
     return not (args.action == "check" and any(not result["ok"] or result["recovery_pending"] for result in results))
 

@@ -1,5 +1,7 @@
 """San Andreas startup, checkpoint selection, autosaves, and recovery."""
 
+from core.files import read_state, write_state
+from tests.fixtures import StateTestCase
 import hashlib
 import json
 import struct
@@ -14,7 +16,7 @@ from games.san_andreas.launch import INTRO_SCRIPT, Startup, choose_save, valid_s
 from tests.fixtures import FakeBridge, MemoryFixture, checkpoint
 
 
-class NativeSaveTests(unittest.TestCase):
+class NativeSaveTests(StateTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -70,7 +72,7 @@ class NativeSaveTests(unittest.TestCase):
                         self.client.poll()
 
 
-class AutosaveTests(unittest.TestCase):
+class AutosaveTests(StateTestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
@@ -80,8 +82,8 @@ class AutosaveTests(unittest.TestCase):
         self.path = root / "GTASAsf1.b"
         self.original = checkpoint()
         self.path.write_bytes(self.original)
-        self.record = self.state_dir / "launch.json"
-        self.record.write_text(json.dumps({"slot": 0, "path": str(self.path)}))
+        self.record = self.state_dir / "launch"
+        write_state(self.record, {"slot": 0, "path": str(self.path)})
         self.mem = MemoryFixture()
         self.mem.foreground = Mock(return_value=True)
         self.mem.write(SAVE_PREFIX, str(root / "GTASAsf").encode("mbcs") + b"\0")
@@ -120,7 +122,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.saver.count, 1)
         self.assertEqual(self.saver.backup.read_bytes(), self.original)
         self.assertEqual(self.mem.byte(MENU + 0x32), 0)
-        record = json.loads(self.record.read_text())
+        record = read_state(self.record)
         self.assertEqual(record["sha256"], hashlib.sha256(new).hexdigest())
         self.assertEqual(self.saver.phase, "idle")
         self.assertAlmostEqual(self.saver.next_at, 120.8)
@@ -170,7 +172,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.mem.byte(MENU + 0x32), 0)
 
     def test_occupied_save_slot_mismatch_is_never_overwritten(self):
-        self.record.write_text(json.dumps({"slot": 1, "path": str(self.path)}))
+        write_state(self.record, {"slot": 1, "path": str(self.path)})
         with self.assertLogs("core.saves", level="WARNING"):
             self.assertFalse(self.saver.tick(self.state, 60))
         self.assertEqual(self.path.read_bytes(), self.original)
@@ -213,7 +215,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertTrue(self.saver.tick(self.state, 120))
 
 
-class IntroTests(unittest.TestCase):
+class IntroTests(StateTestCase):
     def setUp(self):
         self.memory = Mock()
         self.memory.foreground.return_value = True
@@ -254,7 +256,7 @@ class IntroTests(unittest.TestCase):
         self.memory.write.assert_not_called()
 
 
-class FocusTests(unittest.TestCase):
+class FocusTests(StateTestCase):
     def test_startup_does_not_act_until_game_is_foreground(self):
         memory = Mock()
         memory.alive.return_value = True
@@ -268,7 +270,7 @@ class FocusTests(unittest.TestCase):
         memory.write.assert_not_called()
 
 
-class SaveSelectionTests(unittest.TestCase):
+class SaveSelectionTests(StateTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

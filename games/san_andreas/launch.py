@@ -13,7 +13,7 @@ if __package__ in (None, ""):
 
 
 from core.controls import Keys
-from core.files import atomic_json, read_json
+from core.files import write_state, read_json, read_state, state_exists
 from core.session import StartupWait, choose_save as select_save
 from games.san_andreas.game import Game, MENU, SAVE_PREFIX, valid_save
 
@@ -128,8 +128,8 @@ class Startup(StartupWait):
         prefix = self.mem.read(SAVE_PREFIX, 260).split(b"\0", 1)[0].decode("mbcs")
         if not prefix or not Path(prefix).is_absolute():
             raise RuntimeError("The game did not provide a valid normal save folder.")
-        record_path = state_dir / "launch.json"
-        record = read_json(record_path) if record_path.exists() else None
+        record_path = state_dir / "launch"
+        record = read_state(record_path) if state_exists(record_path) else None
         slot, path, create = choose_save(prefix, record)
         logger.info("Normal save slot %s: %s", slot + 1, path)
         if create:
@@ -183,7 +183,7 @@ class Startup(StartupWait):
             self.wait("Verifying the new save can be loaded...", lambda: self.menu() is not None)
         self.page(LOAD, slot=slot)
         self.wait("Loading the normal walker save...", self.free_roam)
-        atomic_json(
+        write_state(
             record_path,
             {
                 "slot": slot,

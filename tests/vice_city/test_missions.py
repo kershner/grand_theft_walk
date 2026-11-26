@@ -1,12 +1,13 @@
 """Vice City destination reachability and the shared viewer mission cycle."""
 
+from tests.fixtures import StateTestCase
 import random
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core.files import atomic_json
+from core.files import write_state
 from core.missions import MissionSystem
 from core.navigation import Node, PedestrianGraph, PedestrianNavigator
 from games.vice_city.game import load_destinations, main_pedestrian_network
@@ -38,7 +39,7 @@ def destinations(graph):
         return load_destinations(Path("game"), graph, Mock(return_value={}))
 
 
-class ViceCityMissionTests(unittest.TestCase):
+class ViceCityMissionTests(StateTestCase):
     def test_every_distinct_main_network_point_is_available_and_routable(self):
         graph = graph_fixture()
         catalog = destinations(graph)
@@ -62,7 +63,7 @@ class ViceCityMissionTests(unittest.TestCase):
                  "position": {"x": 0, "y": 0, "z": 10}}
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            atomic_json(root / "mission_config.json", {
+            write_state(root / "mission_config", {
                 "hold_seconds": 1, "vote_seconds": 1, "radius": 3.0,
             })
             system = MissionSystem(root, graph, catalog, random.Random(1))
@@ -71,7 +72,7 @@ class ViceCityMissionTests(unittest.TestCase):
             self.assertEqual(len(poll["options"]), 3)
             for option in poll["options"]:
                 self.assertIn((0, 0), graph.distances_to(tuple(option["node"])))
-            atomic_json(root / "mission_votes" / "viewer.json", {
+            write_state(root / "mission_votes" / "viewer.json", {
                 "poll": poll["id"], "viewer": "alice", "choice": 2, "issued": 100.5,
             })
             system.tick(state, 1, True, wall=101)

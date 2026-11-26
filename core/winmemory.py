@@ -94,14 +94,17 @@ api(u32, "GetWindowThreadProcessId", [w.HWND, c.POINTER(w.DWORD)], w.DWORD)
 
 
 @contextmanager
-def process_mutex(name, message):
+def process_mutex(name, message, *, existing_ok=False):
     handle = k32.CreateMutexW(None, False, name)
     if not handle or c.get_last_error() == 183:
         if handle:
             k32.CloseHandle(handle)
+        if existing_ok:
+            yield False
+            return
         raise RuntimeError(message)
     try:
-        yield
+        yield True
     finally:
         k32.CloseHandle(handle)
 

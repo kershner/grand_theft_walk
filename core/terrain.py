@@ -8,7 +8,7 @@ import heapq
 import logging
 import math
 import struct
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from pathlib import Path
 
 from core.files import read_json, sha256
@@ -134,10 +134,11 @@ class NativeTerrain:
 
 
 class TerrainNavigator:
-    """Lazy A* on height-specific ground samples, with body-width edge tests."""
+    """Direct surface routes, with bounded A* only when a corridor is blocked."""
 
-    def __init__(self, sensor):
-        self.sensor = sensor
+    def __init__(self, sensor, *, can_swim=False):
+        self.sensor, self.can_swim = sensor, can_swim
+        self.in_water = False
         self.reset()
 
     def reset(self):
@@ -180,7 +181,7 @@ class TerrainNavigator:
         if hit is None or hit is False:
             return hit
         point, normal, wet = hit
-        if wet or normal[2] < .82:  # Approximately 35 degrees maximum.
+        if (wet and not self.can_swim) or (not wet and normal[2] < .82):
             return False
         return point
 
@@ -310,7 +311,10 @@ class TerrainNavigator:
             self.direct = False
         return clear
 
-    def route(self, position, target, now):
+    def route(self, position, target, now, *, in_water=False):
+        if self.in_water != in_water:
+            self.reset()
+            self.in_water = in_water
         self.sensor.pump(now)
         if not self.enabled:
             return target
@@ -548,178 +552,3 @@ class WaterAvoidance:
             walk.terrain.reset()
         walk.keys.set(walk.walk_modifier)
         return 'exploring: choosing less-used ground away from water'
-
-
-class SwimNavigator:
-    """SA-only swim budget, remembered dry ground, and committed shore recovery."""
-
-    def __init__(self, sensor, graph, limit=120.):
-        self.sensor, self.graph, self.limit = sensor, graph, limit
-        self.dry_ground = deque(maxlen=64)
-        self.elapsed = 0.
-        self.observed_at = None
-        self.active = False
-        self.dry_since = None
-        self.entry_heading = 0.
-        self.goal = None
-        self.candidates = []
-        self.scan_origin = None
-        self.best_remaining = math.inf
-        self.progress_at = 0.
-        self.rejected = {}
-        self.status = 'on land'
-        self.surface = None
-        self.swim_anchor = None
-        self.swim_step = None
-        self.swim_clear_until = 0.
-        self.mapped_land = []
-
-    def observe(self, state, now, usable):
-        if not usable:
-            self.observed_at = None
-            return False
-        point = tuple(state['position'][axis] for axis in ('x', 'y', 'z'))
-        wet = state.get('in_water', False)
-        if wet:
-            if not self.active:
-                self.entry_heading = state['heading']
-                self.elapsed, self.goal, self.candidates = 0., None, []
-                self.active = True
-                self.scan_origin = None
-                self.rejected.clear()
-                self.surface = round(point[2] + 1.)
-                self.swim_anchor = self.swim_step = None
-                self.swim_clear_until = 0.
-            if self.observed_at is not None:
-                delta = now - self.observed_at
-                self.elapsed += delta if 0 <= delta <= 1 else 0
-            self.dry_since = None
-        elif self.active:
-            grounded = (state.get('standing', False) and not state.get('in_air', False)
-                        and abs(state.get('vertical_speed', 0)) < .03)
-            if not grounded:
-                self.dry_since = None
-            elif self.dry_since is None:
-                self.dry_since = now
-            elif now - self.dry_since >= 1.0:
-                self.active = False
-                self.elapsed, self.goal = 0., None
-                self.status = 'on land'
-        if not self.active and state.get('standing', False) and not state.get('in_air', False):
-            if not self.dry_ground or math.dist(point, self.dry_ground[-1]) > 4:
-                self.dry_ground.append(point)
-        self.observed_at = now
-        return self.active
-
-    def shore_goal(self, position, now):
-        if self.goal is not None:
-            remaining = math.dist(position[:2], self.goal[:2])
-            if remaining < self.best_remaining - 2:
-                self.best_remaining, self.progress_at = remaining, now
-            if remaining > 2 and now - self.progress_at < 20:
-                return self.goal
-            # Dry contact, not arrival at an XY coordinate, finishes swimming.
-            self.rejected[self.goal] = now + 30
-            self.goal = None
-        if (self.scan_origin is None or math.dist(position[:2], self.scan_origin[:2]) > 12
-                or not self.candidates):
-            self.scan_origin = position
-            candidates = list(reversed(self.dry_ground))
-            if self.graph:
-                # A nearby cliff-top path is a poor shore target. Prefer a low
-                # approach, but do not require distant geometry to be streamed.
-                candidates += [node.position for node in sorted(self.graph.nodes.values(),
-                                key=lambda node: math.dist(position[:2], node.position[:2])
-                                + max(0., node.position[2] - position[2]) * 8)[:12]]
-            self.mapped_land = sorted(set(candidates), key=lambda p:
-                                     math.dist(position[:2], p[:2]) + max(0., p[2] - position[2]) * 8)
-            coarse = next((p for p in self.mapped_land if self.rejected.get(p, 0) <= now), None)
-            if coarse is not None and math.dist(position[:2], coarse[:2]) > 64:
-                self.goal = coarse
-                self.best_remaining = math.dist(position[:2], coarse[:2])
-                self.progress_at = now
-                return coarse
-            for radius in (16, 32, 64):
-                for step in range(12):
-                    bearing = step * math.tau / 12
-                    candidates.append((position[0] + math.cos(bearing) * radius,
-                                       position[1] + math.sin(bearing) * radius, position[2]))
-            self.candidates = sorted(set(candidates), key=lambda p: math.dist(position[:2], p[:2]))
-        for candidate in self.candidates:
-            if self.rejected.get(candidate, 0) > now:
-                continue
-            if self.sensor.enabled:
-                surface = self.surface if self.surface is not None else round(position[2] + 1)
-                hit = self.sensor.ray((candidate[0], candidate[1], surface + 6),
-                                      (candidate[0], candidate[1], surface - 2.5), 2, now)
-                if hit is None or hit is False:
-                    continue
-                point, normal, wet = hit
-                if wet or normal[2] < .82 or point[2] > position[2] + 2:
-                    continue
-                candidate = point
-            # Without native sensing, use observed land or the pedestrian graph;
-            # arbitrary radial probes have no evidence of being land.
-            elif candidate not in self.dry_ground and not (self.graph and any(
-                    candidate == node.position for node in self.graph.nodes.values())):
-                continue
-            self.goal = candidate
-            self.best_remaining = math.dist(position[:2], candidate[:2])
-            self.progress_at = now
-            return candidate
-        return None
-
-    def waypoint(self, position, now):
-        if self.elapsed < self.limit:
-            self.status = 'swimming; shore recovery starts after two minutes'
-            return None
-        self.sensor.pump(now)
-        goal = self.shore_goal(position, now)
-        if goal is None:
-            # With no known coast yet, reverse the entry course while looking.
-            goal = (position[0] + math.sin(self.entry_heading) * 30,
-                    position[1] - math.cos(self.entry_heading) * 30, position[2])
-        direction = math.atan2(goal[1] - position[1], goal[0] - position[0])
-        if (self.swim_anchor is None
-                or math.dist(position[:2], self.swim_anchor[:2]) > 3):
-            surface = self.surface if self.surface is not None else round(position[2] + 1)
-            self.swim_anchor = (position[0], position[1], surface)
-            self.swim_step = None
-        if self.swim_step is not None and now < self.swim_clear_until:
-            self.status = 'swimming toward land'
-            return self.swim_step
-        origin = self.swim_anchor
-        direction = math.atan2(goal[1] - origin[1], goal[0] - origin[0])
-        for offset in (0, .4, -.4, .8, -.8, 1.4, -1.4, 2.2, -2.2, math.pi):
-            angle = direction + offset
-            # Fixed segment endpoints let async results survive water bobbing
-            # and turning; checking a new floating-point ray every frame starves.
-            if offset == 0 and self.swim_step is not None:
-                target = self.swim_step
-                angle = math.atan2(target[1] - origin[1], target[0] - origin[0])
-            else:
-                target = (origin[0] + math.cos(angle) * 5,
-                          origin[1] + math.sin(angle) * 5, origin[2])
-            if self.sensor.enabled:
-                clear = True
-                for side in (-.35, .35):
-                    start = (origin[0] - math.sin(angle) * side,
-                             origin[1] + math.cos(angle) * side, origin[2] + .4)
-                    end = (target[0] - math.sin(angle) * side,
-                           target[1] + math.cos(angle) * side, target[2] + .4)
-                    if self.sensor.ray(start, end, 1, now) is not False:
-                        clear = False
-                if not clear:
-                    continue
-            self.status = 'swimming toward land'
-            self.swim_step, self.swim_clear_until = target, now + .6
-            self.sensor.pump(now)
-            return target
-        self.sensor.pump(now)
-        self.status = 'checking a clear swimming route to land'
-        return False
-
-    def report(self):
-        return {'active': self.active, 'seconds': round(self.elapsed, 1),
-                'return_after': self.limit, 'returning': self.active and self.elapsed >= self.limit,
-                'shore_target': self.goal, 'status': self.status}

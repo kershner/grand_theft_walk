@@ -167,6 +167,14 @@
   <span class="subtitle">dev mode</span>
 </header>
 
+<section id="schedule" hidden aria-live="polite" style="padding: 12px 16px; border-bottom: 1px solid var(--border)">
+  <div id="schedule-phase" style="color: var(--accent)"></div>
+  <div id="schedule-countdown" style="padding: 6px 0"></div>
+  <small id="schedule-start"></small>
+  <div><small>2 hours live · 2 hours off · Every day</small></div>
+  <small id="schedule-sync" style="color: var(--dim)"></small>
+</section>
+
 <details style="padding: 8px 16px; border-bottom: 1px solid var(--border)">
   <summary>Explore progress</summary>
   <div id="explore-status" role="status" style="padding: 8px 0">Waiting for navigation data</div>
@@ -197,6 +205,37 @@ const empty  = document.getElementById('empty-msg');
 let chatCursor = 0;
 let polling = false;
 let navigationPolling = false;
+let schedulePolling = false;
+
+async function pollSchedule() {
+  if (schedulePolling) return;
+  schedulePolling = true;
+  try {
+    const response = await fetch('/schedule');
+    const data = await response.json();
+    const section = document.getElementById('schedule');
+    section.hidden = !data.phase;
+    if (!data.phase) return;
+    document.querySelector('header .subtitle').textContent = '2 hours live · 2 hours off';
+    const names = {san_andreas: 'San Andreas', vice_city: 'Vice City', gta_iii: 'GTA III'};
+    const stale = Date.now() / 1000 - data.updated > 45;
+    const labels = {live: `LIVE · ${names[data.game]}`, break: 'OFFLINE · Taking a break',
+                    overnight: 'Offline for the night', preparing: 'Broadcast delayed'};
+    document.getElementById('schedule-phase').textContent = stale ? 'Connection lost' : labels[data.phase];
+    document.getElementById('schedule-countdown').textContent = stale ? '' : data.countdown;
+    const start = new Intl.DateTimeFormat('en-US', {timeZone: 'America/New_York',
+      weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'});
+    document.getElementById('schedule-start').textContent = data.phase === 'live' ? '' :
+      `Up next: ${names[data.game]} · ${start.format(new Date(data.deadline * 1000))}`;
+    document.getElementById('schedule-sync').textContent = data.twitch.error ?
+      'Twitch schedule update pending: ' + data.twitch.error : '';
+  } catch (error) {
+    document.getElementById('schedule-phase').textContent = 'Connection lost';
+    document.getElementById('schedule-countdown').textContent = '';
+  } finally { schedulePolling = false; }
+}
+setInterval(pollSchedule, 1000);
+pollSchedule();
 
 async function pollNavigation() {
   const canvas = document.getElementById('explore-map');
@@ -213,9 +252,7 @@ async function pollNavigation() {
     if (!info || !data.position) { label.textContent = 'Waiting for Explore coverage'; return; }
     label.textContent = `${data.mode} · ${info.visited_cells} areas · ${info.visited_nodes}/${info.total_nodes} path nodes · ${info.blocked_connections} failed connections`;
     const terrain = data.navigation.terrain;
-    const swimming = data.navigation.swimming;
     if (terrain) label.textContent += ` · ${terrain.status}`;
-    if (swimming && swimming.active) label.textContent += ` · ${Math.floor(swimming.seconds)}s swimming · ${swimming.status}`;
     const p = data.position;
     const point = q => [canvas.width / 2 + (q[0] - p.x) * 1.5,
                         canvas.height / 2 - (q[1] - p.y) * 1.5];
@@ -232,7 +269,6 @@ async function pollNavigation() {
     route.slice(1).forEach((q, i) => line(route[i], q, '#eeeeee'));
     const planned = [[p.x, p.y, p.z], ...((terrain && terrain.route) || [])];
     planned.slice(1).forEach((q, i) => line(planned[i], q, '#7ee787'));
-    if (swimming && swimming.shore_target) line([p.x,p.y,p.z], swimming.shore_target, '#56d4dd');
     (info.failed_edges || []).forEach(([a,b]) => line(a,b,'#f06a6a'));
     (info.failed_steps || []).forEach(s => line([(s[0]+.5)*12,(s[1]+.5)*12], [(s[3]+.5)*12,(s[4]+.5)*12], '#f06a6a'));
     if (info.goal_position) {

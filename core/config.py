@@ -1,27 +1,32 @@
-"""Stream configuration and persistent running-time rotation progress."""
+"""Configuration and the persistent whole-broadcast schedule."""
 
 import json
-import logging
 import math
 import time
+import uuid
+from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from core.files import atomic_json, read_json
+from core.files import StateStore, write_state, read_state
 from games import ACTIVE_GAMES, ROOT
 
 
-logger = logging.getLogger(__name__)
-
-
-def load_parameters(path=ROOT / "parameters.json"):
+def load_parameters(path=ROOT / "parameters.json", reimport=False):
     path = Path(path).resolve()
+    config_key = 'configuration:' + str(path).casefold()
     try:
-        params = json.loads(path.read_text(encoding="utf-8-sig"))
-    except FileNotFoundError as error:
-        raise ValueError('Create a local parameters.json first; {"MODE": "dev"} is enough for development.') from error
+        params = StateStore().read(config_key) if not reimport else None
+    except FileNotFoundError:
+        params = None
+    if params is None:
+        try:
+            params = json.loads(path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError as error:
+            raise ValueError('Create a local parameters.json first; {"MODE": "dev"} is enough for development.') from error
     if not isinstance(params, dict):
         raise ValueError("parameters.json must contain an object.")
-    for section in ("ROTATION", "DEV_SERVER", "OBS"):
+    for section in ("ROTATION", "DEV_SERVER", "OBS", 'SCHEDULE'):
         if not isinstance(params.get(section, {}), dict):
             raise ValueError(f"{section} must contain an object.")
     obs = params.get("OBS", {})
@@ -35,35 +40,20 @@ def load_parameters(path=ROOT / "parameters.json"):
             raise ValueError(f"{section}.port must be between 1 and 65535.")
     if not isinstance(obs.get("scenes", {}), dict):
         raise ValueError("OBS.scenes must map game IDs to scene names.")
-    select_game(params)  # Validate rotation even when a manual game is selected.
+    select_game(params)
+    if not isinstance(params.get('SCHEDULE', {}).get('twitch_calendar', False), bool):
+        raise ValueError('SCHEDULE.twitch_calendar must be true or false.')
+    StateStore().write(config_key, params)
     return params
 
 
-def local_path(params_path, value):
-    path = Path(value)
-    return path if path.is_absolute() else Path(params_path).resolve().parent / path
-
-
-def rotation_seconds(params):
-    hours = params.get("ROTATION", {}).get("interval_hours", 2)
-    if type(hours) not in (int, float) or not math.isfinite(hours) or not 0 < hours <= 8760:
-        raise ValueError("ROTATION.interval_hours must be greater than 0 and at most 8760.")
-    return hours * 3600
-
-
-def select_game(params, progress=None):
-    rotation_seconds(params)
+def select_game(params):
     rotation = params.get("ROTATION", {})
     games = rotation.get("games", list(ACTIVE_GAMES))
     if not isinstance(games, list) or not games or any(not isinstance(g, str) or g not in ACTIVE_GAMES for g in games):
         raise ValueError(f"ROTATION.games must list available games: {', '.join(ACTIVE_GAMES)}.")
     if len(set(games)) != len(games):
         raise ValueError("ROTATION.games must not contain duplicates.")
-    if progress and progress.get("game") in games:
-        game = progress["game"]
-        if progress["elapsed_seconds"] >= rotation_seconds(params):
-            return games[(games.index(game) + 1) % len(games)]
-        return game
     return games[0]
 
 
@@ -80,51 +70,121 @@ def twitch_settings(params):
     return params
 
 
-class RotationProgress:
-    def __init__(self, params, path):
-        self.params, self.path = params, path
-        self.interval = rotation_seconds(params)
-        self.data = {}
-        self.started_at = None
-        self.saved_at = None
+class BroadcastSchedule:
+    """A queue of whole broadcasts; downtime shifts it, midnight limits it."""
+
+    LIVE_SECONDS = BREAK_SECONDS = 7200
+    ZONE = ZoneInfo('America/New_York')
+
+    def __init__(self, params, mode='prod', game=None, now=None, path=None, *, resume_live=False):
+        self.path = Path(path) if path else ROOT / 'runtime' / f'schedule-{mode}'
+        self.games = params.get('ROTATION', {}).get('games', list(ACTIVE_GAMES))
+        select_game(params)
+        now = time.time() if now is None else now
         try:
-            data = read_json(path)
-            elapsed = data.get("elapsed_seconds") if isinstance(data, dict) else None
-            if (not isinstance(data, dict) or data.get("version") != 1
-                    or not isinstance(data.get("game"), str)
-                    or type(elapsed) not in (int, float)
-                    or not math.isfinite(elapsed) or elapsed < 0):
-                raise ValueError("Invalid rotation progress")
-            self.data = data
+            self.data = read_state(self.path)
+            if (self.data.get('game') not in self.games
+                    or self.data.get('phase') not in ('live', 'break', 'overnight', 'preparing')
+                    or type(self.data.get('deadline')) not in (int, float)
+                    or not math.isfinite(self.data['deadline'])):
+                raise ValueError('Invalid broadcast schedule')
         except FileNotFoundError:
-            pass
-        except (OSError, ValueError) as error:
-            logger.warning("Rotation progress unavailable: %s", error)
+            self.data = {'game': game or self.games[0], 'phase': 'break',
+                         'deadline': now, 'slot_id': uuid.uuid4().hex}
+        if game is not None and game != self.data['game']:
+            self.data.update(game=game, slot_id=uuid.uuid4().hex)
+        # No partially completed broadcasts survive an app restart.
+        if resume_live and self.data['phase'] == 'live':
+            self.save()
+        elif self.data['phase'] in ('live', 'preparing'):
+            self.interrupt(now, 'Retrying the interrupted broadcast in full', wait=False)
+        else:
+            if self.data.get('reason'):
+                self.data['deadline'] = now
+            self.refresh(now)
 
-    def select(self):
-        return select_game(self.params, self.data)
+    @classmethod
+    def window(cls, now):
+        local = datetime.fromtimestamp(now, cls.ZONE)
+        opening = datetime.combine(local.date(), clock_time(9), cls.ZONE)
+        cutoff = datetime.combine(local.date() + timedelta(days=1), clock_time(), cls.ZONE)
+        return opening.timestamp(), cutoff.timestamp()
 
-    def remaining(self, game):
-        elapsed = self.data.get("elapsed_seconds", 0) if self.data.get("game") == game else 0
-        return max(0, self.interval - elapsed)
+    @classmethod
+    def fit(cls, earliest):
+        opening, cutoff = cls.window(earliest)
+        candidate = max(earliest, opening)
+        if candidate + cls.LIVE_SECONDS > cutoff:
+            tomorrow = datetime.fromtimestamp(earliest, cls.ZONE).date() + timedelta(days=1)
+            return datetime.combine(tomorrow, clock_time(9), cls.ZONE).timestamp()
+        return candidate
 
-    def start(self, game):
-        # Explicitly choosing another game starts its slot. Choosing the same
-        # unfinished game resumes it; a completed slot starts fresh.
-        elapsed = self.interval - self.remaining(game)
-        self.data = {"version": 1, "game": game,
-                     "elapsed_seconds": elapsed if elapsed < self.interval else 0}
-        self.started_at = self.saved_at = time.monotonic()
-        self.initial_elapsed = self.data["elapsed_seconds"]
-        atomic_json(self.path, self.data)
+    def save(self):
+        self.data['updated'] = time.time()
+        write_state(self.path, self.data)
 
-    def checkpoint(self, force=False):
-        if self.started_at is None:
+    def refresh(self, now):
+        if self.data['phase'] == 'live':
             return
-        now = time.monotonic()
-        was_complete = self.data["elapsed_seconds"] >= self.interval
-        self.data["elapsed_seconds"] = min(
-            self.interval, self.initial_elapsed + max(0, now - self.started_at))
-        if force or now - self.saved_at >= 5 or (not was_complete and self.data["elapsed_seconds"] >= self.interval):
-            atomic_json(self.path, self.data)
-            self.saved_at = now
+        self.data.pop('ending', None)
+        self.data.pop('transition', None)
+        earliest = max(now, self.data['deadline'])
+        start = self.fit(earliest)
+        opening, cutoff = self.window(earliest)
+        self.data.update(phase='overnight' if start >= cutoff or earliest < opening else 'break',
+                         next_start_at=start, next_game=self.data['game'])
+        self.save()
+
+    def preparing(self, now):
+        self.data.update(phase='preparing', deadline=now, next_start_at=self.fit(now))
+        self.save()
+
+    def start(self, now):
+        if self.fit(now) > now:
+            self.refresh(now)
+            return False
+        self.data.update(phase='live', started_at=now, deadline=now + self.LIVE_SECONDS,
+                         next_game=self.games[(self.games.index(self.data['game']) + 1) % len(self.games)],
+                         next_start_at=self.fit(now + self.LIVE_SECONDS + self.BREAK_SECONDS))
+        self.data.pop('reason', None)
+        self.data.pop('ending', None)
+        self.data.pop('transition', None)
+        self.save()
+        return True
+
+    def finish(self, now):
+        self.data.update(game=self.data['next_game'], phase='break',
+                         deadline=now + self.BREAK_SECONDS, slot_id=uuid.uuid4().hex)
+        self.refresh(now)
+
+    def interrupt(self, now, reason='Broadcast interrupted; retrying a full session', *, wait=True):
+        self.data.update(phase='break', deadline=now + (self.BREAK_SECONDS if wait else 0),
+                         reason=reason, slot_id=uuid.uuid4().hex)
+        self.refresh(now)
+
+    def request_start(self, now, game=None):
+        if self.data['phase'] == 'live':
+            return
+        if game is not None and game in self.games:
+            self.data['game'] = game
+        self.interrupt(now, 'Starting the requested broadcast', wait=False)
+
+    def upcoming(self, now, count=8):
+        game = self.data['next_game'] if self.data['phase'] == 'live' else self.data['game']
+        start = self.fit(max(now, self.data['next_start_at']))
+        result = []
+        for offset in range(count):
+            result.append({'key': f"{self.data['slot_id']}:{offset}", 'game': game, 'start': start})
+            game = self.games[(self.games.index(game) + 1) % len(self.games)]
+            start = self.fit(start + self.LIVE_SECONDS + self.BREAK_SECONDS)
+        return result
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Import editable settings into the application SQLite database.')
+    parser.add_argument('--import-file', type=Path, required=True)
+    arguments = parser.parse_args()
+    load_parameters(arguments.import_file, reimport=True)
+    print('Settings imported into SQLite.')

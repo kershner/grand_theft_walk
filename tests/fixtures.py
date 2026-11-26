@@ -1,10 +1,20 @@
 """Shared in-memory games, native-save bridges, and checkpoint fixtures."""
 
 import struct
+import tempfile
+import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from core.classic import SAVE_SIZE
 from games import GAMES, GameProfile
+
+
+class StateTestCase(unittest.TestCase):
+    def run(self, result=None):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch('core.files.DATABASE', Path(folder) / 'state.sqlite3'):
+                return super().run(result)
 
 
 def legacy_game_profile():

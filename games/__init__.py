@@ -47,14 +47,18 @@ class GameProfile:
 
     @property
     def install_dir(self):
-        locations = ROOT / "runtime/installations.json"
-        if locations.exists():
-            configured = json.loads(locations.read_text(encoding="utf-8")).get(self.id)
-            if configured:
-                path = Path(configured)
-                if not path.is_absolute():
-                    raise ValueError(f"Configured game path must be absolute: {self.id}")
-                return path
+        from core.files import read_state
+
+        locations = ROOT / "runtime/installations"
+        try:
+            configured = read_state(locations).get(self.id)
+        except FileNotFoundError:
+            configured = None
+        if configured:
+            path = Path(configured)
+            if not path.is_absolute():
+                raise ValueError(f"Configured game path must be absolute: {self.id}")
+            return path
         return Path("C:/Program Files/Rockstar Games") / self.install_folder
 
 

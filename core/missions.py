@@ -11,7 +11,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.files import atomic_json, read_json
+from core.files import write_state, read_state, state_exists, delete_state, state_paths
 from core.runtime import mission_distance
 
 
@@ -28,14 +28,14 @@ MAX_FRAME_GAP = 0.5
 
 def load_config(path, defaults=None):
     defaults = DEFAULT_CONFIG | (defaults or {})
-    if not path.exists():
-        atomic_json(path, defaults)
-    config = defaults | read_json(path)
+    if not state_exists(path):
+        write_state(path, defaults)
+    config = defaults | read_state(path)
     for key in DEFAULT_CONFIG:
         value = config[key]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError(
-                f"mission_config.json: {key} must be a positive finite number"
+                f"mission_config: {key} must be a positive finite number"
             )
     return config
 
@@ -81,9 +81,9 @@ class MissionSystem:
         self.graph = graph
         self.destinations = destinations
         self.rng = rng or random.Random()
-        self.config = load_config(self.state_dir / "mission_config.json", defaults)
+        self.config = load_config(self.state_dir / "mission_config", defaults)
         try:
-            self.data = read_json(self.state_dir / "mission.json")
+            self.data = read_state(self.state_dir / "mission")
         except FileNotFoundError:
             self.data = {"active": None, "poll": None, "completed": 0, "events": []}
         self.data["events"] = []
@@ -101,7 +101,7 @@ class MissionSystem:
 
     def save(self):
         if self.data != self.saved_state:
-            atomic_json(self.state_dir / "mission.json", self.data)
+            write_state(self.state_dir / "mission", self.data)
             self.saved_state = deepcopy(self.data)
 
     def event(self, text):
@@ -145,9 +145,9 @@ class MissionSystem:
     def drain_votes(self):
         poll = self.data["poll"]
         consumed = []
-        for path in (self.state_dir / "mission_votes").glob("*.json"):
+        for path in state_paths(self.state_dir / "mission_votes"):
             try:
-                ballot = read_json(path)
+                ballot = read_state(path)
             except (ValueError, OSError):
                 continue
             consumed.append(path)
@@ -176,7 +176,7 @@ class MissionSystem:
         if consumed:
             self.save()
         for path in consumed:
-            path.unlink(missing_ok=True)
+            delete_state(path)
 
     def at_destination(self, state):
         active = self.data["active"]

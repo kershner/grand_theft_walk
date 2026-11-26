@@ -1,4 +1,4 @@
-"""Collision-based routing, async bridge ownership, and SA shore recovery."""
+"""Collision-based routing, async bridge ownership, and shared land/water navigation."""
 
 import math
 import struct
@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from core.controller import Walking
 from core.exploration import ExploreNavigator
 from core.navigation import Node, PedestrianGraph
-from core.terrain import HEADER, MAX_RAYS, RAY, NativeTerrain, SwimNavigator, TerrainNavigator, WaterAvoidance
+from core.terrain import HEADER, MAX_RAYS, RAY, NativeTerrain, TerrainNavigator, WaterAvoidance
 from tests.fixtures import bridge_exports
 
 
@@ -79,6 +79,23 @@ class TerrainTests(unittest.TestCase):
         self.assertTrue(any(abs(p[0]) >= 4 for p in nav.path))
         for a, b in zip([(0, 0, 0)] + nav.path, nav.path):
             self.assertTrue(nav.corridor(a, b, 0))
+
+    def test_same_planner_commits_to_straight_routes_across_land_and_water(self):
+        for height, wet in ((0, False), (-1, True)):
+            with self.subTest(in_water=wet):
+                nav = TerrainNavigator(World(lambda x,y: height), can_swim=True)
+                for frame in range(80):
+                    position = (0, frame * .1, height + 1)
+                    target = nav.route(position, (0, 60, 1), frame * .1, in_water=wet)
+                    self.assertIsNotNone(target)
+                    self.assertAlmostEqual(target[0],0)
+                    self.assertGreater(target[1]-position[1],3)
+                self.assertEqual(nav.plans,0)
+        nav = TerrainNavigator(World(lambda x,y: -1),can_swim=True)
+        self.assertIsNotNone(nav.route((0,0,0),(0,30,0),0,in_water=True))
+        nav.sensor=World()
+        self.assertIsNotNone(nav.route((0,1,1),(0,30,1),1,in_water=False))
+        self.assertEqual(nav.feet_offset,1)
 
     def test_clear_walk_keeps_long_corridors_and_never_runs_astar(self):
         nav = TerrainNavigator(World())
@@ -551,119 +568,6 @@ class MailboxTests(unittest.TestCase):
                 self.assertFalse(NativeTerrain(mem).enabled)
 
 
-class SwimTests(unittest.TestCase):
-    def state(self, **updates):
-        return dict(position=dict(x=0, y=0, z=0), standing=True, in_air=False,
-                    heading=0, vertical_speed=0, **updates)
-
-    def test_two_minutes_then_commits_to_observed_land_and_requires_stable_exit(self):
-        world = World(lambda x, y: 0 if y < 0 else -1)
-        nav = SwimNavigator(world, PedestrianGraph([]))
-        dry = self.state()
-        dry['position']['y'] = -10
-        self.assertFalse(nav.observe(dry, 0, True))
-        wet = self.state(in_water=True)
-        for i in range(481):
-            self.assertTrue(nav.observe(wet, i * .25, True))
-        self.assertEqual(nav.elapsed, 120)
-        target = nav.waypoint((0, 0, 0), 120)
-        self.assertLess(target[1], 0)
-        self.assertEqual(nav.goal, (0, -10, 0))
-        self.assertEqual(nav.shore_goal((1, 0, 0), 121), nav.goal)
-        self.assertTrue(nav.observe(dry, 122, True))
-        self.assertTrue(nav.observe(wet, 122.1, True))
-        self.assertTrue(nav.observe(dry, 123, True))
-        self.assertFalse(nav.observe(dry, 124.1, True))
-        self.assertEqual(nav.elapsed, 0)
-
-    def test_pause_does_not_spend_swim_budget_and_new_coast_can_be_found(self):
-        world = World(lambda x, y: .5 if x >= 15 else -1)
-        nav = SwimNavigator(world, PedestrianGraph([]))
-        state = self.state(in_water=True)
-        nav.observe(state, 0, True)
-        nav.observe(state, .2, True)
-        nav.observe(state, 1, False)
-        nav.observe(state, 500, True)
-        self.assertEqual(nav.elapsed, .2)
-        nav.elapsed = 120
-        self.assertIsNotNone(nav.waypoint((0, 0, 0), 501))
-        self.assertGreaterEqual(nav.goal[0], 15)
-
-    def test_nearby_water_is_not_a_shore_target_and_stalled_goal_is_reconsidered(self):
-        nav = SwimNavigator(World(lambda x, y: -1), PedestrianGraph([]))
-        nav.elapsed = 120
-        nav.waypoint((0, 0, 0), 0)
-        self.assertIsNone(nav.goal)
-        nav.goal, nav.progress_at = (0, 10, 0), 0
-        nav.best_remaining = 10
-        self.assertIsNone(nav.shore_goal((0, 0, 0), 21))
-        self.assertIn((0, 10, 0), nav.rejected)
-
-    def test_swimming_bypasses_walking_jump_and_journey_stall_detectors(self):
-        with patch('core.controller.Keys'):
-            walk = Walking()
-            walk.set_mode('explore')
-            walk.swim = SwimNavigator(World(), walk.navigator.graph)
-            state = dict(self.state(in_water=True), ready=True, foreground=True,
-                         paused=False, controls_disabled=False, in_vehicle=False,
-                         health=100, player_state=0, ped_state=50, interior=0)
-            for now in range(20):
-                with patch('core.controller.time.monotonic', return_value=now):
-                    self.assertIn('swimming', walk.tick(state, True, 'explore'))
-            self.assertEqual(walk.recoveries, 0)
-            self.assertFalse(walk.navigator.failures)
-
-    def test_open_ocean_uses_distant_mapped_land_without_waiting_for_unloaded_geometry(self):
-        graph = PedestrianGraph([
-            Node((0, 0), (1000, 0, 5), (((0, 1), False),)),
-            Node((0, 1), (1010, 0, 5), (((0, 0), False),))])
-        world = World(lambda x, y: None)
-        nav = SwimNavigator(world, graph)
-        nav.elapsed = 120
-        target = nav.waypoint((0, 0, -1), 0)
-        self.assertIsNotNone(target)
-        self.assertGreater(target[0], 0)
-        self.assertEqual(nav.goal, (1000, 0, 5))
-        self.assertFalse(any(start[:2] == end[:2] for start, end, _ in world.calls))
-
-    def test_async_swim_checks_survive_wave_bobbing_and_keep_the_turn_target(self):
-        class DelayedOcean(World):
-            def __init__(self):
-                super().__init__(lambda x, y: None)
-                self.requests = {}
-
-            def ray(self, start, end, flags, now):
-                key = (start, end, flags)
-                ready = self.requests.setdefault(key, now + .05)
-                return False if now >= ready else None
-
-        graph = PedestrianGraph([
-            Node((0, 0), (1000, 0, 5), (((0, 1), False),)),
-            Node((0, 1), (1010, 0, 5), (((0, 0), False),))])
-        world = DelayedOcean()
-        nav = SwimNavigator(world, graph)
-        nav.elapsed = 120
-        accepted = []
-        for frame in range(60):
-            target = nav.waypoint((0, 0, math.sin(frame) - .5), frame / 60)
-            if target:
-                accepted.append(target)
-        self.assertGreater(len(accepted), 50)
-        self.assertEqual(len(set(accepted)), 1)
-        self.assertLessEqual(len(world.requests), 20)
-
-    def test_mapped_shore_selection_prefers_a_low_approach_over_a_nearby_cliff(self):
-        graph = PedestrianGraph([
-            Node((0, 0), (300, 0, 60), (((0, 1), False),)),
-            Node((0, 1), (310, 0, 60), (((0, 0), False),)),
-            Node((1, 0), (500, 0, 5), (((1, 1), False),)),
-            Node((1, 1), (510, 0, 5), (((1, 0), False),))])
-        nav = SwimNavigator(World(lambda x, y: None), graph)
-        nav.elapsed = 120
-        nav.waypoint((0, 0, -1), 0)
-        self.assertEqual(nav.goal, (500, 0, 5))
-
-
 class RecoveryTimingTests(unittest.TestCase):
     def test_blocked_corridor_turns_and_moves_even_when_sensor_keeps_rejecting_routes(self):
         from games.gta_iii import game as iii
@@ -713,7 +617,7 @@ class RecoveryTimingTests(unittest.TestCase):
                     self.assertLessEqual(walk.recoveries, 2)
                     landing = walk.recovery_target
                     state['position'] = dict(zip(('x', 'y', 'z'), landing))
-                    walk.terrain.route.side_effect = lambda position, target, now: target
+                    walk.terrain.route.side_effect = lambda position, target, now, **kwargs: target
                     with patch('core.controller.time.monotonic', return_value=8):
                         walk.tick(state, True, 'explore')
                     self.assertIsNone(walk.recovery_target)
@@ -779,7 +683,7 @@ class RecoveryTimingTests(unittest.TestCase):
             walk = Walking()
             walk.jump_supported = True
             walk.terrain = SimpleNamespace(enabled=True,
-                route=Mock(side_effect=lambda position, target, now: target), reset=Mock(), status='safe route')
+                route=Mock(side_effect=lambda position, target, now, **kwargs: target), reset=Mock(), status='safe route')
             walk.navigator.waypoint = Mock(side_effect=lambda position, *args:
                                            (position[0], position[1] + 20, position[2]))
             for now in range(121):

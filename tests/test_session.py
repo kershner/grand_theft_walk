@@ -1,5 +1,6 @@
 """Shared session ownership, launch gates, backend capabilities, and cleanup."""
 
+from tests.fixtures import StateTestCase
 import contextlib
 import io
 import json
@@ -14,7 +15,7 @@ from unittest.mock import Mock, patch
 
 from core import session
 from core.controller import Controller
-from core.files import atomic_json
+from core.files import write_state, read_state
 from core.navigation import Node, PedestrianGraph
 from core.runtime import control_request
 from core.winmemory import ProcessJob, module_export, spawn, stop_processes, watch
@@ -22,7 +23,7 @@ from games import ACTIVE_GAMES, Capabilities, get_game
 from tests.fixtures import MemoryFixture, bridge_exports
 
 
-class ControllerSessionTests(unittest.TestCase):
+class ControllerSessionTests(StateTestCase):
     def test_each_backend_owns_and_closes_its_memory_and_controller(self):
         for game in ACTIVE_GAMES:
             with self.subTest(game=game), contextlib.ExitStack() as stack:
@@ -87,7 +88,7 @@ class ControllerSessionTests(unittest.TestCase):
         memory.close.assert_called_once()
 
 
-class LaunchTests(unittest.TestCase):
+class LaunchTests(StateTestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
@@ -188,7 +189,7 @@ class LaunchTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
 
-class ModuleExportTests(unittest.TestCase):
+class ModuleExportTests(StateTestCase):
     def test_relocated_and_decorated_exports_are_resolved(self):
         mem = MemoryFixture()
         module = {"base": 0x10000000, "size": 0x10000}
@@ -211,7 +212,7 @@ class ModuleExportTests(unittest.TestCase):
             module_export(mem, module, "GTWInput", 40)
 
 
-class LaunchWatchdogTests(unittest.TestCase):
+class LaunchWatchdogTests(StateTestCase):
     def test_deadline_terminates_only_the_owned_child(self):
         process = Mock()
         process.poll.return_value = None
@@ -234,7 +235,7 @@ class LaunchWatchdogTests(unittest.TestCase):
         process.kill.assert_not_called()
 
 
-class ProcessOwnershipTests(unittest.TestCase):
+class ProcessOwnershipTests(StateTestCase):
     def test_failed_job_assignment_does_not_leave_a_child_running(self):
         child, job = Mock(), Mock()
         job.add.side_effect = RuntimeError("assignment failed")
@@ -265,7 +266,7 @@ class ProcessOwnershipTests(unittest.TestCase):
         self.assertIsNotNone(child.returncode)
 
 
-class PartialBackendTests(unittest.TestCase):
+class PartialBackendTests(StateTestCase):
     def test_partial_backend_ticks_reports_and_closes_without_optional_features(self):
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
@@ -296,13 +297,13 @@ class PartialBackendTests(unittest.TestCase):
                 controller = Controller(memory, args, backend, lambda mem: graph)
                 backend.load_destinations.assert_called_once_with(memory.exe.parent, graph, backend.read_game_text)
                 # Stale or malicious control files cannot turn unavailable features on.
-                atomic_json(directory / "control.json", {
+                write_state(directory / "control", {
                     "first_person": True, "protection": True, "peaceful": True,
                     "unlock_map": True, "autosave": True,
                     "jump": control_request(), "view": control_request("up", 1),
                 })
                 self.assertTrue(controller.tick(10))
-                report = json.loads((directory / "state.json").read_text())
+                report = read_state(directory / "state")
                 self.assertEqual(report["game"], "vice_city")
                 self.assertEqual(report["capabilities"], Capabilities().report())
                 self.assertEqual(report["camera"], {"supported": False})
@@ -315,7 +316,7 @@ class PartialBackendTests(unittest.TestCase):
                 self.assertFalse(controller.settings["first_person"])
                 controller.stop()
                 controller.close()
-                report = json.loads((directory / "state.json").read_text())
+                report = read_state(directory / "state")
                 self.assertEqual(report["controller"], "stopped")
                 self.assertEqual(report["restore_errors"], [])
                 keys.return_value.release.assert_called()

@@ -1,5 +1,6 @@
 """Tests for focus-aware keyboard and mouse input."""
 
+from tests.fixtures import StateTestCase
 import configparser
 import math
 import struct
@@ -22,7 +23,7 @@ from core.controls import (
     can_control,
     configure_window,
 )
-from core.files import atomic_json
+from core.files import write_state
 from tests.fixtures import bridge_exports
 from core.navigation import angle_delta, heading_to
 from core.runtime import control_request
@@ -51,7 +52,7 @@ from games.vice_city import game as vc
 from tests.fixtures import MemoryFixture
 
 
-class InputTests(unittest.TestCase):
+class InputTests(StateTestCase):
     def test_vertical_mouse_input_preserves_the_horizontal_axis_and_checks_focus(self):
         with patch("core.controls._user32.SendInput", return_value=1) as send:
             self.keys.look(-12)
@@ -127,7 +128,7 @@ class InputTests(unittest.TestCase):
         self.assertEqual(self.keys.held, {"walk", "back"})
 
 
-class ViewControlTests(unittest.TestCase):
+class ViewControlTests(StateTestCase):
     def setUp(self):
         keys_patch = patch("core.controls.Keys")
         self.keys = keys_patch.start().return_value
@@ -197,7 +198,7 @@ class ViewControlTests(unittest.TestCase):
             self.keys.look.assert_not_called()
 
 
-class JumpBoostTests(unittest.TestCase):
+class JumpBoostTests(StateTestCase):
     def setUp(self):
         self.mem = MemoryFixture()
         self.game = Game(self.mem)
@@ -332,7 +333,7 @@ class JumpBoostTests(unittest.TestCase):
         self.assertFalse(self.game.can_drop(self.state))
 
 
-class HighJumpTests(unittest.TestCase):
+class HighJumpTests(StateTestCase):
     def setUp(self):
         self.keys_patch = patch("core.controls.Keys")
         self.key_factory = self.keys_patch.start()
@@ -498,7 +499,7 @@ class HighJumpTests(unittest.TestCase):
         self.game.boost_jump.assert_not_called()
 
 
-class BackgroundTests(unittest.TestCase):
+class BackgroundTests(StateTestCase):
     def test_background_permission_does_not_bypass_pause_death_or_cutscenes(self):
         state = dict(ready=True, foreground=False, background_control=True,
                      paused=False, controls_disabled=False, in_vehicle=False,
@@ -577,7 +578,7 @@ class BackgroundTests(unittest.TestCase):
         controller.hotkeys.pressed.return_value = ["f9", "f12"]
         controller.settings = {"quit": False}
         controller.stop = Mock()
-        with patch("core.controller.atomic_json") as write:
+        with patch("core.controller.write_state") as write:
             controller.handle_hotkeys({"foreground": False})
         self.assertFalse(controller.settings["quit"])
         controller.stop.assert_not_called()
@@ -591,7 +592,7 @@ class BackgroundTests(unittest.TestCase):
                 NativeInput(memory)
 
 
-class RespawnTests(unittest.TestCase):
+class RespawnTests(StateTestCase):
     def setUp(self):
         self.game, self.protection = Mock(), Mock()
         self.protection.restore.return_value = []
@@ -642,7 +643,7 @@ class RespawnTests(unittest.TestCase):
         self.game.kill_player.assert_called_once()
 
 
-class BackendRespawnTests(unittest.TestCase):
+class BackendRespawnTests(StateTestCase):
     def test_backends_only_clear_current_living_players_health(self):
         for backend, health_offset, state_offset in ((sa, 0x540, 0xDC), (vc, 0x354, 0xCC)):
             with self.subTest(game=backend.__name__):
@@ -677,7 +678,7 @@ class BackendRespawnTests(unittest.TestCase):
                 self.assertFalse(game.kill_player(state))
 
 
-class ControllerRespawnTests(unittest.TestCase):
+class ControllerRespawnTests(StateTestCase):
     def test_suspends_healing_autosave_and_input_until_player_respawns(self):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(state_dir=Path(folder), walk=True, mode='free')
@@ -708,7 +709,7 @@ class ControllerRespawnTests(unittest.TestCase):
                 controller.movement.navigator = None
                 controller.movement.keys.held = set()
                 req = dict(control_request(), session=controller.session)
-                atomic_json(controller.control_path, dict(controller.settings, respawn=req))
+                write_state(controller.control_path, dict(controller.settings, respawn=req))
                 self.assertTrue(controller.tick(10))
                 self.assertEqual(autosave.tick.call_args.args[2], False)
                 controller.update_game.assert_not_called()
@@ -723,7 +724,7 @@ class ControllerRespawnTests(unittest.TestCase):
                 game.kill_player.assert_called_once()
 
 
-class WaterRecoveryTests(unittest.TestCase):
+class WaterRecoveryTests(StateTestCase):
     def controller(self):
         controller = Controller.__new__(Controller)
         controller.settings = {'protection': True, 'peaceful': False, 'unlock_map': False, 'first_person': False}
@@ -781,7 +782,7 @@ class WaterRecoveryTests(unittest.TestCase):
                 self.assertEqual(memory.data, before)
 
 
-class ClassicViewTests(unittest.TestCase):
+class ClassicViewTests(StateTestCase):
     def test_classic_games_up_down_and_center_follow_the_native_vertical_direction(self):
         for backend in (iii, vc):
             with self.subTest(game=backend.__name__):
@@ -817,7 +818,7 @@ class ClassicViewTests(unittest.TestCase):
                 self.assertFalse(view.centering)
 
 
-class ClassicTurningTests(unittest.TestCase):
+class ClassicTurningTests(StateTestCase):
     def test_planner_retries_keep_walking_until_a_blockage_is_confirmed(self):
         for backend in (iii, vc, sa):
             with self.subTest(game=backend.__name__):
@@ -985,4 +986,3 @@ class ClassicTurningTests(unittest.TestCase):
                 self.assertLess(error, initial_error)
                 self.assertTrue(walking_during_turn)
                 self.assertLessEqual(max(abs(c.args[0]) for c in self.keys.turn.call_args_list), 8)
-

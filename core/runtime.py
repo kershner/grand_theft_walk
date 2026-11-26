@@ -1,6 +1,6 @@
-"""Shared runtime files, control requests, and bounded logging."""
+"""SQLite control requests, controller reports, and bounded logging."""
 
-import json
+import sqlite3
 import logging
 import math
 import threading
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
-from core.files import atomic_json, read_json
+from core.files import write_state, read_state
 from games import get_game
 
 
@@ -92,15 +92,13 @@ def request_expired(request):
 
 def read_controls(path, settings):
     try:
-        requested = read_json(path)
-    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+        requested = read_state(path)
+    except (OSError, sqlite3.Error):
         return
     for key, default in DEFAULTS.items():
         if isinstance(default, bool) and isinstance(requested.get(key), bool):
             settings[key] = requested[key]
     mode = requested.get("mode")
-    if mode == "sidewalk":  # Migrate settings saved before Explore was introduced.
-        mode = "explore"
     if mode in MODES:
         settings["mode"] = mode
     for key in ("steering", "jump", "view", "respawn"):
@@ -134,7 +132,7 @@ def require_command(state, name):
 
 
 class WalkerControl:
-    """Send chat commands through the walker's existing control file."""
+    """Send chat commands through the walker's SQLite controls."""
 
     def __init__(self, state_dir=None, game="san_andreas"):
         self.game = get_game(game)
@@ -143,15 +141,14 @@ class WalkerControl:
 
     def snapshot(self):
         try:
-            state = read_json(self.state_dir / "state.json")
-        except (OSError, ValueError) as error:
+            state = read_state(self.state_dir / "state")
+        except (OSError, ValueError, sqlite3.Error) as error:
             raise RuntimeError(
                 f"Start the {self.game.title} walker controller first."
             ) from error
-        # Legacy reports may omit identity/version only for the original default profile.
-        if state.get("game", "san_andreas") != self.game.id:
+        if state.get("game") != self.game.id:
             raise RuntimeError(f"The runtime folder belongs to another game; expected {self.game.title}.")
-        protocol = state.get("protocol", 1 if self.game.id == "san_andreas" else None)
+        protocol = state.get("protocol")
         if type(protocol) is not int or protocol != PROTOCOL_VERSION:
             raise RuntimeError("Unsupported walker protocol version.")
         age = time.time() - state.get("updated", 0)
@@ -169,10 +166,8 @@ class WalkerControl:
             require_command(state, name)
             if expected_session is not None and state.get("session", state.get("pid", "controller")) != expected_session:
                 raise RuntimeError("The game session changed; start a new vote.")
-            path = self.state_dir / "control.json"
-            settings = read_json(path)
-            if settings.get("mode") == "sidewalk":
-                settings["mode"] = "explore"
+            path = self.state_dir / "control"
+            settings = read_state(path)
             if settings.get("quit"):
                 raise RuntimeError("The walker controller is stopping; please wait.")
             if name == "back" and settings.get("mode") != "free":
@@ -191,7 +186,7 @@ class WalkerControl:
                     if args
                     else not settings.get("first_person", False)
                 )
-            atomic_json(path, settings)
+            write_state(path, settings)
             return settings
 
     def vote(self, viewer, choice):
@@ -205,8 +200,8 @@ class WalkerControl:
             return "No mission vote is open. Use !info to see the current mission."
         if type(choice) is not int or not 1 <= choice <= 3:
             raise ValueError("Vote with !vote 1, !vote 2, or !vote 3.")
-        atomic_json(
-            self.state_dir / "mission_votes" / f"{uuid.uuid4().hex}.json",
+        write_state(
+            self.state_dir / "mission_votes" / f"{uuid.uuid4().hex}",
             {
                 "poll": poll["id"],
                 "viewer": viewer.strip().casefold(),

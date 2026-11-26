@@ -13,7 +13,7 @@ from pathlib import Path
 
 from core.controller import Controller
 from core.controls import configure_window, key_down
-from core.files import atomic_json, read_json
+from core.files import write_state, read_state, state_exists
 from core.manager import component_status, validate_components
 from core.navigation import PedestrianGraph
 from core.runtime import DIRECTIONS, MODES, configure_logging, queue_movement
@@ -32,7 +32,7 @@ def choose_save(prefix, valid_save, record=None):
             raise RuntimeError("Invalid walker save record.")
         path = paths[slot]
         if str(path).casefold() != str(record.get("path", "")).casefold():
-            raise RuntimeError("The game's save folder changed; check runtime/launch.json.")
+            raise RuntimeError("The game's save folder changed; check runtime/launch.")
         if valid_save(path):
             return slot, path, False
         if path.exists():
@@ -165,6 +165,7 @@ def launch(game, startup_type, argv=None):
     parser.add_argument("--mode", choices=MODES)
     parser.add_argument("--seconds", type=float, help="End the controller after a development test")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument('--allow-other-games', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or not 10 <= args.timeout <= 600:
@@ -172,8 +173,10 @@ def launch(game, startup_type, argv=None):
     validate_seconds(parser, args.seconds)
     args.state_dir = args.state_dir.resolve()
     configure_logging(args.state_dir, game)
-    with process_mutex("Local\\GrandTheftWalkLauncher", "Grand Theft Walk is already launching or running."):
-        if any(list(game_pids(other)) for other in ACTIVE_GAMES):
+    launch_mutex = f'Local\\GrandTheftWalkLauncher-{game}' if args.allow_other_games else 'Local\\GrandTheftWalkLauncher'
+    with process_mutex(launch_mutex, "Grand Theft Walk is already launching or running."):
+        checked_games = (game,) if args.allow_other_games else ACTIVE_GAMES
+        if any(list(game_pids(other)) for other in checked_games):
             raise RuntimeError("Close the existing game before using the full launcher.")
         exe = args.game.resolve()
         from core.files import sha256
@@ -257,10 +260,10 @@ def main(argv=None):
 
 
 def update_control(parser, args):
-    path = args.state_dir / "control.json"
-    if not path.exists():
+    path = args.state_dir / "control"
+    if not state_exists(path):
         raise RuntimeError("Start the controller before sending it commands.")
-    settings = read_json(path)
+    settings = read_state(path)
     if args.command == "stop":
         settings["quit"] = True
     elif args.command == "mode":
@@ -281,7 +284,7 @@ def update_control(parser, args):
         field = {"walk": "walking", "protect": "protection", "unlock": "unlock_map",
                  "peace": "peaceful", "autosave": "autosave"}[args.command]
         settings[field] = args.value == "on"
-    atomic_json(path, settings)
+    write_state(path, settings)
     logger.info("Requested: %s", settings)
 
 

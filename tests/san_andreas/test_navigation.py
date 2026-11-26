@@ -1,5 +1,6 @@
 """Tests for pedestrian paths, steering, and walking recovery."""
 
+from tests.fixtures import StateTestCase
 import json
 import math
 import random
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.controller import Controller, Walking
+from core.files import read_state
 from core.navigation import (
     Node,
     PedestrianGraph,
@@ -38,7 +40,7 @@ def graph_fixture():
     )
 
 
-class GraphTests(unittest.TestCase):
+class GraphTests(StateTestCase):
     def test_heading_and_wrap_match_game_convention(self):
         self.assertAlmostEqual(heading_to((0, 0), (1, 0)), -math.pi / 2)
         self.assertAlmostEqual(heading_to((0, 0), (-1, 0)), math.pi / 2)
@@ -75,7 +77,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(graph.nearest((0.1, 0.1, 0)).key, (0, 0))
 
 
-class SmoothTurnTests(unittest.TestCase):
+class SmoothTurnTests(StateTestCase):
     def test_high_frequency_output_has_no_large_turn_steps(self):
         turn = SmoothTurn()
         turn.last_at = 0.0
@@ -113,7 +115,7 @@ class SmoothTurnTests(unittest.TestCase):
         self.assertEqual(turn.velocity, 0)
 
 
-class NavigatorTests(unittest.TestCase):
+class NavigatorTests(StateTestCase):
     def test_valid_slopes_do_not_rejoin_the_previous_waypoint(self):
         for rise in (-6, 6):
             with self.subTest(rise=rise):
@@ -240,7 +242,7 @@ class NavigatorTests(unittest.TestCase):
         self.assertFalse(self.navigator.blocked)
 
 
-class MovementTests(unittest.TestCase):
+class MovementTests(StateTestCase):
     def test_airtime_and_landing_do_not_spend_the_route_stall_budget(self):
         movement = Walking()
         movement.set_mode('explore')
@@ -321,21 +323,21 @@ class MovementTests(unittest.TestCase):
         next_target = nav.waypoint(target, math.pi, 0, 1)
         self.assertLess(next_target[1], target[1])
 
-    def test_missing_mission_path_keeps_walking_and_retries_the_planner(self):
+    def test_missing_mission_destination_uses_committed_exploration(self):
         movement = Walking()
-        movement.set_mode('mission')
-        with patch.object(movement.navigator, 'waypoint', return_value=None) as route:
+        with patch.object(movement.navigator, 'waypoint', return_value=None):
             with patch('core.controller.time.monotonic', return_value=0):
                 movement.tick(self.state, True, 'mission')
-            target = movement.recovery_target
+            target = movement.last_waypoint
+            self.assertEqual(movement.mode, 'explore')
+            self.assertTrue(movement.navigator.exploring)
+            self.assertIsNone(movement.recovery_target)
+            self.assertGreaterEqual(math.dist((0, 0), target[:2]), 10)
             state = dict(self.state, camera_heading=heading_to((0, 0), target))
             with patch('core.controller.time.monotonic', return_value=.1):
                 movement.tick(state, True, 'mission')
+            self.assertEqual(movement.last_waypoint, target)
             self.keys.set.assert_called_with({'walk', 'forward'})
-            state['position'] = dict(zip(('x', 'y', 'z'), target))
-            with patch('core.controller.time.monotonic', return_value=1):
-                movement.tick(state, True, 'mission')
-            self.assertEqual(route.call_count, 2)
 
     def test_detour_does_not_wait_when_all_directions_are_rejected(self):
         movement = Walking()
@@ -639,7 +641,7 @@ class MovementTests(unittest.TestCase):
     def test_missing_network_keeps_every_mode_moving(self):
         movement = Walking(navigation_error="missing files")
         self.assertIn("exploring open ground", movement.tick(self.state, True, "explore"))
-        self.assertIn("obstacle recovery", movement.tick(self.state, True, "mission"))
+        self.assertIn("exploring open ground", movement.tick(self.state, True, "mission"))
         self.assertEqual(movement.tick(self.state, True, "free"), "walking freely")
 
     def test_controllable_water_does_not_pause_exploration(self):
@@ -747,11 +749,11 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(self.movement.backing_up(14))
 
 
-class ControllerTests(unittest.TestCase):
+class ControllerTests(StateTestCase):
     def test_only_mission_mode_targets_and_holds_at_the_active_mission(self):
         with tempfile.TemporaryDirectory() as folder:
             controller = self.controller
-            controller.control_path = Path(folder) / "control.json"
+            controller.control_path = Path(folder) / "control"
             controller.settings["walking"] = True
             controller.game = Mock()
             controller.game.snapshot.return_value = {
@@ -791,14 +793,14 @@ class ControllerTests(unittest.TestCase):
     def test_f5_cycles_all_three_modes(self):
         with tempfile.TemporaryDirectory() as folder:
             controller = self.controller
-            controller.control_path = Path(folder) / "control.json"
+            controller.control_path = Path(folder) / "control"
             controller.hotkeys = Mock()
             controller.hotkeys.pressed.return_value = ["f5"]
             controller.settings["mode"] = "free"
             for expected in ("explore", "mission", "free"):
                 controller.handle_hotkeys({"ready": True, "foreground": True, "paused": False})
                 self.assertEqual(controller.settings["mode"], expected)
-                saved = json.loads(controller.control_path.read_text())
+                saved = read_state(controller.control_path)
                 self.assertEqual(saved["mode"], expected)
 
     def test_initialized_controller_ticks_and_publishes_reports_at_the_expected_interval(self):
@@ -841,16 +843,16 @@ class ControllerTests(unittest.TestCase):
                     self.assertEqual(report.call_count, 1)
                     self.assertTrue(controller.tick(11))
                     self.assertEqual(report.call_count, 2)
-                before = (args.state_dir / "state.json").read_bytes()
+                before = read_state(args.state_dir / "state")
                 with (
-                    patch("core.controller.atomic_json", side_effect=PermissionError("reader holds state.json")),
+                    patch("core.controller.write_state", side_effect=PermissionError("reader holds state")),
                     self.assertLogs("core.controller", level="WARNING") as warnings,
                 ):
                     self.assertTrue(controller.tick(12))
                     self.assertTrue(controller.tick(13))
                 self.assertEqual(len(warnings.output), 1)
                 self.assertTrue(controller.report_write_blocked)
-                self.assertEqual((args.state_dir / "state.json").read_bytes(), before)
+                self.assertEqual(read_state(args.state_dir / "state"), before)
                 with self.assertLogs("core.controller", level="INFO") as recovery:
                     self.assertTrue(controller.tick(14))
                 self.assertFalse(controller.report_write_blocked)
@@ -873,7 +875,7 @@ class ControllerTests(unittest.TestCase):
                     messages.assert_not_called()
                     self.assertTrue(controller.tick(17.31))
                     messages.assert_called_once_with('waiting for terrain')
-            published = json.loads((args.state_dir / "state.json").read_text())
+            published = read_state(args.state_dir / "state")
             self.assertEqual(published["controller"], "running")
             self.assertEqual(published["game"], "san_andreas")
 
@@ -958,7 +960,7 @@ class ControllerTests(unittest.TestCase):
         self.controller.movement.stop.assert_called_once()
         self.controller.camera.close.assert_called_once()
         self.controller.bindings.restore.assert_called_once()
-        report = json.loads((self.controller.state_dir / "state.json").read_text())
+        report = read_state(self.controller.state_dir / "state")
         self.assertEqual(report["controller"], "stopped")
 
 
