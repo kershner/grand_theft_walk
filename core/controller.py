@@ -133,6 +133,7 @@ class Walking:
             self.terrain.reset()
         if self.water_guard:
             self.water_guard.probe = self.water_guard.turn_target = None
+            self.water_guard.escape_scan = None
         self.recovery_jump_setup = None
         self.recovery_jump_request = self.recovery_jump_started = None
         self.recovery_jump_airborne = False

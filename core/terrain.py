@@ -449,6 +449,7 @@ class WaterAvoidance:
         self.areas = []
         self.probe = None
         self.turn_target = None
+        self.escape_scan = None
         try:
             path = Path(sensor.mem.exe).parent / 'data/water.dat'
             for line in path.read_text(encoding='ascii').splitlines():
@@ -533,17 +534,37 @@ class WaterAvoidance:
             walk.smooth_turn.reset()
         danger = self.danger(position, facing, now)
         self.sensor.pump(now)
-        if danger is not True:
+        if danger is not True and self.escape_scan is None:
             return None
         walk.suspend_progress(state['position'], now)
         walk.keys.set(walk.walk_modifier)
+        if self.escape_scan is None or math.dist(position, self.escape_scan[0]) > .75:
+            self.escape_scan = (position, facing)
+        origin, bearing = self.escape_scan
+        # Novel ground can also be water. Check escape corridors before
+        # committing to a turn, including the way back on narrow causeways.
+        headings = tuple(bearing + offset * math.pi / 8
+                         for offset in (4, -4, 8, 2, -2, 6, -6, 1, -1, 3, -3, 5, -5, 7, -7))
+        safe = [heading for heading in headings
+                if self.danger(origin, heading, now) is False]
+        self.sensor.pump(now)
+        if not safe:
+            walk.smooth_turn.reset()
+            return 'exploring: checking safe ground away from water'
+        self.escape_scan = None
         walk.navigator.observe(position, now)
         walk.navigator.avoid_target(now, retreat=False)
         walk.navigator.failed_approaches.append((position, facing, now + 120))
-        walk.navigator.commit_fresh_course(position, (facing + math.pi / 2, facing - math.pi / 2), now)
-        walk.recovery_target = None
+        walk.navigator.commit_fresh_course(position, safe, now)
+        # Keep the checked short corridor through the first walking attempt;
+        # terrain replanning must not immediately steer back toward the water.
+        walk.recovery_target = walk.navigator.local_target
+        walk.recovery_best_remaining = math.dist(position, walk.recovery_target)
+        walk.recovery_progress_at = now
+        walk.aligning = False
         walk.recovery_jump_setup = walk.recovery_jump_request = None
         walk.recovery_jump_started = walk.recovery_jump_id = None
+        walk.recovery_jump_failed = False
         walk.jump_takeoff_until = walk.jump_grace_until = 0.
         walk.free_walk_until = 0
         target = walk.navigator.local_target

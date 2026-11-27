@@ -170,6 +170,38 @@ class ContinuousWaterGuardTests(unittest.TestCase):
             walk.keys.set.assert_called_with(walk.walk_modifier | {'forward'})
             self.assertIsNone(walk.water_guard.turn_target)
 
+    def test_narrow_causeway_uses_safe_reverse_instead_of_alternating_wet_sides(self):
+        with patch('core.controller.Keys'):
+            walk = Walking()
+            walk.set_mode('explore')
+            walk.water_guard = self.guard(World(
+                lambda x, y: 2 if abs(x) < 1 and y < 10 else None),
+                '0, -100, -100, 100, 100')
+            with patch('core.controller.time.monotonic', return_value=20):
+                walk.tick(self.state(), True, 'explore')
+            target = walk.navigator.local_target
+            self.assertAlmostEqual(target[0], 0)
+            self.assertLess(target[1], 0)
+            world = walk.water_guard.sensor
+            world.pending = True
+            state = self.state(heading=math.pi, camera_heading=math.pi)
+            with patch('core.controller.time.monotonic', return_value=21):
+                walk.tick(state, True, 'explore')
+            walk.keys.set.assert_called_with(walk.walk_modifier | {'forward'})
+
+    def test_unknown_escape_directions_wait_without_turning_toward_water(self):
+        with patch('core.controller.Keys'):
+            walk = Walking()
+            walk.set_mode('explore')
+            guard = self.guard(World())
+            walk.water_guard = guard
+            with patch.object(guard, 'danger', side_effect=[True] + [None] * 15), \
+                    patch('core.controller.time.monotonic', return_value=20):
+                self.assertIn('checking safe ground', walk.tick(self.state(), True, 'explore'))
+            self.assertIsNone(guard.turn_target)
+            walk.keys.turn.assert_not_called()
+            self.assertIsNotNone(guard.escape_scan)
+
     def test_manual_swimming_air_and_interiors_are_not_redirected(self):
         with patch('core.controller.Keys'):
             walk = Walking()
